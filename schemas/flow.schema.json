@@ -18,7 +18,7 @@
   "properties": {
     "id": {
       "type": "string",
-      "pattern": "^[BF]-[0-9]{3,}$"
+      "pattern": "^[BFX]-[0-9]{3,}$"
     },
     "mode": {
       "anyOf": [
@@ -29,6 +29,10 @@
         {
           "type": "string",
           "const": "feature"
+        },
+        {
+          "type": "string",
+          "const": "fix"
         }
       ]
     },

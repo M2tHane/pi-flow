@@ -30,7 +30,7 @@ export async function startFlow(d: StageDeps, mode: FlowMode, description: strin
 /** 若当前是设计阶段且还没有任务，生成该阶段的任务；返回新任务 id */
 export async function ensureStageTasks(d: StageDeps, flowId: string, revision?: string): Promise<string[]> {
   const flow = d.store.readFlow(flowId);
-  if (!DESIGN_STAGES.has(flow.stage)) return [];
+  if (flow.mode === 'fix' || !DESIGN_STAGES.has(flow.stage)) return [];
   const existing = d.store.listTasks(flowId).filter((t) => t.stage === flow.stage);
   if (existing.length && !revision) return [];
   const planned = designTasks(flow.mode, flow.stage, flow.title);

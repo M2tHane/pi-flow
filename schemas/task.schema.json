@@ -45,7 +45,8 @@
         "infra",
         "integration",
         "review-fix",
-        "merge-fix"
+        "merge-fix",
+        "analysis"
       ]
     },
     "title": {
@@ -243,6 +244,42 @@
           "type": "null"
         }
       ]
+    },
+    "findings": {
+      "type": "object",
+      "required": [
+        "location",
+        "root_cause",
+        "impact_files",
+        "suggested_role",
+        "contract_change",
+        "estimated_files"
+      ],
+      "properties": {
+        "location": {
+          "type": "string"
+        },
+        "root_cause": {
+          "type": "string"
+        },
+        "impact_files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "suggested_role": {
+          "type": "string"
+        },
+        "contract_change": {
+          "type": "boolean"
+        },
+        "estimated_files": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
     },
     "merge_fix_for": {
       "type": "string",

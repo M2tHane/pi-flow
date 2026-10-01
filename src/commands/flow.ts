@@ -10,6 +10,10 @@ import { formatPreflight } from '../core/preflight.ts';
 import { activeFlowId, statusText } from '../tools/orchestrator-tools.ts';
 import { splitArgs } from './args.ts';
 import { approveStage, rejectStage, unblockTask, startFlow } from '../core/stages.ts';
+import { continueFix } from '../modes/fix.ts';
+import { costReport, formatCost } from '../core/cost.ts';
+import { git } from '../core/git.ts';
+import type { StateStore as Store } from '../core/state-store.ts';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 
@@ -48,7 +52,34 @@ export const FLOW_USAGE = [
   '  /flow reject "<意见>"   打回设计阶段（S0/S1/F0/F1），生成修订任务',
   '  /flow unblock <任务> ["<回答>"] [--attempts N]   解除阻塞，可附上对任务提问的回答',
   '  /flow gate              闸门失败并修复后，重跑当前阶段闸门',
+  '  /flow status --cost     成本统计：按流程、阶段、角色、模型、任务汇总 token 与耗时，返工最多的任务',
+  '  /flow abort [--yes]     中止当前修复或流程（集成分支保留，主分支不受影响）',
 ].join('\n');
+
+/** 命令作用的流程：等待用户处理的修复 > 活动的 build/feature 流程 > 进行中的修复 */
+export function currentFlowId(store: Store): string {
+  const fix = store.openFixFlow();
+  if (fix?.stage_status === 'awaiting_human') return fix.id;
+  const active = store.readState().active_flow;
+  if (active) return active;
+  if (fix) return fix.id;
+  return activeFlowId(store);
+}
+
+function fullStatus(store: Store, engine: Engine | null): string {
+  const parts: string[] = [];
+  const active = store.readState().active_flow;
+  if (active) parts.push(statusText(store, engine, active));
+  const fix = store.openFixFlow();
+  if (fix) {
+    parts.push(statusText(store, engine, fix.id));
+    if (fix.stage_status === 'awaiting_human') {
+      const why = [...store.readEvents()].reverse().find((e) => e.flow === fix.id && e.type === 'gate_result')?.reason ?? '';
+      parts.push(`修复 ${fix.id} 等待你决定：${why}\n继续按修复处理 → /flow approve；改用功能流程 → /flow abort 后 /flow-build --feature "<描述>"`);
+    }
+  }
+  return parts.join('\n\n') || '当前没有进行中的流程。开始：/flow-build "<描述>"、/flow-build --feature "<描述>" 或 /flow-fix "<描述>"。';
+}
 
 function option(argv: string[], name: string): string | undefined {
   const i = argv.indexOf(name);
@@ -90,7 +121,21 @@ export async function runFlowCommand(args: string, env: CommandEnv): Promise<str
     }
     case 'status': {
       const store = env.store();
-      return statusText(store, null, activeFlowId(store));
+      if (argv.includes('--cost')) return formatCost(costReport(store), store.listFixLogs());
+      return fullStatus(store, null);
+    }
+    case 'abort': {
+      const h = env.engine();
+      const flowId = currentFlowId(h.store);
+      const flow = h.store.readFlow(flowId);
+      if (!argv.includes('--yes')) {
+        const msg = `中止 ${flow.id}「${flow.title}」：运行中的子进程会被终止，集成分支与 worktree 保留，主分支不受影响。`;
+        if (!env.ui) return `${msg}\n确认请执行 /flow abort --yes`;
+        if ((await env.ui.select(`${msg}确认？`, ['确认中止', '取消'])) !== '确认中止') return '已取消。';
+      }
+      for (const r of h.engine.activeRuns().filter((x) => x.flow === flowId)) h.engine.kill(r.run_id);
+      await h.store.transitionStage(flowId, { to: 'aborted', trigger: 'abort', actor: 'human' });
+      return `已中止 ${flowId}。${flow.mode === 'fix' ? '如需改用功能流程：/flow-build --feature "<描述>"' : ''}`;
     }
     case 'next': {
       const h = env.engine();
@@ -102,7 +147,13 @@ export async function runFlowCommand(args: string, env: CommandEnv): Promise<str
     }
     case 'approve': {
       const h = env.engine();
-      const flowId = activeFlowId(h.store);
+      const flowId = currentFlowId(h.store);
+      if (h.store.readFlow(flowId).mode === 'fix') {
+        const text = await continueFix(h.store, flowId);
+        await h.engine.pump(flowId);
+        if (env.waitForIdle) await h.engine.idle();
+        return `${text}\n${statusText(h.store, h.engine, flowId)}`;
+      }
       const flow = h.store.readFlow(flowId);
       if (flow.stage === flow.stages.at(-1) && flow.stage_status === 'awaiting_human' && !argv.includes('--yes')) {
         const msg = `批准阶段 ${flow.stage} 将把 ${flow.integration_branch} 合入 ${h.config.raw.main_branch}，流程随之结束。`;
@@ -126,9 +177,16 @@ export async function runFlowCommand(args: string, env: CommandEnv): Promise<str
     }
     case 'unblock': {
       const h = env.engine();
-      const flowId = activeFlowId(h.store);
+      const flowId = currentFlowId(h.store);
       const [, taskId, answer] = positional(argv);
       if (!taskId) throw new Error('用法：/flow unblock <任务> ["<回答>"] [--attempts N]');
+      const owner = [h.store.readState().active_flow, h.store.openFixFlow()?.id].filter((x): x is string => !!x)
+        .find((f) => h.store.listTasks(f).some((t) => t.id === taskId && t.status === 'blocked'));
+      if (owner && owner !== flowId) {
+        const text = await unblockTask({ root: env.root, store: h.store, config: h.config }, owner, taskId, answer, option(argv, '--attempts') !== undefined ? Number(option(argv, '--attempts')) : undefined);
+        await h.engine.pump(owner);
+        return text;
+      }
       const att = option(argv, '--attempts');
       const text = await unblockTask({ root: env.root, store: h.store, config: h.config }, flowId, taskId, answer, att !== undefined ? Number(att) : undefined);
       await h.engine.pump(flowId);
@@ -181,5 +239,45 @@ export async function runFlowBuild(args: string, env: CommandEnv): Promise<strin
   if (d.length) lines.push(`已派发 ${d.map((x) => `${x.task} → ${x.role}（${x.model}）`).join('；')}。`);
   if (env.waitForIdle) await h.engine.idle();
   lines.push(statusText(h.store, h.engine, flow.id));
+  return lines.join('\n');
+}
+
+export const FIX_USAGE = [
+  '用法：/flow-fix "<问题描述>" [--yes]',
+  '流程：scout 定位 → （超出规模时请你决定）→ 复现测试（必须先失败）→ 修复 → 审查 → verify → 直接合入主分支 → 写 .flow/fixes/ 日志（含成本）。',
+  '单文件、几十行以内的小改动直接用 pi 更划算。',
+].join('\n');
+
+/** /flow-fix */
+export async function runFlowFix(args: string, env: CommandEnv): Promise<string> {
+  const argv = splitArgs(args);
+  if (argv[0] === 'help' || argv[0] === '--help') return FIX_USAGE;
+  let description = argv.filter((a) => !a.startsWith('--')).join(' ').trim();
+  if (!description && env.ui?.input) description = (await env.ui.input('描述要修复的问题', '现象、复现步骤、期望行为'))?.trim() ?? '';
+  if (!description) throw new Error(`需要问题描述。\n${FIX_USAGE}`);
+  const lines: string[] = [];
+  if (!existsSync(path.join(env.root, '.flow', 'state.json')) || !existsSync(path.join(env.root, 'workflow.yaml'))) {
+    lines.push(formatInit(await initProject(env.root, env.packageRoot)));
+  }
+  const h = env.engine();
+  const active = h.store.readState().active_flow;
+  if (active) {
+    const f = h.store.readFlow(active);
+    if (f.stage_status !== 'awaiting_human') {
+      throw new Error(`进行中的流程 ${f.id} 正在阶段 ${f.stage} 运行（${f.stage_status}），不能同时修复。等它进入等待审批时再修复，或把问题作为该流程的一部分处理。`);
+    }
+    if (!argv.includes('--yes')) {
+      const msg = `流程 ${f.id} 正在等待审批（阶段 ${f.stage}）。修复会直接合入 ${h.config.raw.main_branch}，与该流程并行。`;
+      if (!env.ui) return `${msg}\n确认请执行 /flow-fix "<描述>" --yes`;
+      if ((await env.ui.select(`${msg}继续？`, ['继续修复', '取消'])) !== '继续修复') return '已取消。';
+    }
+  }
+  const main = h.config.raw.main_branch;
+  const fix = await h.store.createFixFlow(description, main, git(env.root, ['rev-parse', main]).trim());
+  env.activateOrchestrator();
+  await h.engine.pump(fix.id);
+  lines.push(`已创建修复 ${fix.id}，scout 开始定位问题。`);
+  if (env.waitForIdle) await h.engine.idle();
+  lines.push(fullStatus(h.store, h.engine));
   return lines.join('\n');
 }

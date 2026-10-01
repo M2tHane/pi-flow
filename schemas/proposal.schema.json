@@ -1,0 +1,184 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pi-flow/proposal.schema.json",
+  "type": "object",
+  "required": [
+    "stage",
+    "run",
+    "created_at",
+    "tasks",
+    "report",
+    "version"
+  ],
+  "properties": {
+    "stage": {
+      "type": "string"
+    },
+    "run": {
+      "type": "string"
+    },
+    "created_at": {
+      "type": "string",
+      "minLength": 1
+    },
+    "tasks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "stage",
+          "kind",
+          "title",
+          "role",
+          "scopes",
+          "depends_on",
+          "inputs",
+          "writes",
+          "acceptance",
+          "verify"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^T-[0-9]{3,}$"
+          },
+          "stage": {
+            "type": "string",
+            "minLength": 1
+          },
+          "kind": {
+            "enum": [
+              "test",
+              "impl",
+              "doc",
+              "infra",
+              "integration",
+              "review-fix",
+              "merge-fix",
+              "analysis"
+            ]
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "role": {
+            "type": "string",
+            "minLength": 1
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "depends_on": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "task",
+                "type"
+              ],
+              "properties": {
+                "task": {
+                  "type": "string",
+                  "pattern": "^T-[0-9]{3,}$"
+                },
+                "type": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "const": "hard"
+                    },
+                    {
+                      "type": "string",
+                      "const": "soft"
+                    }
+                  ]
+                },
+                "reason": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "inputs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "writes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1
+          },
+          "acceptance": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1
+          },
+          "verify": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "minItems": 1
+    },
+    "report": {
+      "type": "object",
+      "required": [
+        "task_count",
+        "critical_path",
+        "critical_path_length",
+        "max_width",
+        "hard_ratio",
+        "warnings"
+      ],
+      "properties": {
+        "task_count": {
+          "type": "integer"
+        },
+        "critical_path": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "critical_path_length": {
+          "type": "integer"
+        },
+        "max_width": {
+          "type": "integer"
+        },
+        "hard_ratio": {
+          "type": "number"
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    }
+  },
+  "additionalProperties": false
+}

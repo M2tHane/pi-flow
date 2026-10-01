@@ -157,6 +157,8 @@ export interface CreateFlowInput {
 export type TaskInput = Pick<TaskFile, 'id' | 'stage' | 'kind' | 'title' | 'role' | 'scopes' | 'depends_on' | 'inputs'
   | 'writes' | 'acceptance' | 'verify'> & Partial<Pick<TaskFile, 'merge_fix_for' | 'conflict_files' | 'worktree' | 'branch' | 'base_sha'>>;
 
+export type Findings = NonNullable<TaskFile['findings']>;
+
 export interface IntegrityReport { ok: boolean; errors: string[] }
 
 export interface ViolationInput {
@@ -403,6 +405,51 @@ export class StateStore {
         data: { entity: 'flow', mode: input.mode, stage: flow.stage } });
       return flow;
     });
+  }
+
+  /** fix 流程：不占用活动流程指针（可在 build 流程等待审批时运行）；同一时间只允许一个未结束的 fix */
+  async createFixFlow(title: string, mainBranch: string, baseSha: string): Promise<FlowFile> {
+    return this.transaction((tx) => {
+      const open = this.listFlows().map((id) => tx.readFlow(id)).find((f) => f.mode === 'fix' && !isFinished(f));
+      if (open) throw new StateError(`已有进行中的修复 ${open.id}「${open.title}」，请等它完成或执行 /flow abort`);
+      const nums = this.listFlows().map((id) => Number(id.slice(2)));
+      const id = `X-${String(Math.max(0, ...nums) + 1).padStart(3, '0')}`;
+      const flow = tx.putFlow({
+        id, mode: 'fix', title, stages: ['X1'], stage: 'X1', stage_status: 'active', integration_branch: mainBranch,
+        base_sha: baseSha, approvals: {}, created_at: tx.ts, version: 1,
+      });
+      tx.event({ flow: id, actor: 'human', type: 'transition', from: 'none', to: 'active', data: { entity: 'flow', mode: 'fix' } });
+      return flow;
+    });
+  }
+
+  /** 未结束的 fix 流程（若有） */
+  openFixFlow(): FlowFile | null {
+    return this.listFlows().map((id) => this.readFlow(id)).find((f) => f.mode === 'fix' && !isFinished(f)) ?? null;
+  }
+
+  async setFindings(flow: string, task: string, findings: Findings, actor: string): Promise<TaskFile> {
+    return this.transaction((tx) => {
+      const t = tx.readTask(flow, task);
+      const saved = tx.putTask(flow, { ...t, findings });
+      tx.event({ flow, task, actor, type: 'note', reason: 'scout 结论', data: { ...findings } });
+      return saved;
+    });
+  }
+
+  async writeFixLog(name: string, content: string, flow: string): Promise<string> {
+    if (!/^[\w.-]+\.md$/.test(name)) throw new StateError(`fix 日志文件名不合法：${name}`);
+    return this.transaction((tx) => {
+      const rel = `fixes/${name}`;
+      tx.putText(rel, content);
+      tx.event({ flow, actor: 'engine', type: 'note', reason: 'fix 日志', evidence: rel });
+      return rel;
+    });
+  }
+
+  listFixLogs(): string[] {
+    const dir = this.abs('fixes');
+    return existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith('.md')).sort() : [];
   }
 
   async addTasks(flow: string, tasks: readonly TaskInput[], actor: string): Promise<TaskFile[]> {
@@ -666,7 +713,7 @@ export class StateStore {
       flow.stage_status = req.to;
       if (req.trigger === 'approve') flow.approvals[flow.stage] = { by: 'human', at: tx.ts, ...(req.note ? { note: req.note } : {}) };
       const next = tx.putFlow(flow);
-      if (req.to === 'aborted') tx.setActiveFlow(null);
+      if (req.to === 'aborted' && flow.mode !== 'fix') tx.setActiveFlow(null);
       const type = req.trigger === 'approve' ? 'approval' : req.trigger.startsWith('gate_') ? 'gate_result' : 'transition';
       tx.event({ flow: flowId, actor: req.actor, type, from, to: req.to, trigger: req.trigger,
         data: { entity: 'stage', stage: flow.stage }, ...(req.reason ? { reason: req.reason } : {}) });
@@ -681,7 +728,7 @@ export class StateStore {
       if (flow.stage_status !== 'done') throw new StateError(`当前阶段 ${flow.stage} 尚未 done（${flow.stage_status}），不能进入下一阶段`);
       const idx = flow.stages.indexOf(flow.stage);
       if (idx === flow.stages.length - 1) {
-        tx.setActiveFlow(null);
+        if (flow.mode !== 'fix') tx.setActiveFlow(null);
         tx.event({ flow: flowId, actor, type: 'transition', from: flow.stage, to: 'finished', data: { entity: 'flow' } });
         return flow;
       }

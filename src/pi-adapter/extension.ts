@@ -17,7 +17,7 @@ import { enforceToolCall } from '../core/guard.ts';
 import { dirtyFiles, newDrift, nextStep, turnContext } from '../core/context-injector.ts';
 import { parseAgentFile } from '../core/agents.ts';
 import { runFlowConfig, type ModelOption } from '../commands/flow-config.ts';
-import { runFlowCommand, runFlowBuild, FLOW_USAGE, type CommandEnv, type EngineHandle } from '../commands/flow.ts';
+import { runFlowCommand, runFlowBuild, runFlowFix, FLOW_USAGE, type CommandEnv, type EngineHandle } from '../commands/flow.ts';
 import { DispatchParams, WaitParams, activeFlowId, flowDispatch, flowWait, statusText } from '../tools/orchestrator-tools.ts';
 import { PiLauncher } from './launcher.ts';
 
@@ -217,7 +217,7 @@ export default function piFlow(pi: ExtensionAPI): void {
 
   pi.registerCommand('flow', {
     description: 'pi-flow 管理：status、next、resume、approve、reject、unblock、gate、doctor、init',
-    getArgumentCompletions: (prefix) => ['status', 'next', 'resume', 'approve', 'reject', 'unblock', 'gate', 'doctor', 'init', 'help']
+    getArgumentCompletions: (prefix) => ['status', 'next', 'resume', 'approve', 'reject', 'unblock', 'gate', 'abort', 'doctor', 'init', 'help']
       .filter((x) => x.startsWith(prefix.trim())).map((x) => ({ value: x, label: x })),
     handler: async (args, ctx) => {
       try {
@@ -234,6 +234,17 @@ export default function piFlow(pi: ExtensionAPI): void {
     handler: async (args, ctx) => {
       try {
         report(ctx, await runFlowBuild(args, commandEnv(ctx)));
+      } catch (e) {
+        report(ctx, (e as Error).message, 'error');
+      }
+    },
+  });
+
+  pi.registerCommand('flow-fix', {
+    description: 'pi-flow：修复缺陷或小改动（scout 定位 → 复现测试 → 修复 → 审查 → 直接合入主分支）',
+    handler: async (args, ctx) => {
+      try {
+        report(ctx, await runFlowFix(args, commandEnv(ctx)));
       } catch (e) {
         report(ctx, (e as Error).message, 'error');
       }

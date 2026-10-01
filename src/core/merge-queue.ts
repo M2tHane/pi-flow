@@ -60,8 +60,8 @@ export class MergeQueue {
     const flow = this.store.readFlow(flowId);
     const integ = flow.integration_branch;
     const wt = t.worktree!;
-    const label = t.kind === 'merge-fix' && t.merge_fix_for
-      ? this.store.readTask(flowId, t.merge_fix_for).title + `（经 ${t.id} 解决合并冲突）` : t.title;
+    const label = flow.mode === 'fix' ? `fix: ${flow.title}`.slice(0, 200)
+      : t.kind === 'merge-fix' && t.merge_fix_for ? this.store.readTask(flowId, t.merge_fix_for).title + `（经 ${t.id} 解决合并冲突）` : t.title;
     const msgFor = t.kind === 'merge-fix' && t.merge_fix_for ? t.merge_fix_for : t.id;
 
     // 1. squash：以与集成分支的分叉点为基准合成一个提交
@@ -94,13 +94,28 @@ export class MergeQueue {
     const verify = await this.postMergeVerify(flowId, t, wt, changed);
     if (!verify.ok) return this.verifyFailed(flowId, t, verify.reason, verify.results);
 
-    // 4. 快进集成分支（CAS：期间集成分支被移动则失败，回到队首重试）
-    const sha = headSha(wt);
-    try {
-      git(this.root, ['update-ref', `refs/heads/${integ}`, sha, integHead]);
-    } catch {
-      await this.store.transitionTask(flowId, t.id, { to: 'queued_merge', trigger: 'merge_requeue', actor: 'merge-queue' });
-      return this.verifyFailed(flowId, t, '集成分支在合并过程中被移动，已放回队首', [], true);
+    // 4. 快进集成分支（CAS：期间集成分支被移动则失败，回到队首重试）。
+    //    fix 流程直接合入主分支；主分支在主工作区检出时（状态提交也在推进它），在主工作区 cherry-pick 应用。
+    let sha = headSha(wt);
+    const checkedOut = gitOk(this.root, ['symbolic-ref', '-q', 'HEAD']) && git(this.root, ['symbolic-ref', '--short', 'HEAD']).trim() === integ;
+    if (checkedOut) {
+      const dirty = git(this.root, ['status', '--porcelain', '-uall', '--', '.', ':(exclude).flow']).split('\n').filter(Boolean).map((l) => l.slice(3));
+      const overlap = dirty.filter((f) => changed.includes(f));
+      if (overlap.length) return this.blocked(flowId, t, `主工作区中这些文件有未提交的改动，无法合入：${overlap.join('、')}`);
+      try {
+        git(this.root, ['cherry-pick', sha], { engineIdentity: true, allowFail: true });
+      } catch {
+        gitOk(this.root, ['cherry-pick', '--abort']);
+        return this.blocked(flowId, t, `在主工作区应用改动时冲突，需要人工处理`);
+      }
+      sha = headSha(this.root);
+    } else {
+      try {
+        git(this.root, ['update-ref', `refs/heads/${integ}`, sha, integHead]);
+      } catch {
+        await this.store.transitionTask(flowId, t.id, { to: 'queued_merge', trigger: 'merge_requeue', actor: 'merge-queue' });
+        return this.verifyFailed(flowId, t, '集成分支在合并过程中被移动，已放回队首', [], true);
+      }
     }
     await this.store.transitionTask(flowId, t.id, {
       to: 'done', trigger: 'merge_done', actor: 'merge-queue', evidence: sha,

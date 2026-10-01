@@ -21,6 +21,7 @@ import { MergeQueue, type MergeHooks, type MergeResult } from './merge-queue.ts'
 import { runStageGate, gateFailedWithoutChange, type GateOutcome } from './gates.ts';
 import { ensureStageTasks } from './stages.ts';
 import { STAGE_SKILLS } from '../modes/plan.ts';
+import { fixStep } from '../modes/fix.ts';
 import { existsSync, readFileSync } from 'node:fs';
 
 export const REVIEWER_ROLE = 'reviewer';
@@ -233,7 +234,8 @@ export class Engine {
           await this.dispatch(flowId, t.id);
         } else if (t.status === 'verifying' && !this.verifying.has(t.id)) {
           this.verifying.add(t.id);
-          this.track(runVerify(this.d.store, this.d.config, flowId, t, this.d.verifyTimeoutMs)
+          const expectFail = t.kind === 'test' && this.d.store.readFlow(flowId).mode === 'fix';
+          this.track(runVerify(this.d.store, this.d.config, flowId, t, this.d.verifyTimeoutMs, { expectFail })
             .finally(() => this.verifying.delete(t.id))
             .then(() => { this.notify(); return this.pump(flowId); }));
         }
@@ -278,6 +280,11 @@ export class Engine {
     const deps = { root: this.d.root, store: this.d.store, config: this.d.config };
     try {
       const flow = this.d.store.readFlow(flowId);
+      if (flow.mode === 'fix') {
+        await fixStep({ root: this.d.root, store: this.d.store, config: this.d.config, dispatch: (f, t) => this.dispatch(f, t),
+          promote: (f) => this.promote(f), ...(this.d.now ? { now: this.d.now } : {}) }, flowId);
+        return;
+      }
       if (flow.stage_status !== 'active' || this.gating.has(flowId)) return;
       const created = await ensureStageTasks(deps, flowId);
       if (created.length) { await this.promote(flowId); this.notify(); return; }
@@ -348,6 +355,10 @@ export class Engine {
   /** 等到没有运行中的子进程与程序步骤（测试与关闭时使用） */
   async idle(): Promise<void> {
     while (this.pending.size) await Promise.allSettled([...this.pending]);
+  }
+
+  kill(runId: string): void {
+    this.runs.get(runId)?.handle.kill();
   }
 
   killAll(): void {

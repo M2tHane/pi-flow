@@ -77,7 +77,18 @@ function rethrow(e: unknown, hint: string): never {
 
 export const ClaimParams = Type.Object({});
 export const NoteParams = Type.Object({ text: Type.String({ minLength: 1, maxLength: NOTE_LIMIT, description: 'handoff 笔记：做到哪、下一步、踩过的坑、未决问题' }) });
-export const SubmitParams = Type.Object({ summary: Type.String({ minLength: 1, maxLength: 500, description: '一句话总结本次改动' }) });
+export const Findings = Type.Object({
+  location: Type.String({ minLength: 1, description: '问题位置，例如 src/server/orders/service.ts:42' }),
+  root_cause: Type.String({ minLength: 1, description: '根因假设' }),
+  impact_files: Type.Array(Type.String({ minLength: 1 }), { minItems: 1, description: '修复需要改动的文件（相对仓库根，具体路径）' }),
+  suggested_role: Type.String({ minLength: 1, description: '建议的实施角色，例如 backend-engineer' }),
+  contract_change: Type.Boolean({ description: '修复是否需要改契约' }),
+  estimated_files: Type.Integer({ minimum: 0, description: '预计改动的文件数' }),
+}, { additionalProperties: false });
+export const SubmitParams = Type.Object({
+  summary: Type.String({ minLength: 1, maxLength: 500, description: '一句话总结本次改动（只读探查任务：一句话结论）' }),
+  findings: Type.Optional(Findings),
+});
 export const Issue = Type.Object({
   location: Type.String({ minLength: 1, description: '位置，例如 src/server/a.ts:42' }),
   problem: Type.String({ minLength: 1, description: '问题' }),
@@ -114,6 +125,7 @@ export async function flowNote(ctx: ToolContext, p: Static<typeof NoteParams>): 
 
 export async function flowSubmit(ctx: ToolContext, p: Static<typeof SubmitParams>): Promise<ToolResult> {
   const t = checkRun(ctx);
+  if (t.kind === 'analysis') return submitAnalysis(ctx, t, p);
   if (t.status !== 'in_progress') throw new FlowToolError(`任务当前是 ${t.status}，不能提交。`);
   if (!t.worktree || !t.base_sha) throw new FlowToolError('任务没有 worktree 或 base_sha，无法提交，请调用 flow_block 报告。');
   snapshot(t.worktree, `[${ctx.env.flow}/${t.id}] ${p.summary.split('\n')[0]}`);
@@ -128,6 +140,18 @@ export async function flowSubmit(ctx: ToolContext, p: Static<typeof SubmitParams
   await ctx.store.appendHandoff(ctx.env.flow, t.id, `提交说明：${p.summary}`, actor(ctx));
   await ctx.store.updateRun(ctx.env.run, { outcome: 'submitted' }, actor(ctx), '提交');
   return { text: `已提交审查（改动 ${diff.length} 个文件）。你的工作已完成，请直接结束，不要再调用工具。`, details: { files: diff } };
+}
+
+async function submitAnalysis(ctx: ToolContext, t: TaskFile, p: Static<typeof SubmitParams>): Promise<ToolResult> {
+  if (!p.findings) throw new FlowToolError('只读探查任务必须附 findings：location、root_cause、impact_files、suggested_role、contract_change、estimated_files。');
+  const diff = t.worktree && t.base_sha ? (snapshot(t.worktree, 'scout'), changedFiles(t.worktree, t.base_sha)) : [];
+  await ctx.store.setFindings(ctx.env.flow, t.id, p.findings, actor(ctx));
+  await ctx.store.appendHandoff(ctx.env.flow, t.id, `结论：${p.summary}\n位置：${p.findings.location}\n根因：${p.findings.root_cause}\n影响文件：${p.findings.impact_files.join('、')}\n建议角色：${p.findings.suggested_role}`, actor(ctx));
+  try {
+    await ctx.store.transitionTask(ctx.env.flow, t.id, { to: 'done', trigger: 'report', actor: actor(ctx), facts: { token: ctx.env.token, diff_files: diff } });
+  } catch (e) { rethrow(e, '只读任务不能改动文件；先 flow_note 再提交。'); }
+  await ctx.store.updateRun(ctx.env.run, { outcome: 'submitted' }, actor(ctx), '提交结论');
+  return { text: '结论已提交。你的工作已完成，请直接结束。' };
 }
 
 export async function flowApprove(ctx: ToolContext, p: Static<typeof ApproveParams>): Promise<ToolResult> {
@@ -189,7 +213,7 @@ export async function flowProposeTasks(ctx: ToolContext, p: Static<typeof Propos
 export const SUBAGENT_TOOLS = {
   flow_claim: { params: ClaimParams, description: '确认任务与租约，返回任务说明、输入文件、验收标准、可写范围与 verify 命令。开始工作前先调用。', run: (c: ToolContext) => flowClaim(c) },
   flow_note: { params: NoteParams, description: '追加 handoff 笔记（做到哪、下一步、踩过的坑、未决问题）。提交前必须至少写一次。', run: (c: ToolContext, p: Static<typeof NoteParams>) => flowNote(c, p) },
-  flow_submit: { params: SubmitParams, description: '提交本任务进入审查。程序会检查改动是否都在可写范围内。', run: (c: ToolContext, p: Static<typeof SubmitParams>) => flowSubmit(c, p) },
+  flow_submit: { params: SubmitParams, description: '提交本任务进入审查。程序会检查改动是否都在可写范围内。只读探查任务（scout）用它提交 findings。', run: (c: ToolContext, p: Static<typeof SubmitParams>) => flowSubmit(c, p) },
   flow_approve: { params: ApproveParams, description: '审查结论：pass 或 reject。reject 必须附 issues（位置、问题、期望的修改）。', run: (c: ToolContext, p: Static<typeof ApproveParams>) => flowApprove(c, p) },
   flow_block: { params: BlockParams, description: '遇到歧义或需要越界时标记任务阻塞，交给用户决定。需要向用户提问时，一次只问一个问题。', run: (c: ToolContext, p: Static<typeof BlockParams>) => flowBlock(c, p) },
   flow_propose_tasks: { params: ProposeParams, description: '（仅 architect，仅 S1/F1）提交任务 DAG：依赖分硬/软，硬依赖必须写 reason，软依赖必须配 integration 任务。返回关键路径与并行宽度报告。', run: (c: ToolContext, p: Static<typeof ProposeParams>) => flowProposeTasks(c, p) },

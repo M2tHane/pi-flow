@@ -20,6 +20,7 @@ export function stageDef(config: FlowConfig, mode: 'build' | 'feature', stage: s
 export async function runStageGate(root: string, store: StateStore, config: FlowConfig, flowId: string, timeoutMs?: number): Promise<GateOutcome> {
   const flow = store.readFlow(flowId);
   if (flow.stage_status !== 'awaiting_gate') throw new Error(`阶段 ${flow.stage} 不在 awaiting_gate 状态`);
+  if (flow.mode === 'fix') throw new Error('fix 流程不使用阶段闸门');
   const def = stageDef(config, flow.mode, flow.stage);
   const isLast = flow.stage === flow.stages.at(-1);
   const needsHuman = !!def.gate.human || isLast;

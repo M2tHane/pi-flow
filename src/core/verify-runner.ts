@@ -49,7 +49,8 @@ export function evidenceText(r: CommandRun, shell: string): string {
  * 对 verifying 状态的任务执行 verify，保存 evidence，转到 queued_merge 或 in_progress（失败达上限则 blocked）。
  * 遇到第一个失败的命令即停止。
  */
-export async function runVerify(store: StateStore, config: FlowConfig, flowId: string, task: TaskFile, timeoutMs?: number): Promise<{ passed: boolean; results: CommandRun[]; task: TaskFile }> {
+export async function runVerify(store: StateStore, config: FlowConfig, flowId: string, task: TaskFile, timeoutMs?: number, opts: { expectFail?: boolean } = {}): Promise<{ passed: boolean; results: CommandRun[]; task: TaskFile }> {
+  if (opts.expectFail) return runReproVerify(store, config, flowId, task, timeoutMs);
   if (task.status !== 'verifying') throw new Error(`任务 ${task.id} 不在 verifying 状态（当前 ${task.status}）`);
   if (!task.worktree) throw new Error(`任务 ${task.id} 没有 worktree`);
   const results: CommandRun[] = [];
@@ -73,4 +74,23 @@ export async function runVerify(store: StateStore, config: FlowConfig, flowId: s
     ? { to: 'queued_merge', trigger: 'verify_pass', actor: 'verify-runner', facts: { verify_results }, evidence: `verify-a${task.attempts}` }
     : { to: 'in_progress', trigger: 'verify_fail', actor: 'verify-runner', facts: { verify_results }, evidence: `verify-a${task.attempts}` });
   return { passed, results, task: next };
+}
+
+/** fix 模式的复现测试：verify 命令必须失败（问题被复现）；通过反而说明测试没有复现问题。 */
+async function runReproVerify(store: StateStore, config: FlowConfig, flowId: string, task: TaskFile, timeoutMs?: number): Promise<{ passed: boolean; results: CommandRun[]; task: TaskFile }> {
+  const results: CommandRun[] = [];
+  for (const name of task.verify) {
+    const shell = config.commands[name] ?? 'false';
+    const r = { command: name, ...(await runShell(shell.replace('{files}', '').trim(), task.worktree!, timeoutMs)) };
+    results.push(r);
+    await store.saveEvidence(flowId, task.id, `repro-a${task.attempts}-${name}.log`, `（期望失败）\n${evidenceText(r, shell)}`, 'verify-runner');
+  }
+  const reproduced = results.length > 0 && results.every((r) => r.exit_code !== 0);
+  const next = reproduced
+    ? await store.transitionTask(flowId, task.id, { to: 'done', trigger: 'repro_confirmed', actor: 'verify-runner',
+      facts: { verify_results: results.map(({ command, exit_code }) => ({ command, exit_code })) }, evidence: `repro-a${task.attempts}` })
+    : await store.transitionTask(flowId, task.id, { to: 'in_progress', trigger: 'verify_fail', actor: 'verify-runner',
+      facts: { verify_results: results.map((r) => ({ command: `${r.command}（应失败）`, exit_code: r.exit_code === 0 ? 1 : 0 })),
+        reason: `复现测试没有失败（${results.filter((r) => r.exit_code === 0).map((r) => r.command).join('、')} 通过）：测试必须在修复前失败，请改写测试使其复现问题` } });
+  return { passed: reproduced, results, task: next };
 }

@@ -5,7 +5,7 @@ import { Value } from 'typebox/value';
 
 const Nullable = <T extends TSchema>(t: T) => Type.Union([t, Type.Null()]);
 const IsoTime = Type.String({ minLength: 1 });
-const FlowId = Type.String({ pattern: '^[BF]-[0-9]{3,}$' });
+const FlowId = Type.String({ pattern: '^[BFX]-[0-9]{3,}$' });
 const TaskId = Type.String({ pattern: '^T-[0-9]{3,}$' });
 
 export const TASK_STATUSES = [
@@ -15,7 +15,7 @@ export const TASK_STATUSES = [
 export const TaskStatus = Type.Enum(TASK_STATUSES);
 export type TaskStatus = (typeof TASK_STATUSES)[number];
 
-export const TASK_KINDS = ['test', 'impl', 'doc', 'infra', 'integration', 'review-fix', 'merge-fix'] as const;
+export const TASK_KINDS = ['test', 'impl', 'doc', 'infra', 'integration', 'review-fix', 'merge-fix', 'analysis'] as const;
 export const TaskKind = Type.Enum(TASK_KINDS);
 export type TaskKind = (typeof TASK_KINDS)[number];
 
@@ -43,7 +43,7 @@ export const Approval = Type.Object({ by: Type.Literal('human'), at: IsoTime, no
 
 export const FlowFile = Type.Object({
   id: FlowId,
-  mode: Type.Union([Type.Literal('build'), Type.Literal('feature')]),
+  mode: Type.Union([Type.Literal('build'), Type.Literal('feature'), Type.Literal('fix')]),
   title: Type.String(),
   stages: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
   stage: Type.String({ minLength: 1 }),
@@ -95,6 +95,15 @@ export const TaskFile = Type.Object({
   base_sha: Nullable(Type.String()),
   blocked_reason: Nullable(Type.String()),
   last_failure: Nullable(Type.String()),
+  // scout（analysis 任务）提交的结构化结论（fix 模式）
+  findings: Type.Optional(Type.Object({
+    location: Type.String(),
+    root_cause: Type.String(),
+    impact_files: Type.Array(Type.String()),
+    suggested_role: Type.String(),
+    contract_change: Type.Boolean(),
+    estimated_files: Type.Integer({ minimum: 0 }),
+  }, { additionalProperties: false })),
   // merge-fix 专用：被挂起的原任务与冲突文件
   merge_fix_for: Type.Optional(TaskId),
   conflict_files: Type.Optional(Type.Array(Type.String())),

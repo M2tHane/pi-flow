@@ -8,7 +8,7 @@ import { isProtected, matchesAny } from './paths.ts';
 export type Trigger =
   | 'schedule' | 'dispatch' | 'submit' | 'review_pass' | 'review_reject'
   | 'verify_pass' | 'verify_fail' | 'merge_start' | 'merge_done' | 'merge_verify_fail'
-  | 'merge_blocked' | 'merge_requeue' | 'block' | 'unblock' | 'lease_expired' | 'run_failed';
+  | 'merge_blocked' | 'merge_requeue' | 'block' | 'unblock' | 'lease_expired' | 'run_failed' | 'report' | 'repro_confirmed';
 
 export interface VerifyResult { command: string; exit_code: number }
 
@@ -176,6 +176,30 @@ export const TRANSITIONS: readonly Rule[] = [
     from: IN_FLIGHT, to: 'blocked', trigger: 'block',
     check: (_t, f) => reasonRequired(f),
     effect: (t, f) => { t.blocked_reason = f.reason!; t.lease = null; },
+  },
+  {
+    // 偏离（fix 模式）：只读探查任务（analysis）提交结论后直接完成，没有 diff、审查与合并
+    from: ['in_progress'], to: 'done', trigger: 'report',
+    check: (t, f) => [
+      ...leaseValid(t.lease, f, '提交被拒'),
+      ...need(t.kind === 'analysis', '只有 analysis 任务可以直接提交结论'),
+      ...need((f.diff_files ?? []).length === 0, `只读任务不得有改动：${(f.diff_files ?? []).join('、')}`),
+      ...need(f.handoff_written, '尚未写 handoff，请先调用 flow_note'),
+      ...need(!!t.findings, '缺少结构化结论（findings）'),
+    ],
+    effect: (t) => { t.impl_run = t.lease!.run_id; t.lease = null; t.worktree = null; },
+  },
+  {
+    // 偏离（fix 模式）：复现测试经审查后必须先失败；确认失败即完成，随修复任务一起合入
+    from: ['verifying'], to: 'done', trigger: 'repro_confirmed',
+    check: (t, f) => {
+      const results = f.verify_results ?? [];
+      return [
+        ...need(t.kind === 'test', '只有复现测试任务可以确认复现'),
+        ...need(results.length > 0 && results.every((r) => r.exit_code !== 0), '复现测试没有失败，不能确认复现'),
+        ...need(f.evidence_saved, 'evidence 未保存'),
+      ];
+    },
   },
   {
     // 偏离：子进程未提交就退出（崩溃、放弃）。保留 worktree，清空租约，计一次失败；由引擎重新派发
