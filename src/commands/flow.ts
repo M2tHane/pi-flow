@@ -37,8 +37,10 @@ export interface CommandEnv {
   store(): StateStore;
   roleSettings(): RoleSettingsFile;
   availableModels(): string[];
-  /** 进入调度模式（orchestrator） */
-  activateOrchestrator(): void;
+  /** 进入调度模式（orchestrator）：收窄工具、切换到 orchestrator 的模型；返回提示信息 */
+  activateOrchestrator(): Promise<string | void> | string | void;
+  /** 退出调度模式：恢复进入前的模型、思考级别与工具 */
+  deactivateOrchestrator?(): Promise<string> | string;
   /** 非交互模式：命令结束后进程退出，需要等待引擎跑完 */
   waitForIdle: boolean;
 }
@@ -49,6 +51,7 @@ export const FLOW_USAGE = [
   '  /flow status --detail   完整的任务列表与内部状态',
   '  /flow next              由程序选择 ready 任务并派发',
   '  /flow resume            会话丢失后恢复，并进入调度模式',
+  '  /flow off               退出调度模式，恢复原来的模型与工具（流程状态不变）',
   '  /flow doctor [--fix]    状态完整性与前置条件检查；--fix 清理残留 worktree 与提示文件',
   '  /flow init              初始化项目骨架（可重复执行，不覆盖）',
   '  /flow approve [--yes]   批准当前阶段闸门（仅用户）；最后一个阶段会把集成分支合入主分支',
@@ -113,7 +116,7 @@ export async function runFlowCommand(args: string, env: CommandEnv): Promise<str
         return pick === DECIDE_CONTINUE ? 'continue' : pick === DECIDE_DISCARD ? ('discard' as DecisionAnswer) : undefined;
       } : undefined);
       if (!r.ok) return r.brief;
-      env.activateOrchestrator();
+      await env.activateOrchestrator();
       const flowId = h.store.readState().active_flow;
       if (flowId) {
         await h.engine.pump(flowId);
@@ -206,6 +209,9 @@ export async function runFlowCommand(args: string, env: CommandEnv): Promise<str
       await h.engine.rerunGate(flowId);
       return renderStatus(h.store, h.config);
     }
+    case 'off':
+      if (!env.deactivateOrchestrator) return '当前环境不支持调度模式。';
+      return env.deactivateOrchestrator();
     case 'help': case '-h': case '--help':
       return FLOW_USAGE;
     default:
@@ -240,7 +246,7 @@ export async function runFlowBuild(args: string, env: CommandEnv): Promise<strin
     throw new Error(`已有进行中的流程 ${f.id}「${f.title}」（阶段 ${f.stage}）。同一时间只允许一个 build 或 feature 流程；请执行 /flow resume 继续。`);
   }
   const flow = await startFlow({ root: env.root, store: h.store, config: h.config }, feature ? 'feature' : 'build', description);
-  env.activateOrchestrator();
+  await env.activateOrchestrator();
   await h.engine.pump(flow.id);
   const d = await h.engine.next(flow.id);
   lines.push(`已创建流程 ${flow.id}（${flow.mode}），阶段：${flow.stages.join(' → ')}；集成分支 ${flow.integration_branch}。`);
@@ -282,7 +288,7 @@ export async function runFlowFix(args: string, env: CommandEnv): Promise<string>
   }
   const main = h.config.raw.main_branch;
   const fix = await h.store.createFixFlow(description, main, git(env.root, ['rev-parse', main]).trim());
-  env.activateOrchestrator();
+  await env.activateOrchestrator();
   await h.engine.pump(fix.id);
   lines.push(`已创建修复 ${fix.id}，scout 开始定位问题。`);
   if (env.waitForIdle) await h.engine.idle();

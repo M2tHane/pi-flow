@@ -4,10 +4,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
-import { getAgentDir, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent';
+import { getAgentDir, type ExtensionAPI, type ExtensionContext, type PiModel } from '@earendil-works/pi-coding-agent';
 import { getSupportedThinkingLevels } from '@earendil-works/pi-ai';
 import { loadConfig, type FlowConfig } from '../core/config.ts';
-import { ROLE_SETTINGS_FILENAME, loadRoleSettings } from '../core/role-settings.ts';
+import { ROLE_SETTINGS_FILENAME, loadRoleSettings, resolveRoleModel } from '../core/role-settings.ts';
 import { THINKING_LEVELS, type ThinkingLevel } from '../core/schemas.ts';
 import { StateStore } from '../core/state-store.ts';
 import { Engine } from '../core/dispatcher.ts';
@@ -20,7 +20,7 @@ import { runFlowConfig, type ModelOption } from '../commands/flow-config.ts';
 import { runFlowCommand, runFlowBuild, runFlowFix, FLOW_USAGE, type CommandEnv, type EngineHandle } from '../commands/flow.ts';
 import { DispatchParams, WaitParams, activeFlowId, flowDispatch, flowWait, statusText } from '../tools/orchestrator-tools.ts';
 import { PiLauncher } from './launcher.ts';
-import { lastFailureKind, notices, snapshotOf } from '../core/status-view.ts';
+import { lastFailureKind, notices, snapshotOf, visibleFlows } from '../core/status-view.ts';
 import { packageRoots, pluginExtensionsFor } from './plugins.ts';
 
 export const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -68,18 +68,24 @@ function checked<T>(schema: unknown, params: unknown, name: string): T {
 
 // —— 每个项目根一份会话状态（引擎运行在本 pi 进程内） ——
 
+interface SavedSession { model: PiModel | undefined; thinking: ThinkingLevel; tools: string[] }
+
 interface RootSession {
   handle: EngineHandle | null;
   orchestrator: boolean;
   driftBefore: Set<string> | null;
   notify: (m: string, l?: 'info' | 'warning' | 'error') => void;
+  /** 进入调度模式前的模型、思考级别与工具，用于退出时恢复 */
+  saved: SavedSession | null;
+  /** 退出调度模式（由最近一次命令的上下文提供） */
+  deactivate: (() => Promise<string>) | null;
 }
 const sessions = new Map<string, RootSession>();
 
 function session(root: string): RootSession {
   let s = sessions.get(root);
   if (!s) {
-    s = { handle: null, orchestrator: false, driftBefore: null, notify: () => {} };
+    s = { handle: null, orchestrator: false, driftBefore: null, notify: () => {}, saved: null, deactivate: null };
     sessions.set(root, s);
   }
   return s;
@@ -115,6 +121,8 @@ export function engineFor(root: string): EngineHandle {
       const next = snapshotOf(store, config);
       for (const n of notices(prev, next, (f, t) => lastFailureKind(store, f, t))) s.notify(n, n.includes('需要你处理') ? 'warning' : 'info');
       prev = next;
+      // 没有进行中的流程与修复时自动退出调度模式
+      if (s.orchestrator && s.deactivate && !visibleFlows(store).length) void s.deactivate().then((m) => s.notify(m));
     } catch { /* 通知失败不影响流程 */ }
   });
   return s.handle;
@@ -138,12 +146,36 @@ export default function piFlow(pi: ExtensionAPI): void {
       store: () => s.handle?.store ?? new StateStore(root),
       roleSettings: () => loadRoleSettings(roleSettingsPath()),
       availableModels: () => availableModels(ctx).map((m) => m.ref),
-      activateOrchestrator: () => {
-        s.orchestrator = true;
-        const registered = new Set(pi.getAllTools().map((t) => t.name));
+      activateOrchestrator: async () => {
         const config = engineFor(root).config;
+        if (!s.orchestrator) s.saved = { model: ctx.model, thinking: pi.getThinkingLevel(), tools: pi.getActiveTools() };
+        s.orchestrator = true;
+        s.deactivate = async () => {
+          if (!s.orchestrator) return '当前不在调度模式。';
+          s.orchestrator = false;
+          const saved = s.saved;
+          s.saved = null;
+          if (!saved) return '已退出调度模式。';
+          pi.setActiveTools(saved.tools);
+          if (saved.model) await pi.setModel(saved.model);
+          pi.setThinkingLevel(saved.thinking);
+          return `已退出调度模式，恢复原来的模型${saved.model ? `（${saved.model.provider}/${saved.model.id}）` : ''}与工具。流程状态不变，/flow resume 可重新进入。`;
+        };
+        const registered = new Set(pi.getAllTools().map((t) => t.name));
         pi.setActiveTools(config.activeTools('orchestrator').filter((t) => registered.has(t)));
+        // 主会话切换到 /flow-config 中为 orchestrator 设置的模型与思考级别
+        const r = resolveRoleModel(config, loadRoleSettings(roleSettingsPath()), 'orchestrator');
+        if (r.model) {
+          const [provider, ...rest] = r.model.split('/');
+          const id = rest.join('/');
+          const m = ctx.modelRegistry.getAvailable().find((x) => x.provider.toLowerCase() === provider!.toLowerCase() && x.id === id)
+            ?? ctx.modelRegistry.find(provider!, id);
+          if (!m) report(ctx, `orchestrator 的模型 ${r.model} 不可用，保留当前模型。执行 /flow-config 检查。`, 'warning');
+          else if (!(await pi.setModel(m))) report(ctx, `无法切换到 ${r.model}（该 provider 没有配置凭据），保留当前模型。`, 'warning');
+        }
+        if (r.thinking) pi.setThinkingLevel(r.thinking);
       },
+      deactivateOrchestrator: () => (s.deactivate ? s.deactivate() : '当前不在调度模式。'),
       waitForIdle: !ctx.hasUI,
     };
   };
@@ -230,7 +262,7 @@ export default function piFlow(pi: ExtensionAPI): void {
 
   pi.registerCommand('flow', {
     description: 'pi-flow 管理：status、next、resume、approve、reject、unblock、gate、doctor、init',
-    getArgumentCompletions: (prefix) => ['status', 'next', 'resume', 'approve', 'reject', 'unblock', 'gate', 'abort', 'doctor', 'init', 'help']
+    getArgumentCompletions: (prefix) => ['status', 'next', 'resume', 'off', 'approve', 'reject', 'unblock', 'gate', 'abort', 'doctor', 'init', 'help']
       .filter((x) => x.startsWith(prefix.trim())).map((x) => ({ value: x, label: x })),
     handler: async (args, ctx) => {
       try {

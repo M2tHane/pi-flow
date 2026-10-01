@@ -29,8 +29,8 @@ test('调度模式：orchestrator 不能自己写代码，只能 dispatch/wait�
     // 必须异步：假 LLM 在本进程内，spawnSync 会阻塞事件循环导致死锁
     const r = await new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve) => {
       const c = spawn('pi', ['-p', '--no-session', '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-context-files',
-        '-e', provider, '-e', path.join(ROOT, 'src/pi-adapter/extension.ts'), '--model', 'fakellm/orch',
-        '/flow resume', '开始调度'], {
+        '-e', provider, '-e', path.join(ROOT, 'src/pi-adapter/extension.ts'), '--model', 'fakellm/plain',
+        '/flow resume', '开始调度', '/flow off', '你好'], {
         cwd: p.dir, stdio: ['ignore', 'pipe', 'pipe'],
         env: { ...process.env, PI_CODING_AGENT_DIR: agentDir, FAKE_LLM_URL: llm.url, FAKE_LLM_SCRIPTS: SCRIPTS, PI_FLOW_EXTRA_EXTENSIONS: provider },
       });
@@ -51,7 +51,15 @@ test('调度模式：orchestrator 不能自己写代码，只能 dispatch/wait�
     assert.deepEqual(orchViolations.map((e) => [e.data?.['tool'], e.data?.['rule']]), [['read', 'read_paths']]);
     assert.match(orchViolations[0]!.reason ?? '', /你是调度者，不能直接修改代码。请调用 flow_dispatch\(T-001\)/);
 
-    const reqs = readFileSync(LOG, 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((x) => x.model === 'orch');
+    const all = readFileSync(LOG, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    // 进入调度模式后主会话切到 /flow-config 中 orchestrator 的模型；/flow off 后恢复原模型与工具
+    const mainReqs = all.filter((x) => x.model === 'orch' || x.model === 'plain');
+    assert.equal(mainReqs[0].model, 'orch', '调度模式使用 orchestrator 的模型');
+    const last = mainReqs.at(-1);
+    assert.equal(last.model, 'plain', '/flow off 后恢复原模型');
+    assert.ok(['read', 'bash', 'edit', 'write'].every((t) => last.tools.includes(t)), `恢复原工具：${last.tools}`);
+    assert.match(r.stdout + r.stderr, /已退出调度模式，恢复原来的模型（fakellm\/plain）/);
+    const reqs = all.filter((x) => x.model === 'orch');
     assert.match(JSON.stringify(reqs[1].last), /Tool write not found/);
     // 只启用了 orchestrator 的工具
     assert.deepEqual([...reqs[0].tools].sort(), ['flow_dispatch', 'flow_status', 'flow_wait', 'read']);

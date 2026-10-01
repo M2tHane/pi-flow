@@ -20,6 +20,8 @@ declare module '@earendil-works/pi-coding-agent' {
     mode: 'tui' | 'rpc' | 'json' | 'print';
     cwd: string;
     modelRegistry: ModelRegistry;
+    /** 当前模型（可能未设置） */
+    model: PiModel | undefined;
     shutdown(): void;
   }
   export interface TextContent { type: 'text'; text: string }
@@ -52,6 +54,11 @@ declare module '@earendil-works/pi-coding-agent' {
     getAllTools(): { name: string }[];
     getActiveTools(): string[];
     setActiveTools(names: string[]): void;
+    /** 设置本会话模型（不改默认配置）；该 provider 没有配置凭据时返回 false */
+    setModel(model: PiModel): Promise<boolean>;
+    getThinkingLevel(): ThinkingLevel;
+    /** 设置本会话思考级别（按模型能力收窄） */
+    setThinkingLevel(level: ThinkingLevel): void;
     on(event: 'session_start' | 'session_shutdown' | 'agent_end', handler: (event: unknown, ctx: ExtensionContext) => unknown): () => void;
     on(event: 'before_agent_start', handler: (event: BeforeAgentStartEvent, ctx: ExtensionContext) => unknown): () => void;
     on(event: 'tool_call', handler: (event: ToolCallEvent, ctx: ExtensionContext) => Promise<ToolCallEventResult | void> | ToolCallEventResult | void): () => void;
