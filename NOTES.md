@@ -180,6 +180,12 @@
     - 删除提示模板 `/feature-kickoff`、`/fix-brief`，已被访谈取代。
 65. **`/flow answer`**：阻塞任务的问题由用户在输入框中亲手作答（`ctx.ui.input`），不经模型转述，避免主会话模型自问自答绕过"只有人能解除阻塞"。无界面时提示用 `/flow unblock <任务> "<回答>"`。状态视图中阻塞项的建议命令改为 `/flow answer <任务>`。
 
+66. **规则与命令草案**：S1/F1 的 architect 针对选定技术栈在 `docs/rules-draft/` 写草案。
+    - `<名称>.md` 与 `rules/` 同名表示替换，新名字表示新增；`commands.yaml` 列出要改的命令。
+    - 草案随文档合入集成分支。用户批准 S1/F1 时，若有草案就弹出选择（全部应用、逐个选择、暂不应用），也可以随时用 `/flow rules apply`；无界面时只提示，不自动应用。
+    - 由**程序**写入主工作区的 `rules/` 与 `workflow.yaml` 并单独提交：`workflow.yaml` 用 yaml 文档 API 修改以保留注释，修改后整体校验，不通过则拒绝；运行中引擎的命令配置同步更新。
+    - "规则只有用户能改"保持成立：agent 只能写草案，应用要用户选择。规则变化会让提示缓存失效一次，输出中会提醒。
+
 ## M8 设计要点
 
 - 交付物：
@@ -274,4 +280,5 @@
 ## 缓存提醒
 
 - 2026-10-01（M8）：角色提示（scout、researcher、architect）变更，新增技能注入；升级后首次派发时提示缓存失效一次。
+- 2026-10-01：新增 `agents/interviewer.md`（只用于主会话）；`agents/architect.md` 与 `skills/design-contract` 增加规则草案说明，architect 子进程的提示缓存失效一次。
 - 以后修改 `agents/`、`rules/`、`skills/` 时，在此追加一条。

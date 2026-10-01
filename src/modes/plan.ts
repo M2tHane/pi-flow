@@ -38,6 +38,7 @@ export function designTasks(mode: FlowMode, stage: string, description: string):
         '重大技术选型各写一条 ADR（docs/adr/），给出对比与建议，不替用户拍板',
         'docs/contracts/ 中有数据模型 schema 与 API 契约（批准后只读）',
         '经 flow_propose_tasks 提交覆盖 S2 至 S4 的任务 DAG：先 test 后 impl；硬依赖写 reason；软依赖配 integration 任务',
+        '针对选定的技术栈，在 docs/rules-draft/ 写规则草案（与 rules/ 同名表示替换）；工具链与 workflow.yaml 的命令不符时写 docs/rules-draft/commands.yaml',
       ] }];
   }
   if (mode === 'feature' && stage === 'F0') {
@@ -55,6 +56,7 @@ export function designTasks(mode: FlowMode, stage: string, description: string):
         '用 codegraph 做影响面分析，结果写入功能说明的"受影响模块"',
         '复用现有架构与契约；需要改契约时先写 ADR',
         '经 flow_propose_tasks 提交本功能的任务 DAG（S3、S4）：先 test 后 impl；S4 包含新功能的验收测试',
+        '本功能引入新的约定时，在 docs/rules-draft/ 写规则草案（可选）',
       ] }];
   }
   return [];

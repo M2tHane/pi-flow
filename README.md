@@ -63,7 +63,7 @@ pi install /path/to/pi-flow
 | 阶段 | 内容 | 闸门 |
 |---|---|---|
 | S0 需求 | architect 依据访谈摘要写 `docs/PRD.md`。仍有疑问时任务转为阻塞并提一个问题，你用 `/flow answer` 回答 | **你批准**（或 `/flow reject "<意见>"` 打回修订） |
-| S1 架构 | architect 写 ARCHITECTURE、ADR、契约，并提交任务 DAG（显示任务数、关键路径、并行宽度、硬依赖占比） | **你批准** + typecheck。批准后契约变为只读，任务正式创建 |
+| S1 架构 | architect 写 ARCHITECTURE、ADR、契约，提交任务 DAG（显示任务数、关键路径、并行宽度、硬依赖占比），并针对选定的技术栈写规则与命令草案 | **你批准** + typecheck。批准后契约变为只读，任务正式创建；草案由你选择是否应用到 `rules/` 与 `workflow.yaml` |
 | S2 基础设施 | 脚手架、依赖、迁移框架 | install、typecheck、lint |
 | S3 切片 | 先验收测试后实现；软依赖并行，integration 任务联调 | 全部任务完成 + test |
 | S4 集成 | 端到端测试 | e2e |
@@ -102,6 +102,7 @@ pi install /path/to/pi-flow
 | `/flow answer [<任务>]` | 回答阻塞任务提出的问题：弹出输入框由你作答，回答交给该任务后它继续 |
 | `/flow unblock <任务> ["<回答>"] [--attempts N]` | 解除阻塞，任务回到 ready（没有交互界面时用它回答） |
 | `/flow gate` | 闸门失败并修复后重跑闸门 |
+| `/flow rules [apply [all\|<草案文件>...]]` | 查看或应用架构师提出的规则与命令草案（`docs/rules-draft/`）；由程序写入 `rules/` 与 `workflow.yaml` 并提交 |
 | `/flow abort [--yes]` | 中止当前修复或流程（集成分支保留，主分支不受影响） |
 | `/flow resume` | 会话丢失后恢复，并进入调度模式 |
 | `/flow off` | 退出调度模式，恢复原来的模型与工具（流程状态不变） |

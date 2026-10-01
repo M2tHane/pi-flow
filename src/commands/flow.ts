@@ -16,6 +16,7 @@ import type { BriefFile } from '../core/schemas.ts';
 import { CHECKLISTS, CONFIRM_COMMAND, MODE_LABEL, activeBrief, cancelBrief, confirmBrief, markConfirmed, renderBrief, startBrief, type InterviewMode } from '../modes/interview.ts';
 import { costReport, formatCost } from '../core/cost.ts';
 import { renderStatus } from '../core/status-view.ts';
+import { applyDrafts, formatDrafts, listDrafts, type Draft } from '../core/rules-draft.ts';
 import { loadConfig } from '../core/config.ts';
 import { git } from '../core/git.ts';
 import type { StateStore as Store } from '../core/state-store.ts';
@@ -64,6 +65,7 @@ export const FLOW_USAGE = [
   '  /flow answer [<任务>]   回答阻塞任务提出的问题（弹出输入框），回答后任务继续',
   '  /flow unblock <任务> ["<回答>"] [--attempts N]   解除阻塞（无界面时用它回答）',
   '  /flow gate              闸门失败并修复后，重跑当前阶段闸门',
+  '  /flow rules [apply [all|<草案文件>...]]   查看或应用架构师提出的规则与命令草案（docs/rules-draft/）',
   '  /flow status --cost     成本统计：按流程、阶段、角色、模型、任务汇总 token 与耗时，返工最多的任务',
   '  /flow abort [--yes]     中止当前修复或流程（集成分支保留，主分支不受影响）',
 ].join('\n');
@@ -174,7 +176,9 @@ export async function runFlowCommand(args: string, env: CommandEnv): Promise<str
         const ok = await env.ui.select(`${msg}确认？`, ['确认合入并结束流程', '取消']);
         if (ok !== '确认合入并结束流程') return '已取消。';
       }
-      const text = await approveStage({ root: env.root, store: h.store, config: h.config }, flowId, option(argv, '--note'));
+      const stageBefore = h.store.readFlow(flowId).stage;
+      let text = await approveStage({ root: env.root, store: h.store, config: h.config }, flowId, option(argv, '--note'));
+      if (stageBefore === 'S1' || stageBefore === 'F1') text += `\n${await offerDrafts(env, h, flowId, option(argv, '--rules'))}`;
       if (h.store.readState().active_flow) {
         await h.engine.pump(flowId);
         const d = await h.engine.next(flowId);
@@ -214,6 +218,20 @@ export async function runFlowCommand(args: string, env: CommandEnv): Promise<str
       const flowId = activeFlowId(h.store);
       await h.engine.rerunGate(flowId);
       return renderStatus(h.store, h.config);
+    }
+    case 'rules': {
+      const h = env.engine();
+      const flowId = currentFlowId(h.store);
+      const drafts = listDrafts(env.root, h.store.readFlow(flowId).integration_branch);
+      if (argv[1] !== 'apply') {
+        return drafts.length
+          ? `架构师提出的规则与命令草案（${flowId}）：\n${formatDrafts(drafts)}\n应用：/flow rules apply all，或 /flow rules apply <草案文件>...`
+          : '没有待应用的规则或命令草案。';
+      }
+      const picks = argv.slice(2);
+      const chosen = !picks.length || picks.includes('all') ? drafts : drafts.filter((d) => picks.includes(d.file) || picks.includes(path.basename(d.file)));
+      if (!chosen.length) throw new Error(`没有匹配的草案。可用：${drafts.map((d) => d.file).join('、') || '无'}`);
+      return applyAndReport(env, h, flowId, chosen);
     }
     case 'answer':
       return runFlowAnswer(argv, env);
@@ -405,4 +423,28 @@ export async function runFlowAnswer(argv: string[], env: CommandEnv): Promise<st
   await h.engine.pump(pick!.flow);
   if (h.store.readFlow(pick!.flow).mode !== 'fix') await h.engine.next(pick!.flow);
   return `${text}${answer.trim() ? '回答已交给该任务。' : ''}`;
+}
+
+function applyAndReport(env: CommandEnv, h: EngineHandle, flowId: string, drafts: Draft[]): string {
+  const r = applyDrafts(env.root, drafts, flowId);
+  if (r.commands) Object.assign(h.config.raw.commands, r.commands);
+  return `已应用：${r.applied.join('、')}，并已提交。之后派发的任务使用新的规则${r.commands ? '与命令' : ''}（子进程提示的稳定前缀变化，模型服务的提示缓存会失效一次）。`;
+}
+
+/** S1/F1 批准后：有草案时请用户选择是否应用（无界面时给出命令提示，或按 --rules all|none） */
+async function offerDrafts(env: CommandEnv, h: EngineHandle, flowId: string, flag: string | undefined): Promise<string> {
+  const drafts = listDrafts(env.root, h.store.readFlow(flowId).integration_branch);
+  if (!drafts.length) return '';
+  const list = `架构师提出了规则与命令草案：\n${formatDrafts(drafts)}`;
+  if (flag === 'all') return `${list}\n${applyAndReport(env, h, flowId, drafts)}`;
+  if (flag === 'none') return `${list}\n未应用（之后可用 /flow rules apply）。`;
+  if (!env.ui) return `${list}\n应用：/flow rules apply all（或逐个指定文件）；暂不应用则忽略。`;
+  const pick = await env.ui.select(`${list}\n\n是否应用？`, ['全部应用', '逐个选择', '暂不应用']);
+  if (pick === '全部应用') return applyAndReport(env, h, flowId, drafts);
+  if (pick !== '逐个选择') return '规则草案暂未应用（之后可用 /flow rules apply）。';
+  const chosen: Draft[] = [];
+  for (const d of drafts) {
+    if ((await env.ui.select(`${d.file} → ${d.target}\n${d.summary}\n\n${d.content.slice(0, 1500)}`, ['应用', '跳过'])) === '应用') chosen.push(d);
+  }
+  return chosen.length ? applyAndReport(env, h, flowId, chosen) : '没有选择任何草案。';
 }
