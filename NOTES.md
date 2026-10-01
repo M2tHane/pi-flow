@@ -97,6 +97,25 @@
 26. **子进程加载第三方插件（serena、codegraph、web）尚未实现**：引擎预留 `extraExtensions(role)`，插件安装路径的解析放到 M6/M8；未加载的插件工具在 `--tools` 中被 Pi 忽略。
 27. **状态提交落在主工作区当前分支**（通常是 main），前缀 `flow-state:`。单个任务走完一轮约 13 个状态提交；如嫌多，后续可改为按阶段合并提交（需同时调整完整性校验）。
 
+28. **merge-fix 的挂起方式**：字面上"原任务保持 merging"会一直占着唯一的合并名额，merge-fix 永远进不了合并，形成死锁。改为原任务状态仍是 merging，但让出名额，记入合并队列的 `suspended`。"同一时间只有一个 merging"指正在执行的合并。
+29. **merge-fix 合入即代表原任务合入**：merge-fix 的 worktree 由程序准备，基线是集成分支 HEAD 加上原任务的改动，冲突文件里保留冲突标记；它的 writes 就是冲突文件。merge-fix 合入后，原任务随之转 done（沿 `merge_fix_for` 链递归处理）。merge-fix 最终 blocked 时，原任务也转 blocked。merge-fix 由程序直接派发，不等 `/flow next`，仍受并发与互斥约束。
+30. **合并步骤补充**：
+    - rebase 前先 squash 成单个提交，避免逐个提交重复冲突。
+    - 合并后检查文件是否残留冲突标记。
+    - 用 `update-ref` 带旧值快进集成分支（CAS）；期间集成分支被移动时，任务放回队首。
+    - rebase 成功后把 base_sha 更新为集成分支 HEAD，保证后续的 diff 检查正确。
+31. **只要冲突文件在 `docs/contracts/**`（不论是否已锁定）或受保护路径下，就转 blocked。**
+32. **受影响测试**：用 `codegraph affected -p <主工作区> -j <改动文件>`（codegraph 1.6.0 已核实）。结果为空、未索引或出错时，退回全量 `test`。注意：索引建在主工作区（main 分支），可能看不到集成分支上的新文件，这正是结果为空时退回全量的理由。每次合并后执行 `codegraph sync -q`。
+33. **有 `flow_submit` 的角色隐式拥有 `flow_claim`**：第 8 节模板对 architect、researcher、scout 漏写了它，而角色提示要求先 claim。
+34. **`<项目>.worktrees/.runs/<run>/` 中的提示文件目前不自动清理**，便于排查问题；M5 的 `/flow doctor` 负责清理。
+
+## M4 设计要点
+
+- `MergeQueue.processNext` 由引擎的 `pump` 驱动：合并名额空闲、且队首属于当前流程时处理它。进程内有互斥标志，存储层只有一个 `merging` 名额，双重保证同一时间只合并一个。
+- 结果分四类：`merged`（快进、清理、处理挂起链），`verify_failed`（`merging → in_progress`，attempts 加 1，worktree 已 rebase 到最新集成分支），`merge_fix`（挂起原任务、生成 merge-fix），`blocked`。
+- evidence：合并后验证的输出保存为 `merge-a<次数>-<命令>.log`。
+- 真实模型冒烟（2026-10-01）：两个任务并行实施，串行合并，集成分支上得到两个 squash 提交，worktree 已清理，总耗时 75 秒。
+
 ## M3 设计要点
 
 - **进程拓扑**：引擎运行在 orchestrator 所在的 pi 进程内；每个 run 是一个 `pi --mode json -p` 子进程（`PiLauncher`），工作目录为任务 worktree。子进程中的 `subagent.ts` 扩展直接读写主工作区 `.flow/`（`PI_FLOW_ROOT`），靠文件锁与 git 重试并发安全。

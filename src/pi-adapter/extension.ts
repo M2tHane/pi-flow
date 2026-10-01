@@ -15,6 +15,7 @@ import { StateStore } from '../core/state-store.ts';
 import { Engine } from '../core/dispatcher.ts';
 import { splitArgs } from '../commands/args.ts';
 import { PiLauncher } from './launcher.ts';
+import { affectedTests, codegraphSync } from '../core/codegraph.ts';
 import { DispatchParams, WaitParams, activeFlowId, flowDispatch, flowWait, statusText } from '../tools/orchestrator-tools.ts';
 
 const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -37,6 +38,7 @@ export function engineFor(root: string, onError?: (e: unknown) => void): { store
     packageAgentsDir: path.join(PACKAGE_ROOT, 'agents'),
     subagentExtension: SUBAGENT_EXTENSION,
     extraExtensions: () => extra,
+    mergeHooks: { affectedFiles: (_wt, changed) => affectedTests(root, changed), afterMerge: codegraphSync },
     ...(onError ? { onError } : {}),
   });
   const entry = { store, engine };

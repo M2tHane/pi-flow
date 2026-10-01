@@ -151,7 +151,7 @@ export interface CreateFlowInput {
 }
 
 export type TaskInput = Pick<TaskFile, 'id' | 'stage' | 'kind' | 'title' | 'role' | 'scopes' | 'depends_on' | 'inputs'
-  | 'writes' | 'acceptance' | 'verify'> & Partial<Pick<TaskFile, 'merge_fix_for' | 'conflict_files'>>;
+  | 'writes' | 'acceptance' | 'verify'> & Partial<Pick<TaskFile, 'merge_fix_for' | 'conflict_files' | 'worktree' | 'branch' | 'base_sha'>>;
 
 export interface IntegrityReport { ok: boolean; errors: string[] }
 
@@ -410,7 +410,7 @@ export class StateStore {
           id: t.id, stage: t.stage, kind: t.kind, title: t.title, role: t.role, scopes: [...t.scopes],
           depends_on: structuredClone(t.depends_on), inputs: [...t.inputs], writes: [...t.writes],
           acceptance: [...t.acceptance], verify: [...t.verify], status: 'pending', attempts: 0, violations: 0,
-          lease_expirations: 0, lease: null, impl_run: null, branch: null, worktree: null, base_sha: null,
+          lease_expirations: 0, lease: null, impl_run: null, branch: t.branch ?? null, worktree: t.worktree ?? null, base_sha: t.base_sha ?? null,
           blocked_reason: null, last_failure: null, created_by: actor, version: 1,
           ...(t.merge_fix_for ? { merge_fix_for: t.merge_fix_for } : {}),
           ...(t.conflict_files ? { conflict_files: [...t.conflict_files] } : {}),
@@ -441,7 +441,7 @@ export class StateStore {
         stage_active: flow.stage === task.stage && flow.stage_status === 'active',
         status_of: new Map(others.map((t) => [t.id, t.status])),
         running_count: others.filter((t) => t.status === 'in_progress').length,
-        conflicting_running: others.filter((t) => IN_FLIGHT.includes(t.status) && conflictsWith(t, task)).map((t) => t.id),
+        conflicting_running: others.filter((t) => IN_FLIGHT.includes(t.status) && t.id !== task.merge_fix_for && conflictsWith(t, task)).map((t) => t.id),
         merging_other: merging && merging !== me ? merging : null,
         queue_head: mq.queue[0] ? key(mq.queue[0]) === me : false,
         handoff_written: (tx.readText(handoffRel(flowId, taskId)) ?? '').trim().length > 0,
@@ -480,9 +480,36 @@ export class StateStore {
     } else if (from === 'merging' || from === 'queued_merge') {
       if (mq.merging && same(mq.merging)) mq.merging = null;
       mq.queue = mq.queue.filter((e) => !same(e));
+      if (mq.suspended?.some(same)) mq.suspended = mq.suspended.filter((e) => !same(e));
       changed = true;
     }
     if (changed) tx.putMergeQueue(mq);
+  }
+
+  /**
+   * 合并时出现 writes 内的文本冲突：原任务保持 merging 但让出合并名额，同一事务内新增 merge-fix 任务并记录 merge_conflict 事件。
+   */
+  async suspendMerge(flow: string, task: string, fix: TaskInput, conflicts: string[]): Promise<TaskFile> {
+    return this.transaction((tx) => {
+      const t = tx.readTask(flow, task);
+      if (t.status !== 'merging') throw new StateError(`任务 ${task} 不在 merging 状态，不能挂起合并`);
+      const mq = tx.readMergeQueue();
+      if (!mq.merging || mq.merging.flow !== flow || mq.merging.task !== task) throw new StateError(`${task} 不是当前正在合并的任务`);
+      if (tx.readJson(taskRel(flow, fix.id))) throw new StateError(`任务 ${flow}/${fix.id} 已存在`);
+      const m = tx.putTask(flow, {
+        id: fix.id, stage: fix.stage, kind: 'merge-fix', title: fix.title, role: fix.role, scopes: [...fix.scopes],
+        depends_on: [], inputs: [...fix.inputs], writes: [...fix.writes], acceptance: [...fix.acceptance], verify: [...fix.verify],
+        status: 'pending', attempts: 0, violations: 0, lease_expirations: 0, lease: null, impl_run: null,
+        branch: fix.branch ?? null, worktree: fix.worktree ?? null, base_sha: fix.base_sha ?? null, blocked_reason: null,
+        last_failure: null, merge_fix_for: task, conflict_files: [...conflicts], created_by: 'merge-queue', version: 1,
+      });
+      mq.merging = null;
+      mq.suspended = [...(mq.suspended ?? []), { flow, task, merge_fix: fix.id, since: tx.ts }];
+      tx.putMergeQueue(mq);
+      tx.event({ flow, task, actor: 'merge-queue', type: 'merge_conflict', reason: `文本冲突在 writes 内，生成 ${fix.id}`,
+        data: { conflicts, merge_fix: fix.id } });
+      return m;
+    });
   }
 
   private hasEvidence(tx: Tx, flow: string, task: string): boolean {

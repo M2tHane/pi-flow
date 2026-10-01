@@ -17,6 +17,7 @@ import { createTaskWorktree, worktreesRoot } from './worktree.ts';
 import { runVerify } from './verify-runner.ts';
 import { git } from './git.ts';
 import { RUN_ENV_KEYS } from '../tools/subagent-tools.ts';
+import { MergeQueue, type MergeHooks, type MergeResult } from './merge-queue.ts';
 
 export const REVIEWER_ROLE = 'reviewer';
 
@@ -42,6 +43,9 @@ export interface EngineDeps {
   verifyTimeoutMs?: number;
   /** 程序步骤出错时的回调（例如通知用户）；默认忽略 */
   onError?: (e: unknown) => void;
+  mergeHooks?: MergeHooks;
+  /** 每次合并处理完成的回调 */
+  onMerge?: (r: MergeResult) => void;
 }
 
 export interface Dispatched { run_id: string; task: string; role: string; model: string }
@@ -55,8 +59,11 @@ export class Engine {
   private readonly pending = new Set<Promise<unknown>>();
   private readonly listeners = new Set<() => void>();
 
+  private readonly mergeQueue: MergeQueue;
+
   constructor(deps: EngineDeps) {
     this.d = deps;
+    this.mergeQueue = new MergeQueue(deps.root, deps.store, deps.config, { ...deps.mergeHooks, ...(deps.verifyTimeoutMs ? { verifyTimeoutMs: deps.verifyTimeoutMs } : {}) });
   }
 
   private now(): Date { return this.d.now?.() ?? new Date(); }
@@ -99,7 +106,10 @@ export class Engine {
     };
 
     if (task.status === 'ready') {
-      const wt = createTaskWorktree(root, flowId, taskId, flow.integration_branch);
+      // merge-fix 任务的 worktree 由合并队列预先准备（含冲突标记），直接复用
+      const wt = task.worktree && task.branch && task.base_sha
+        ? { path: task.worktree, branch: task.branch, base_sha: task.base_sha }
+        : createTaskWorktree(root, flowId, taskId, flow.integration_branch);
       task = await store.transitionTask(flowId, taskId, {
         to: 'in_progress', trigger: 'dispatch', actor: 'dispatcher',
         patch: { lease, worktree: wt.path, branch: wt.branch, base_sha: wt.base_sha },
@@ -215,6 +225,34 @@ export class Engine {
             .then(() => { this.notify(); return this.pump(flowId); }));
         }
       } catch (e) { report(e); }
+    }
+    // merge-fix 是合并流程的一部分（原任务挂起等待它），由程序直接派发；仍受并发与互斥约束
+    try {
+      const flow = this.d.store.readFlow(flowId);
+      const tasks = this.d.store.listTasks(flowId);
+      const fixes = selectDispatchable(tasks, flow.stage, this.d.config.limits.max_parallel)
+        .filter((id) => tasks.find((t) => t.id === id)?.kind === 'merge-fix');
+      for (const id of fixes) await this.dispatch(flowId, id);
+    } catch (e) { report(e); }
+    // merge-fix 最终失败：挂起的原任务一并转 blocked（第 10 节 merging → blocked）
+    try {
+      for (const s of this.d.store.readMergeQueue().suspended ?? []) {
+        if (s.flow !== flowId) continue;
+        const fix = this.d.store.readTask(flowId, s.merge_fix);
+        if (fix.status === 'blocked') {
+          await this.d.store.transitionTask(flowId, s.task, { to: 'blocked', trigger: 'merge_blocked', actor: 'merge-queue',
+            facts: { reason: `merge-fix ${fix.id} 失败：${fix.blocked_reason ?? ''}` } });
+        }
+      }
+    } catch (e) { report(e); }
+    // 串行合并：合并名额空闲且队首就绪时处理
+    const mq = this.d.store.readMergeQueue();
+    if (!mq.merging && mq.queue[0]?.flow === flowId) {
+      this.track(this.mergeQueue.processNext(flowId).then((r) => {
+        if (r) this.d.onMerge?.(r);
+        this.notify();
+        return r ? this.pump(flowId) : undefined;
+      }));
     }
     this.notify();
   }

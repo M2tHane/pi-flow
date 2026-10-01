@@ -1,7 +1,6 @@
 // 真实 pi 子进程 + 假 LLM（OpenAI 兼容流式服务）：验证 pi-adapter（启动参数、子进程扩展、guard、flow_* 工具、token 统计）。
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { Engine } from '../../src/core/dispatcher.ts';
@@ -32,7 +31,7 @@ test('buildPiArgs：关闭扩展发现、guard 扩展最后、工具白名单、
   assert.ok(args.includes('--tools') && args[args.indexOf('--tools') + 1] === 'read,flow_claim');
 });
 
-test('真实 pi 子进程：实施 → 审查 → verify → queued_merge；越权被拦且计入违规；token 用量写入 run', { skip: !piAvailable && 'pi 不可用', timeout: 240_000 }, async () => {
+test('真实 pi 子进程：实施 → 审查 → verify → 合并；越权被拦且计入违规；token 用量写入 run', { skip: !piAvailable && 'pi 不可用', timeout: 240_000 }, async () => {
   const p = await setupProject({ tasks: [mkTask('T-001', { verify: ['typecheck', 'test'] })] });
   try {
     const errors: unknown[] = [];
@@ -49,8 +48,8 @@ test('真实 pi 子进程：实施 → 审查 → verify → queued_merge；越�
     await engine.idle();
     assert.deepEqual(errors, []);
     const t = p.store.readTask(p.flowId, 'T-001');
-    assert.equal(t.status, 'queued_merge', `${t.status} ${t.last_failure ?? ''} ${t.blocked_reason ?? ''}`);
-    assert.equal(readFileSync(path.join(t.worktree!, 'src/server/t-001/a.ts'), 'utf8'), 'export const a = 1;\n', '审查者的写入必须被拦下');
+    assert.equal(t.status, 'done', `${t.status} ${t.last_failure ?? ''} ${t.blocked_reason ?? ''}`);
+    assert.equal(p.git('show', `flow/${p.flowId}/integration:src/server/t-001/a.ts`), 'export const a = 1;', '审查者的写入必须被拦下');
 
     const violations = p.store.readEvents().filter((e) => e.type === 'violation');
     assert.deepEqual(violations.map((v) => [v.data?.['role'], v.data?.['rule']]), [['backend-engineer', 'write_paths'], ['reviewer', 'bash']]);

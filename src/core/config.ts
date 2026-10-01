@@ -185,6 +185,8 @@ export function parseConfig(source: string): FlowConfig {
     });
     // 偏离：所有 subagent 角色都隐式拥有 flow_block（第 13、16 节要求遇到歧义先 flow_block）
     if (name !== 'orchestrator' && !toolList.includes('flow_block')) toolList.push('flow_block');
+    // 偏离：有 flow_submit 的角色隐式拥有 flow_claim（角色提示要求先 claim；第 8 节模板对 architect、researcher、scout 漏写）
+    if (toolList.includes('flow_submit') && !toolList.includes('flow_claim')) toolList.push('flow_claim');
     const unique = [...new Set(toolList)];
     const tools = new Set(unique);
 

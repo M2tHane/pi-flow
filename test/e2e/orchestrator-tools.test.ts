@@ -37,10 +37,10 @@ test('flow_dispatch / flow_wait / flow_status', async () => {
 
     release();
     let last = '';
-    for (let i = 0; i < 20 && p.store.readTask(p.flowId, 'T-001').status !== 'queued_merge'; i++) {
+    for (let i = 0; i < 20 && p.store.readTask(p.flowId, 'T-001').status !== 'done'; i++) {
       last = (await flowWait(p.store, engine, { task_id: 'T-001', timeout_s: 10 })).text;
     }
-    assert.equal(p.store.readTask(p.flowId, 'T-001').status, 'queued_merge');
+    assert.equal(p.store.readTask(p.flowId, 'T-001').status, 'done');
     assert.match(last, /T-001：.* → /);
     assert.ok(!last.includes('PI_FLOW'), '摘要不应包含 run 环境');
     await engine.idle();

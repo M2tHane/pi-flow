@@ -34,7 +34,7 @@ function makeEngine(p: Project, scripts: (role: string, nth: number, a: FakeAgen
   return { engine, launcher, errors };
 }
 
-test('一个任务从 ready 走到 queued_merge；run 记录写入指标', async () => {
+test('一个任务从 ready 走到 queued_merge 并自动合入；run 记录写入指标', async () => {
   const p = await setupProject({ tasks: [task1()] });
   try {
     const { engine, launcher, errors } = makeEngine(p, async (role, _n, a) => (role === 'reviewer' ? approve(a) : implGood(a)));
@@ -44,8 +44,10 @@ test('一个任务从 ready 走到 queued_merge；run 记录写入指标', async
     await engine.idle();
     assert.deepEqual(errors, []);
     const t = p.store.readTask(p.flowId, 'T-001');
-    assert.equal(t.status, 'queued_merge', t.last_failure ?? '');
-    assert.deepEqual(p.store.readMergeQueue().queue.map((e) => e.task), ['T-001']);
+    assert.equal(t.status, 'done', t.last_failure ?? '');
+    assert.ok(p.store.readEvents().some((e) => e.task === 'T-001' && e.from === 'verifying' && e.to === 'queued_merge'));
+    assert.deepEqual(p.store.readMergeQueue().queue, []);
+    assert.equal(p.git('show', `flow/${p.flowId}/integration:src/server/t-001/a.ts`), 'export const a = 1;');
 
     // 子进程规格：模型、思考级别、工具白名单、guard 扩展最后、token 只在环境变量中
     const [impl, rev] = launcher.launched;
@@ -54,8 +56,8 @@ test('一个任务从 ready 走到 queued_merge；run 记录写入指标', async
     assert.ok(rev!.tools.includes('flow_approve') && !rev!.tools.includes('write'));
     assert.equal(impl!.extensions.at(-1), '/dev/null/subagent.ts');
     assert.ok(!impl!.prompt.includes(impl!.env['PI_FLOW_RUN_TOKEN']!));
-    assert.equal(impl!.cwd, t.worktree);
-    assert.match(rev!.prompt, new RegExp(t.base_sha!));
+    assert.match(impl!.cwd, /\.worktrees\/B-001-T-001$/);
+    assert.equal(rev!.cwd, impl!.cwd);
 
     const runs = p.store.listRuns();
     assert.deepEqual(runs.map((r) => [r.role, r.outcome]).sort(), [['backend-engineer', 'submitted'], ['reviewer', 'approved']]);
@@ -64,7 +66,7 @@ test('一个任务从 ready 走到 queued_merge；run 记录写入指标', async
       assert.equal(r.token_hash.length, 64);
     }
     const ev = readdirSync(path.join(p.dir, '.flow/flows', p.flowId, 'evidence/T-001'));
-    assert.deepEqual(ev.sort(), ['verify-a0-test.log', 'verify-a0-typecheck.log']);
+    assert.deepEqual(ev.sort(), ['merge-a0-test.log', 'merge-a0-typecheck.log', 'verify-a0-test.log', 'verify-a0-typecheck.log']);
     assert.match(p.store.readHandoff(p.flowId, 'T-001'), /提交说明：实现 a[\s\S]*审查通过/);
     // 主工作区没有被实施角色改动
     assert.ok(!existsSync(path.join(p.dir, 'src/server/t-001/a.ts')));
@@ -93,7 +95,7 @@ test('无 token 或错 token 的提交被拒；审查者不能用实施者的身
     });
     await engine.next(p.flowId);
     await engine.idle();
-    assert.equal(p.store.readTask(p.flowId, 'T-001').status, 'queued_merge');
+    assert.equal(p.store.readTask(p.flowId, 'T-001').status, 'done');
   } finally { p.cleanup(); }
 });
 
@@ -120,7 +122,7 @@ test('diff 越界被拒；还原后再提交通过', async () => {
     await engine.idle();
     assert.match(rejected, /越出任务 writes：src\/web\/x\.ts/);
     assert.match(rejected, /git rm/);
-    assert.equal(p.store.readTask(p.flowId, 'T-001').status, 'queued_merge');
+    assert.equal(p.store.readTask(p.flowId, 'T-001').status, 'done');
   } finally { p.cleanup(); }
 });
 
@@ -136,7 +138,7 @@ test('verify 失败回到 in_progress，程序自动重新派发，带上失败�
     await engine.next(p.flowId);
     await engine.idle();
     const t = p.store.readTask(p.flowId, 'T-001');
-    assert.equal(t.status, 'queued_merge');
+    assert.equal(t.status, 'done');
     assert.equal(t.attempts, 1);
     assert.equal(prompts.length, 2);
     assert.match(prompts[1]!, /上次未通过的原因[\s\S]*test 退出码 1/);
@@ -178,7 +180,7 @@ test('审查打回：带位置、问题、期望修改；实施者收到意见�
     });
     await engine.next(p.flowId);
     await engine.idle();
-    assert.equal(p.store.readTask(p.flowId, 'T-001').status, 'queued_merge');
+    assert.equal(p.store.readTask(p.flowId, 'T-001').status, 'done');
     assert.match(prompts[1]!, /src\/server\/t-001\/a\.ts:1：缺少校验；期望：参数非法时返回 422/);
   } finally { p.cleanup(); }
 });
@@ -194,7 +196,7 @@ test('子进程未提交就退出：计一次失败并重新派发', async () =>
     await engine.next(p.flowId);
     await engine.idle();
     const t = p.store.readTask(p.flowId, 'T-001');
-    assert.equal(t.status, 'queued_merge');
+    assert.equal(t.status, 'done');
     assert.equal(t.attempts, 1);
     const failed = p.store.listRuns().find((r) => r.outcome === 'failed');
     assert.ok(failed);

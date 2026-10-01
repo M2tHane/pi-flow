@@ -27,7 +27,7 @@ export interface Project {
   cleanup: () => void;
 }
 
-export async function setupProject(opts: { yaml?: string; tasks?: TaskInput[]; now?: () => Date } = {}): Promise<Project> {
+export async function setupProject(opts: { yaml?: string; tasks?: TaskInput[]; now?: () => Date; files?: Record<string, string> } = {}): Promise<Project> {
   const repo = tmpRepo();
   const yaml = opts.yaml ?? PROJECT_YAML;
   writeFileSync(path.join(repo.dir, 'workflow.yaml'), yaml);
@@ -35,6 +35,10 @@ export async function setupProject(opts: { yaml?: string; tasks?: TaskInput[]; n
   writeFileSync(path.join(repo.dir, 'rules/global.md'), '- 完成定义：verify 全绿');
   writeFileSync(path.join(repo.dir, 'rules/backend.md'), '- handler 内不写业务逻辑');
   writeFileSync(path.join(repo.dir, 'README.md'), 'demo');
+  for (const [rel, content] of Object.entries(opts.files ?? {})) {
+    mkdirSync(path.dirname(path.join(repo.dir, rel)), { recursive: true });
+    writeFileSync(path.join(repo.dir, rel), content);
+  }
   repo.git('add', '.');
   repo.git('commit', '-q', '-m', 'init');
   const config = parseConfig(yaml);

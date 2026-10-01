@@ -157,6 +157,9 @@ export const MergeQueueFile = Type.Object({
   queue: Type.Array(MergeQueueEntry),
   merging: Nullable(Type.Object({ flow: Type.String(), task: TaskId, started_at: IsoTime },
     { additionalProperties: false })),
+  // 文本冲突在 writes 内：原任务保持 merging 但让出合并名额，等待 merge-fix 任务（偏离，见 NOTES）
+  suspended: Type.Optional(Type.Array(Type.Object({ flow: Type.String(), task: TaskId, merge_fix: TaskId, since: IsoTime },
+    { additionalProperties: false }))),
   version: Type.Integer({ minimum: 1 }),
 }, { additionalProperties: false });
 export type MergeQueueFile = Static<typeof MergeQueueFile>;

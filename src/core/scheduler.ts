@@ -13,7 +13,8 @@ export function selectDispatchable(tasks: readonly TaskFile[], stage: string, ma
   const picked: TaskFile[] = [];
   for (const t of ready) {
     if (capacity <= 0) break;
-    if (inflight.some((x) => conflictsWith(x, t)) || picked.some((x) => conflictsWith(x, t))) continue;
+    // merge-fix 任务不与它所修复的（挂起中的）原任务互斥
+    if (inflight.some((x) => x.id !== t.merge_fix_for && conflictsWith(x, t)) || picked.some((x) => conflictsWith(x, t))) continue;
     picked.push(t);
     capacity--;
   }
