@@ -103,6 +103,50 @@ test('语义冲突：writes 不重叠、各自 verify 通过，后合并者在�
   } finally { p.cleanup(); }
 });
 
+test('先行验收测试：确认失败后不单独合入；承载者从测试分支开工，合并后验证失败重新提交时测试不计入其 diff，最终两者一并快进', async () => {
+  const accept = mkTask('T-001', { kind: 'test', role: 'test-engineer', scopes: ['acceptance'], writes: ['tests/acceptance/a/**'], verify: ['test'] });
+  const p = await setupProject({
+    // 验收测试存在而实现（ok.ts）缺失时失败；集成分支上出现 break.ts 后还需要 fix.ts
+    yaml: withTest('[ ! -f tests/acceptance/a/a.test.ts ] || [ -f src/server/t-002/ok.ts ] && { [ ! -f src/server/x/break.ts ] || [ -f src/server/t-002/fix.ts ]; }'),
+    tasks: [accept, mkTask('T-002', { deps: [{ task: 'T-001', type: 'hard', reason: '先有验收测试' }], verify: ['test'] })],
+  });
+  try {
+    const settings = { version: 1 as const, roles: { 'backend-engineer': { model: 'f/m' }, 'test-engineer': { model: 'f/t' }, reviewer: { model: 'f/r' } } };
+    const { engine, merges, errors } = makeEngine(p, async (role, nth, a) => {
+      if (role === 'reviewer') return approve(a);
+      if (a.env.task === 'T-001') return implement(a, { 'tests/acceptance/a/a.test.ts': 'expect(ok)\n' });
+      if (nth === 1) {
+        // 基线就是验收测试分支末端：测试文件已在 worktree 中
+        assert.ok((await a.call('read', { path: 'tests/acceptance/a/a.test.ts' })).ok);
+        // 同时集成分支被别处推进：合并后验证会失败
+        commitToBranch(p.dir, `flow/${p.flowId}/integration`, { 'src/server/x/break.ts': 'x\n' }, 'other');
+        return implement(a, { 'src/server/t-002/ok.ts': 'ok\n' });
+      }
+      return implement(a, { 'src/server/t-002/fix.ts': 'fix\n' });
+    }, settings);
+    await engine.next(p.flowId);
+    await engine.idle();
+    assert.equal(p.store.readTask(p.flowId, 'T-002').status, 'ready');
+    await engine.next(p.flowId);
+    await engine.idle();
+    assert.deepEqual(errors, []);
+    const t1 = p.store.readTask(p.flowId, 'T-001');
+    const t2 = p.store.readTask(p.flowId, 'T-002');
+    assert.equal(t2.status, 'done', `${t2.status} ${t2.last_failure ?? ''}`);
+    assert.ok(p.store.readEvents().some((e) => e.task === 'T-001' && e.trigger === 'repro_confirmed'));
+    assert.ok(!merges.some((m) => m.task === 'T-001'), '验收测试不单独合入');
+    const vf = merges.find((m) => m.kind === 'verify_failed' && m.task === 'T-002');
+    assert.ok(vf, JSON.stringify(merges));
+    assert.ok(!p.store.readEvents().some((e) => e.task === 'T-002' && e.trigger === 'review_reject'), '重新提交没有因测试文件越界被拒');
+    const log = p.git('log', '--format=%s', `flow/${p.flowId}/integration`).split('\n');
+    assert.match(log[0]!, /\/T-002\]/, log.join('\n'));
+    assert.match(log[1]!, /\/T-001\]/, log.join('\n'));
+    assert.equal(log[2], 'other');
+    assert.ok(!existsSync(t1.worktree ?? '/nonexistent'), '验收测试的 worktree 随承载者合入后清理');
+    assert.equal(p.git('branch', '--list', `flow/${p.flowId}/T-001`), '');
+  } finally { p.cleanup(); }
+});
+
 function readdirEvidence(dir: string, flow: string, task: string): string[] {
   return readdirSync(path.join(dir, '.flow/flows', flow, 'evidence', task));
 }

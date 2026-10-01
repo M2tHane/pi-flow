@@ -57,7 +57,7 @@ async function fakeBuild(): Promise<void> {
     writeWorkflowCommands(dir, { install: 'true', typecheck: 'true', lint: 'true', test: 'node --test', test_affected: 'node --test {files}', e2e: 'node --test' });
 
     step('/flow-build：创建流程，architect 撰写 PRD');
-    await pi(dir, ['/flow-build "做一个待办应用"'], env, extra);
+    await pi(dir, ['/flow-build --direct "做一个待办应用"'], env, extra);
     const store = new StateStore(dir);
     for (let i = 0; i < 20 && store.readState().active_flow; i++) {
       const f = store.readFlow(store.readState().active_flow!);
@@ -72,7 +72,7 @@ async function fakeBuild(): Promise<void> {
     step('结果');
     console.log(sh(dir, 'git', ['log', '--oneline', '--first-parent', 'main']).split('\n').filter((l) => !l.includes('flow-state:')).join('\n'));
     console.log(`\nmain 上的实现：\n${sh(dir, 'git', ['show', 'main:src/server/todo/index.mjs'])}`);
-    console.log(`\n测试：${sh(dir, 'node', ['--test']).split('\n').filter((l) => /^# (pass|fail)/.test(l)).join('，')}`);
+    console.log(`\n测试：${sh(dir, 'node', ['--test', '--test-reporter=tap']).split('\n').filter((l) => /^# (pass|fail)/.test(l)).join('，')}`);
     console.log(`\n${formatRow(costReport(store).total)}`);
     const integrity = await store.verifyIntegrity();
     console.log(`完整性校验：${integrity.ok ? '通过' : integrity.errors.join('；')}`);

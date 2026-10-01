@@ -11,7 +11,7 @@ import { hashToken } from './state-machine.ts';
 import { resolveRoleModel } from './role-settings.ts';
 import { loadAgent } from './agents.ts';
 import { assemblePrompt, ruleFilesFor } from './prompt-assembler.ts';
-import { computeReady } from './dag.ts';
+import { carriedTestOf, computeReady, isLeadingTest } from './dag.ts';
 import { selectDispatchable } from './scheduler.ts';
 import { createTaskWorktree, ensureLocalExcludes, worktreesRoot } from './worktree.ts';
 import { runVerify } from './verify-runner.ts';
@@ -115,10 +115,13 @@ export class Engine {
     };
 
     if (task.status === 'ready') {
-      // merge-fix 任务的 worktree 由合并队列预先准备（含冲突标记），直接复用
+      // merge-fix 任务的 worktree 由合并队列预先准备（含冲突标记），直接复用；
+      // 承载先行验收测试的任务从测试分支末端开工，合并时把测试一并带入集成分支
+      const carried = carriedTestOf(task, store.listTasks(flowId));
+      if (carried && (carried.status !== 'done' || !carried.branch)) throw new DispatchError(`任务 ${taskId} 承载的验收测试 ${carried.id} 尚未确认（${carried.status}），不能开工`);
       const wt = task.worktree && task.branch && task.base_sha
         ? { path: task.worktree, branch: task.branch, base_sha: task.base_sha }
-        : createTaskWorktree(root, flowId, taskId, flow.integration_branch);
+        : createTaskWorktree(root, flowId, taskId, flow.integration_branch, carried?.branch ?? flow.integration_branch);
       task = await store.transitionTask(flowId, taskId, {
         to: 'in_progress', trigger: 'dispatch', actor: 'dispatcher',
         patch: { lease, worktree: wt.path, branch: wt.branch, base_sha: wt.base_sha },
@@ -178,8 +181,12 @@ export class Engine {
       const f = this.d.packageSkillsDir ? path.join(this.d.packageSkillsDir, n, 'SKILL.md') : '';
       return f && existsSync(f) ? { path: `skills/${n}`, content: readFileSync(f, 'utf8').replace(/^---[\s\S]*?---\s*/, '').trim() } : null;
     }).filter((x): x is { path: string; content: string } => !!x);
+    const tasks = store.listTasks(flowId);
+    const carried = carriedTestOf(task, tasks);
     const prompt = assemblePrompt({
       agent, rules, skills, task, flowId, handoff: store.readHandoff(flowId, task.id), mode, commands: config.commands,
+      ...(carried ? { carriedTest: { id: carried.id, title: carried.title, writes: carried.writes } } : {}),
+      ...(isLeadingTest(task, tasks) ? { leadingTest: true } : {}),
       ...(diffStat !== undefined ? { diffStat } : {}),
       ...(existingWork ? { existingWork } : {}),
     });
@@ -245,14 +252,17 @@ export class Engine {
     try {
       await this.promote(flowId);
     } catch (e) { report(e); }
-    for (const t of this.d.store.listTasks(flowId)) {
-      if (t.lease) continue;
+    for (const listed of this.d.store.listTasks(flowId)) {
       try {
+        // 循环中有 await，列表可能已过时（例如 verify 已结束并清除了 verifying 标记）：以最新状态为准
+        const t = this.d.store.readTask(flowId, listed.id);
+        if (t.lease) continue;
         if (t.status === 'review' || t.status === 'in_progress') {
           await this.dispatch(flowId, t.id);
         } else if (t.status === 'verifying' && !this.verifying.has(t.id)) {
           this.verifying.add(t.id);
-          const expectFail = t.kind === 'test' && this.d.store.readFlow(flowId).mode === 'fix';
+          // 测试必须先失败：fix 的复现测试，build/feature 的先行验收测试
+          const expectFail = t.kind === 'test' && (this.d.store.readFlow(flowId).mode === 'fix' || isLeadingTest(t, this.d.store.listTasks(flowId)));
           this.track(runVerify(this.d.store, this.d.config, flowId, t, this.d.verifyTimeoutMs, { expectFail })
             .finally(() => this.verifying.delete(t.id))
             .then(() => { this.notify(); return this.pump(flowId); }));

@@ -6,7 +6,7 @@ import type { FlowConfig } from '../core/config.ts';
 import { StateError, type StateStore } from '../core/state-store.ts';
 import { hashToken } from '../core/state-machine.ts';
 import { ProposedTask, type TaskFile } from '../core/schemas.ts';
-import { validateDag, dagReport, formatDagReport } from '../core/dag.ts';
+import { validateDag, dagReport, formatDagReport, normalizeLeadingTests } from '../core/dag.ts';
 import { changedFiles, snapshot } from '../core/worktree.ts';
 
 export const NOTE_LIMIT = 4000;
@@ -202,12 +202,16 @@ export async function flowProposeTasks(ctx: ToolContext, p: Static<typeof Propos
     if (x.kind === 'merge-fix' || x.kind === 'review-fix') errors.push(`${x.id}：kind ${x.kind} 由程序生成，不能提交`);
     if (x.role === 'orchestrator' || x.role === 'reviewer') errors.push(`${x.id}：角色 ${x.role} 不能承担任务`);
   }
-  const v = validateDag(p.tasks.map((x) => ({ ...x })), ctx.config.dagCatalog());
+  // 先行验收测试：一个测试由一个承载者带入集成分支，其余依赖方改为依赖承载者
+  const lead = normalizeLeadingTests(p.tasks);
+  errors.push(...lead.errors);
+  const v = validateDag(lead.tasks, ctx.config.dagCatalog());
   errors.push(...v.errors);
   if (errors.length) throw new FlowToolError(`任务列表校验失败，未保存：\n${errors.map((e) => `- ${e}`).join('\n')}\n建议：逐条修正后重新调用 flow_propose_tasks。`);
-  const report = dagReport(p.tasks, v.warnings);
-  await ctx.store.saveProposal(ctx.env.flow, { stage: t.stage, run: ctx.env.run, created_at: (ctx.now?.() ?? new Date()).toISOString(), tasks: p.tasks, report }, actor(ctx));
-  return { text: `任务列表已保存（用户批准本阶段闸门后生效，可在批准前重新提交覆盖）。\n${formatDagReport(report)}`, details: { ...report } };
+  const report = dagReport(lead.tasks, v.warnings);
+  await ctx.store.saveProposal(ctx.env.flow, { stage: t.stage, run: ctx.env.run, created_at: (ctx.now?.() ?? new Date()).toISOString(), tasks: lead.tasks, report }, actor(ctx));
+  const adjusted = lead.notes.length ? `\n程序已按"先行验收测试由一个实现任务承载"调整依赖：\n${lead.notes.map((n) => `- ${n}`).join('\n')}` : '';
+  return { text: `任务列表已保存（用户批准本阶段闸门后生效，可在批准前重新提交覆盖）。\n${formatDagReport(report)}${adjusted}`, details: { ...report } };
 }
 
 export const SUBAGENT_TOOLS = {

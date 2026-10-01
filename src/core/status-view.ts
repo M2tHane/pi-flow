@@ -3,6 +3,7 @@
 import type { FlowConfig } from './config.ts';
 import type { StateStore } from './state-store.ts';
 import { isFinished } from './state-store.ts';
+import { isLeadingTest } from './dag.ts';
 import { PHASES, type FlowFile, type Phase, type TaskFile } from './schemas.ts';
 
 export type PhaseOrDone = Phase | 'done';
@@ -86,10 +87,11 @@ export function lastFailureKind(store: StateStore, flowId: string, taskId: strin
   return ev ? FAILURE_KIND[ev.trigger!]! : null;
 }
 
-export function taskActivity(t: TaskFile, failureKind: string | null): string {
+/** expectFail：测试必须先失败（fix 的复现测试、先行验收测试） */
+export function taskActivity(t: TaskFile, failureKind: string | null, expectFail: 'repro' | 'leading' | null = null): string {
   const base = t.status === 'in_progress' ? (t.kind === 'analysis' ? (t.lease ? '定位中' : '等待重新派发') : t.lease ? '实现中' : '等待重新派发')
     : t.status === 'review' ? '审查中'
-      : t.status === 'verifying' ? (t.kind === 'test' ? '确认复现中' : '验证中')
+      : t.status === 'verifying' ? (expectFail === 'repro' ? '确认复现中' : expectFail === 'leading' ? '确认测试先失败' : '验证中')
         : t.status === 'queued_merge' || t.status === 'merging' ? '合入中'
           : t.status === 'ready' ? '待派发'
             : t.status === 'pending' ? '等待前置任务'
@@ -158,7 +160,8 @@ export function renderFlow(store: StateStore, config: FlowConfig, flow: FlowFile
   const active = tasks.filter((t) => INFLIGHT.has(t.status));
   lines.push('');
   lines.push(active.length
-    ? `正在进行：\n${active.map((t) => `- ${t.id} ${short(t.title, 40)}（${t.lease?.role ?? t.role}）${taskActivity(t, t.attempts ? lastFailureKind(store, flow.id, t.id) : null)}`).join('\n')}`
+    ? `正在进行：\n${active.map((t) => `- ${t.id} ${short(t.title, 40)}（${t.lease?.role ?? t.role}）${taskActivity(t, t.attempts ? lastFailureKind(store, flow.id, t.id) : null,
+      t.kind !== 'test' ? null : flow.mode === 'fix' ? 'repro' : isLeadingTest(t, tasks) ? 'leading' : null)}`).join('\n')}`
     : `正在进行：${flow.stage_status === 'awaiting_human' ? '无（等待你审批）' : flow.stage_status === 'awaiting_gate' ? '阶段检查中' : '无'}`);
   const blocked = tasks.filter((t) => t.status === 'blocked');
   lines.push(blocked.length ? `阻塞：${blocked.map((t) => t.id).join('、')}（见上方"需要你处理"）` : '阻塞：无');

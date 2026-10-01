@@ -12,6 +12,8 @@ import { mutexPairs } from '../../src/core/dag.ts';
 import type { RoleSettingsFile } from '../../src/core/schemas.ts';
 
 const ALL_TRUE = PROJECT_YAML.replace(/  test:      ".*"/, '  test:      "true"');
+/** 验收测试含 FAIL 标记且实现（src/server/todo）不存在时失败：模拟"实现之前必然失败"的真实测试 */
+const ACCEPT_TEST = PROJECT_YAML.replace(/  test:      ".*"/, '  test:      "! grep -rqs FAIL tests/acceptance || test -d src/server/todo"');
 const SETTINGS: RoleSettingsFile = { version: 1, roles: Object.fromEntries(
   ['architect', 'reviewer', 'backend-engineer', 'frontend-engineer', 'test-engineer', 'infra-engineer', 'db-engineer', 'ui-designer'].map((r) => [r, { model: 'fake/m' }])) };
 void ALL_FAKE;
@@ -32,7 +34,9 @@ function scripts(p: Project, proposal: (stage: string) => unknown[]) {
       const r = await a.call('flow_propose_tasks', { tasks: proposal(t.stage) });
       assert.ok(r.ok, r.text);
     } else {
-      assert.ok((await a.call('write', { path: fileFor(t.writes[0]!, t.id), content: `// ${t.title}\n` })).ok, t.writes[0]);
+      // 验收测试第一次写成"必然通过"（被程序打回），第二次才是实现前会失败的测试
+      const content = t.title === '待办验收测试' && t.attempts > 0 ? `// ${t.title}\n// FAIL until implemented\n` : `// ${t.title}\n`;
+      assert.ok((await a.call('write', { path: fileFor(t.writes[0]!, t.id), content })).ok, t.writes[0]);
     }
     await a.call('flow_note', { text: '完成' });
     const s = await a.call('flow_submit', { summary: t.title });
@@ -79,8 +83,8 @@ async function drive(p: Project, engine: ReturnType<typeof makeEngine>['engine']
   throw new Error('流程未在预期步数内结束');
 }
 
-test('build 模式全流程：闸门逐个人工批准，agent 不能批准；提案批准后才落为任务；互斥任务不并行；最终合入主分支', async () => {
-  const p = await setupProject({ yaml: ALL_TRUE });
+test('build 模式全流程：闸门逐个人工批准，agent 不能批准；提案批准后才落为任务；互斥任务不并行；验收测试先失败并随实现合入；最终合入主分支', async () => {
+  const p = await setupProject({ yaml: ACCEPT_TEST });
   try {
     // 夹具已建了一个 S3 流程，先中止它，换成完整的 build 流程
     await p.store.transitionStage(p.flowId, { to: 'aborted', trigger: 'abort', actor: 'human' });
@@ -124,6 +128,24 @@ test('build 模式全流程：闸门逐个人工批准，agent 不能批准；�
     assert.match(p.git('log', '--format=%s', 'main'), /^pi-flow: 合入 B-002 做一个待办应用$/m);
     assert.ok(existsSync(path.join(p.dir, 'src/server/todo/log.ts')) || p.git('show', 'main:src/server/todo/log.ts') !== undefined);
     assertMutexNeverParallel(p, flow.id, mutexPairs(tasks));
+    // 先行验收测试：第一次"必然通过"被打回，第二次确认失败后不单独合入，由实现任务一并带入
+    const accept = tasks.find((t) => t.title === '待办验收测试')!;
+    const acceptEv = p.store.readEvents().filter((e) => e.task === accept.id && e.type === 'transition');
+    const bounced = acceptEv.find((e) => e.trigger === 'verify_fail');
+    assert.match(bounced?.reason ?? '', /验收测试没有失败/);
+    assert.ok(acceptEv.some((e) => e.trigger === 'repro_confirmed'));
+    assert.ok(!acceptEv.some((e) => e.trigger === 'merge_done'), '验收测试不单独合入');
+    // 集成分支每次前进后的 HEAD 都不是红的：有验收测试就有实现；测试提交紧接着实现提交，一次快进
+    const integ = p.store.readFlow(flow.id).integration_branch;
+    const heads = p.store.readEvents().filter((e) => e.flow === flow.id && e.type === 'merge').map((e) => e.evidence!);
+    assert.ok(heads.length >= 6);
+    for (const sha of heads) {
+      const files = p.git('ls-tree', '-r', '--name-only', sha);
+      assert.ok(!/tests\/acceptance\/todo\//.test(files) || /src\/server\/todo\//.test(files), `集成分支在 ${sha} 有验收测试但没有实现`);
+    }
+    const log = p.git('log', '--format=%H %s', integ).trim().split('\n');
+    const iTest = log.findIndex((l) => l.includes(`/${accept.id}] 待办验收测试`));
+    assert.ok(iTest > 0 && log[iTest - 1]!.includes(`/${impl.id}] 待办 API`), log.join('\n'));
     assert.ok(mutexPairs(tasks).some(([a, b]) => [a, b].includes(tasks.find((t) => t.title === '待办 API 日志')!.id)), '测试数据中应有互斥对');
     assert.deepEqual((await p.store.verifyIntegrity()).errors, []);
   } finally { p.cleanup(); }

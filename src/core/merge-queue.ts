@@ -9,6 +9,7 @@ import type { TaskFile } from './schemas.ts';
 import { git, gitOk } from './git.ts';
 import { headSha, removeWorktree, taskBranch, worktreePath } from './worktree.ts';
 import { matchesAny, isProtected, CONTRACTS_PATH } from './paths.ts';
+import { carriedTestOf } from './dag.ts';
 import { evidenceText, runShell } from './verify-runner.ts';
 
 export interface MergeHooks {
@@ -64,13 +65,27 @@ export class MergeQueue {
       : t.kind === 'merge-fix' && t.merge_fix_for ? this.store.readTask(flowId, t.merge_fix_for).title + `（经 ${t.id} 解决合并冲突）` : t.title;
     const msgFor = t.kind === 'merge-fix' && t.merge_fix_for ? t.merge_fix_for : t.id;
 
-    // 1. squash：以与集成分支的分叉点为基准合成一个提交
+    // 1. squash：以与集成分支的分叉点为基准合成一个提交。
+    //    任务基线之下还有未合入的提交（承载的先行验收测试、fix 的复现测试）时合成两个提交：先测试、后实现，
+    //    rebase 后 base_sha 指向测试提交，测试文件不计入本任务的 diff（合并后验证失败重新提交时不会被判越界）。
+    //    merge-fix 的基线是程序准备的含冲突标记的提交，不单独成提交。
     const fork = git(wt, ['merge-base', 'HEAD', integ]).trim();
-    git(wt, ['reset', '-q', '--soft', fork]);
-    if (gitOk(wt, ['diff', '--cached', '--quiet'])) {
-      return this.blocked(flowId, t, '任务分支相对集成分支没有任何改动，无法合并');
+    const tree = (ref: string) => git(wt, ['rev-parse', `${ref}^{tree}`]).trim();
+    if (tree('HEAD') === tree(fork)) return this.blocked(flowId, t, '任务分支相对集成分支没有任何改动，无法合并');
+    const commitTree = (ref: string, parent: string, msg: string) =>
+      git(wt, ['commit-tree', `${ref}^{tree}`, '-p', parent, '-m', msg], { engineIdentity: true }).trim();
+    const msg = `[${flowId}/${msgFor}] ${label}`;
+    const squashed = commitTree('HEAD', fork, msg);
+    const base = t.base_sha;
+    const carries = t.kind !== 'merge-fix' && !!base && base !== fork && tree(base) !== tree(fork)
+      && gitOk(wt, ['merge-base', '--is-ancestor', fork, base]) && gitOk(wt, ['merge-base', '--is-ancestor', base, 'HEAD']);
+    if (carries) {
+      const test = carriedTestOf(t, this.store.listTasks(flowId));
+      const carried = commitTree(base, fork, test ? `[${flowId}/${test.id}] ${test.title}` : `[${flowId}/${msgFor}] 前置提交`);
+      git(wt, ['reset', '-q', '--soft', commitTree('HEAD', carried, msg)]);
+    } else {
+      git(wt, ['reset', '-q', '--soft', squashed]);
     }
-    git(wt, ['commit', '-q', '--no-verify', '-m', `[${flowId}/${msgFor}] ${label}`], { engineIdentity: true });
 
     // 2. rebase 到集成分支最新 HEAD
     const integHead = headSha(this.root, integ);
@@ -78,11 +93,11 @@ export class MergeQueue {
       git(wt, ['rebase', '-q', integHead], { engineIdentity: true, allowFail: true });
     } catch {
       const conflicts = git(wt, ['diff', '--name-only', '--diff-filter=U']).split('\n').filter(Boolean).sort();
-      const squashed = git(wt, ['rev-parse', 'REBASE_HEAD']).trim();
       git(wt, ['rebase', '--abort']);
       return this.conflict(flowId, t, conflicts, squashed, integHead);
     }
-    await this.store.updateTask(flowId, t.id, { base_sha: integHead }, { actor: 'merge-queue', type: 'note', reason: 'rebase 到集成分支', data: { base: integHead } });
+    const newBase = carries ? headSha(wt, 'HEAD~1') : integHead;
+    await this.store.updateTask(flowId, t.id, { base_sha: newBase }, { actor: 'merge-queue', type: 'note', reason: 'rebase 到集成分支', data: { base: newBase } });
 
     // 3. 合并后验证：不得残留冲突标记；typecheck + 受影响测试（拿不到时全量 test）
     const changed = git(wt, ['diff', '--name-only', '--no-renames', integHead, 'HEAD']).split('\n').filter(Boolean);
@@ -103,7 +118,7 @@ export class MergeQueue {
       const overlap = dirty.filter((f) => changed.includes(f));
       if (overlap.length) return this.blocked(flowId, t, `主工作区中这些文件有未提交的改动，无法合入：${overlap.join('、')}`);
       try {
-        git(this.root, ['cherry-pick', sha], { engineIdentity: true, allowFail: true });
+        git(this.root, ['cherry-pick', `${integHead}..${sha}`], { engineIdentity: true, allowFail: true });
       } catch {
         gitOk(this.root, ['cherry-pick', '--abort']);
         return this.blocked(flowId, t, `在主工作区应用改动时冲突，需要人工处理`);
@@ -124,9 +139,14 @@ export class MergeQueue {
     await this.store.recordEvent({ flow: flowId, task: t.id, actor: 'merge-queue', type: 'merge', evidence: sha,
       data: { integration_branch: integ, from: integHead, to: sha, files: changed.length } });
 
-    // 5. 清理；merge-fix 合入即代表原任务合入
+    // 5. 清理；merge-fix 合入即代表原任务合入；承载的先行验收测试已随之合入，回收它的 worktree
     removeWorktree(this.root, wt, t.branch ?? undefined);
     const finished = [t.id, ...(await this.finishSuspended(flowId, t, sha))];
+    const tasks = this.store.listTasks(flowId);
+    for (const id of finished) {
+      const test = carriedTestOf(tasks.find((x) => x.id === id)!, tasks);
+      if (test?.worktree) removeWorktree(this.root, test.worktree, test.branch ?? undefined);
+    }
     if (this.hooks.afterMerge) await this.hooks.afterMerge(this.root).catch(() => {});
     return { kind: 'merged', task: t.id, sha, finished };
   }

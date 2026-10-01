@@ -189,6 +189,23 @@
 67. **会话中断不计入失败预算**（修订第 36 条）：新增转移 `run_interrupted`（`in_progress → in_progress`、`review → review`），清空租约、保留 worktree，只增加任务的 `interruptions` 计数，不增加 attempts；连续中断达到 `MAX_INTERRUPTIONS = 5` 转 blocked。`resume` 处理"租约未过期但 run 已中断"以及审查中的任务时用它。租约真正过期仍按规格 attempts 加 1；同一会话内子进程自己异常退出（模型报错、连接失败）仍按 `run_failed` 计失败。
 68. **重新派发时告知已有改动**：实施任务的 worktree 相对 base_sha 有改动、或有未提交文件时，提示中加一节"工作区已有的改动"（`git diff --stat <base_sha>` 与 `git status`），说明这是之前运行留下的工作，要先检查再决定继续还是重写。subagent 的对话不恢复（子进程以 `--no-session` 运行）；是否改为持久化会话并用 `--session` 续跑，留待实测后再定。
 
+69. **先行验收测试必须先失败（build/feature，第二轮 A 项）**：
+    - 范围：kind=test 且有非 test 任务硬依赖它（`dag.ts` 的 `isLeadingTest`）。没有下游实现任务的测试（S4 端到端、回归）照常 verify 通过后合并。
+    - 审查通过后复用 fix 的 `repro_confirmed`：只运行 verify 中的测试类命令（test、test_affected、e2e；都没有时运行全部），**全部失败**才确认，确认后转 done、不进合并队列；有命令通过则按 verify_fail 打回，原因"验收测试没有失败"。typecheck、lint 不参与判断（实现之前它们未必失败）。fix 的复现测试 verify 只有 test，行为不变。
+    - 承载者（`carrierOf`）：非 test 硬依赖方中不（传递）依赖其他依赖方、编号最小的那个。`flow_propose_tasks` 提交时规范化（`normalizeLeadingTests`）：其余硬依赖该测试的任务改为硬依赖承载者，并在返回中列出调整；一个任务承载多个先行测试、先行测试没有 verify 均报错。
+    - 承载者的 worktree 从测试分支末端建立（`createTaskWorktree` 的 `from`），base_sha 即测试分支末端，测试文件不计入它的 diff；提示中说明"已在分支中的验收测试"，先行测试自己的提示说明"应当失败"。
+    - 合并：基线之下有未合入提交（承载的测试、fix 的复现测试）时，squash 成**两个提交**（先测试、后实现），一起 rebase、合并后验证，再一次快进；rebase 后 base_sha 指向 rebase 后的测试提交。修正了一个原有隐患：此前合并后验证失败、重新提交时，diff 会把测试文件算进来而被判越界（fix 模式同样受影响）。fix 在主工作区 cherry-pick 改为区间 `integHead..sha`，fix 日志的改动统计改用合并前后区间（排除 `.flow/`）。
+    - 承载者合入后回收测试任务的 worktree 与分支。
+    - 已知局限：承载者最终 blocked 时，测试也不会进入集成分支；测试因自身写错（而非实现缺失）而失败也会被确认，靠审查把关。
+70. **pump 循环以最新任务状态为准**：循环体中有 await，开头取得的任务列表可能过时；曾出现 verify 刚结束、标记已清除，又按旧状态对同一任务启动第二次 verify 的竞态（`merging -> queued_merge` 被拒）。现在每个任务处理前重新读取。
+
+## 第二轮优化设计要点
+
+- **A 先行验收测试先失败**（第 69、70 条）。验收：
+  - `test/e2e/modes.test.ts` build 全流程：验收测试第一次"必然通过"被打回（原因"验收测试没有失败"），第二次确认失败；不单独合入；集成分支每次前进后的 HEAD 都不出现"有验收测试没有实现"；测试提交紧接着实现提交。
+  - `test/e2e/merge-queue.test.ts`：承载者从测试分支开工，合并后验证失败后重新提交不被判越界，最终测试与实现一次快进，测试的 worktree 被回收。
+  - `scripts/demo.ts` 的演示脚本改为实现前会失败的验收测试（原脚本正是"实现缺失时跳过"的必然通过测试），并改用 `/flow-build --direct`（访谈模式上线后演示已无法直接开流程）。
+
 ## M8 设计要点
 
 - 交付物：
@@ -284,4 +301,5 @@
 
 - 2026-10-01（M8）：角色提示（scout、researcher、architect）变更，新增技能注入；升级后首次派发时提示缓存失效一次。
 - 2026-10-01：新增 `agents/interviewer.md`（只用于主会话）；`agents/architect.md` 与 `skills/design-contract` 增加规则草案说明，architect 子进程的提示缓存失效一次。
+- 2026-10-01（第二轮 A）：`agents/test-engineer.md`、`skills/decompose-dag`、`rules/testing.md` 增加"先行验收测试必须先失败"的说明；test-engineer 与 architect（S1/F1）子进程提示缓存失效一次。新项目 `/flow init` 时复制的 `rules/testing.md` 随之变化，已有项目的 `rules/` 不受影响。
 - 以后修改 `agents/`、`rules/`、`skills/` 时，在此追加一条。

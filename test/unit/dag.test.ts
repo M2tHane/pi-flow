@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { validateDag, computeReady, dagStats, mutexPairs, conflictsWith, remainingPath, type DagCatalog } from '../../src/core/dag.ts';
+import { validateDag, computeReady, dagStats, mutexPairs, conflictsWith, remainingPath, type DagCatalog,
+  isLeadingTest, carrierOf, carriedTestOf, normalizeLeadingTests } from '../../src/core/dag.ts';
 import { mkTask, hard, soft } from '../helpers/tasks.ts';
 
 const catalog: DagCatalog = {
@@ -125,4 +126,33 @@ test('互斥由 writes 重叠自动推导', () => {
   assert.deepEqual(mutexPairs([a, b, c]), [['T-001', 'T-002']]);
   assert.equal(conflictsWith(a, b), true);
   assert.equal(conflictsWith(a, c), false);
+});
+
+test('先行验收测试：有非 test 任务硬依赖才算；承载者是不依赖其他依赖方的那个', () => {
+  const t1 = mkTask('T-001', { kind: 'test', role: 'test-engineer', scopes: ['acceptance'], writes: ['tests/acceptance/a/**'] });
+  const e2e = mkTask('T-009', { kind: 'test', role: 'test-engineer', scopes: ['acceptance'], deps: [hard('T-003')] });
+  // T-003 依赖 T-004，所以承载者是 T-004（若选 T-003，T-004 改为依赖 T-003 会成环）
+  const tasks = [t1, mkTask('T-003', { deps: [hard('T-001'), hard('T-004')] }), mkTask('T-004', { deps: [hard('T-001')] }), e2e];
+  assert.equal(isLeadingTest(t1, tasks), true);
+  assert.equal(isLeadingTest(e2e, tasks), false, '没有下游实现任务的测试照常合入');
+  assert.equal(carrierOf(t1, tasks), 'T-004');
+  assert.equal(carriedTestOf(tasks[2]!, tasks)?.id, 'T-001');
+  assert.equal(carriedTestOf(tasks[1]!, tasks), undefined);
+});
+
+test('规范化先行验收测试：其余依赖方改为硬依赖承载者；多承载、缺 verify 报错', () => {
+  const test1 = mkTask('T-001', { kind: 'test', role: 'test-engineer', scopes: ['acceptance'], writes: ['tests/acceptance/a/**'] });
+  const r = normalizeLeadingTests([test1, mkTask('T-002', { deps: [hard('T-001')] }), mkTask('T-003', { deps: [hard('T-001'), soft('T-002')] })]);
+  assert.deepEqual(r.errors, []);
+  assert.deepEqual(r.tasks[2]!.depends_on, [{ task: 'T-002', type: 'hard', reason: '验收测试 T-001 随 T-002 一并合入' }]);
+  assert.equal(r.notes.length, 1);
+  assert.deepEqual(normalizeLeadingTests(r.tasks).notes, [], '规范化结果再规范化不变');
+
+  const bad = normalizeLeadingTests([
+    { ...test1, verify: [] },
+    mkTask('T-002', { kind: 'test', role: 'test-engineer', scopes: ['acceptance'], writes: ['tests/acceptance/b/**'] }),
+    mkTask('T-003', { deps: [hard('T-001'), hard('T-002')] }),
+  ]);
+  assert.ok(bad.errors.some((e) => e.startsWith('T-001：先行验收测试必须有 verify')), bad.errors.join('\n'));
+  assert.ok(bad.errors.some((e) => e.includes('T-003 同时承载多个先行验收测试（T-001、T-002）')), bad.errors.join('\n'));
 });

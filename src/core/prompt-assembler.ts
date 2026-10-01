@@ -38,6 +38,10 @@ export interface AssembleInput {
   diffStat?: string;
   /** 实施模式：worktree 中本任务之前的运行留下的改动（git status 与相对 base_sha 的 diff --stat） */
   existingWork?: string;
+  /** 本任务承载的先行验收测试（已在分支中，不属于本任务的 diff） */
+  carriedTest?: { id: string; title: string; writes: readonly string[] };
+  /** 本任务是先行验收测试：实现尚不存在，verify 应当失败 */
+  leadingTest?: boolean;
 }
 
 export interface AssembledPrompt { system: string; user: string }
@@ -63,6 +67,15 @@ export function assemblePrompt(i: AssembleInput): AssembledPrompt {
     `## 可写范围（writes）\n${list(t.conflict_files ?? t.writes)}`,
     `## verify 命令\n${list(verify)}`,
   ];
+  if (i.leadingTest) {
+    parts.push(i.mode === 'review'
+      ? '## 先行验收测试\n这是先于实现写好的验收测试。审查通过后程序会运行 verify 并要求它失败；请重点检查断言是否真正覆盖验收标准，有没有用跳过、条件判断或捕获异常让测试在没有实现时通过。'
+      : '## 先行验收测试\n实现还不存在，本任务的测试此时应当失败。审查通过后程序会运行 verify 并**要求失败**，通过的测试会被打回。不要用跳过、条件判断或捕获异常让测试在没有实现时通过；自检时确认测试因"实现缺失"而失败，而不是因为测试本身写错。');
+  }
+  if (i.carriedTest) {
+    const ct = i.carriedTest;
+    parts.push(`## 已在分支中的验收测试\n${ct.id}「${ct.title}」写的验收测试已在本任务的基线中（${ct.writes.join('、')}），实现前它们失败。${i.mode === 'review' ? '它们不在待审查的 diff 中，但会随本任务一并合入；请确认实现确实让这些测试通过。' : '本任务完成后它们必须通过；不得修改这些测试，它们会随本任务一并合入。'}`);
+  }
   if (i.mode === 'review') {
     parts.push(`## 待审查的改动\n基线提交 base_sha：${t.base_sha ?? '（未知）'}\n用 \`git diff ${t.base_sha ?? '<base_sha>'} HEAD\` 查看完整改动。\n\n\`\`\`\n${(i.diffStat ?? '').trim() || '（无）'}\n\`\`\``);
   }

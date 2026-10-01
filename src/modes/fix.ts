@@ -142,7 +142,9 @@ async function writeFixLog(c: FixContext, flow: FlowFile, scout: TaskFile, repro
   const events = c.store.readEvents().filter((e) => e.flow === flow.id);
   const merge = [...events].reverse().find((e) => e.type === 'merge' && e.task === fix.id);
   const sha = merge?.evidence ?? '';
-  const files = sha ? git(c.root, ['show', '--stat', '--format=', sha]).trim() : '（无）';
+  // 复现测试与修复是两个提交；按合并前后的区间统计，排除期间的状态提交
+  const from = typeof merge?.data?.['from'] === 'string' ? merge.data['from'] : '';
+  const files = sha ? git(c.root, from ? ['diff', '--stat', from, sha, '--', '.', ':(exclude).flow'] : ['show', '--stat', '--format=', sha]).trim() : '（无）';
   const cost = costReport(c.store, { flow: flow.id });
   const date = (c.now?.() ?? new Date()).toISOString().slice(0, 10);
   const seq = c.store.listFixLogs().filter((x) => x.startsWith(date)).length + 1;

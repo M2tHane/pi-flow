@@ -19,15 +19,18 @@ export function ensureIntegrationBranch(root: string, branch: string, from: stri
 
 export interface TaskWorktree { path: string; branch: string; base_sha: string }
 
-/** 建立任务 worktree；已存在（例如重新派发）时复用。 */
-export function createTaskWorktree(root: string, flow: string, task: string, integrationBranch: string): TaskWorktree {
+/**
+ * 建立任务 worktree；已存在（例如重新派发）时复用。
+ * from 默认是集成分支；承载先行验收测试的任务从测试分支末端开工（base_sha 即测试分支末端，测试不计入本任务的 diff）。
+ */
+export function createTaskWorktree(root: string, flow: string, task: string, integrationBranch: string, from = integrationBranch): TaskWorktree {
   const wt = worktreePath(root, flow, task);
   const branch = taskBranch(flow, task);
   if (existsSync(path.join(wt, '.git'))) {
-    return { path: wt, branch, base_sha: git(wt, ['merge-base', 'HEAD', integrationBranch]).trim() };
+    return { path: wt, branch, base_sha: git(wt, ['merge-base', 'HEAD', from]).trim() };
   }
   mkdirSync(path.dirname(wt), { recursive: true });
-  const base = headSha(root, integrationBranch);
+  const base = headSha(root, from);
   if (branchExists(root, branch)) git(root, ['worktree', 'add', '-q', wt, branch]);
   else git(root, ['worktree', 'add', '-q', '-b', branch, wt, base]);
   return { path: wt, branch, base_sha: base };

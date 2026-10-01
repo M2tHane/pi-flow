@@ -71,7 +71,70 @@ export function validateDag(tasks: readonly DagTask[], catalog: DagCatalog): Dag
   return { errors, warnings };
 }
 
-const hasHard = (t: DagTask, dep: string) => t.depends_on.some((d) => d.task === dep && d.type === 'hard');
+const hasHard = (t: Pick<TaskFile, 'depends_on'>, dep: string) => t.depends_on.some((d) => d.task === dep && d.type === 'hard');
+const byIdOrder = (a: { id: string }, b: { id: string }) => a.id.localeCompare(b.id, undefined, { numeric: true });
+
+type LeadTask = Pick<TaskFile, 'id' | 'kind' | 'depends_on'>;
+
+/**
+ * 先行验收测试：kind=test，且有非 test 任务硬依赖它（测试先于实现写好）。
+ * 它审查通过后必须先失败，确认后不单独合入，由"承载者"从它的分支末端开工并一并合入。
+ */
+export function isLeadingTest(t: LeadTask, tasks: readonly LeadTask[]): boolean {
+  return t.kind === 'test' && tasks.some((x) => x.kind !== 'test' && hasHard(x, t.id));
+}
+
+/** 先行测试的承载者：非 test 硬依赖方中，不（传递）依赖其他依赖方的、编号最小的那个 */
+export function carrierOf(test: LeadTask, tasks: readonly LeadTask[]): string | null {
+  const deps = tasks.filter((x) => x.kind !== 'test' && hasHard(x, test.id)).sort(byIdOrder);
+  const ids = new Set(deps.map((x) => x.id));
+  const byId = new Map(tasks.map((x) => [x.id, x]));
+  const reaches = (from: string, seen = new Set<string>()): boolean => {
+    for (const d of byId.get(from)?.depends_on ?? []) {
+      if (ids.has(d.task)) return true;
+      if (!seen.has(d.task)) { seen.add(d.task); if (reaches(d.task, seen)) return true; }
+    }
+    return false;
+  };
+  return deps.find((x) => !reaches(x.id))?.id ?? deps[0]?.id ?? null;
+}
+
+/** 任务承载的先行测试（它的 worktree 从该测试的分支末端建立） */
+export function carriedTestOf<T extends LeadTask>(t: LeadTask, tasks: readonly T[]): T | undefined {
+  if (t.kind === 'test') return undefined;
+  return tasks.find((x) => x.kind === 'test' && hasHard(t, x.id) && carrierOf(x, tasks) === t.id);
+}
+
+/**
+ * 规范化先行验收测试（flow_propose_tasks 提交时执行）：
+ * - 每个先行测试只由一个承载者硬依赖，其余硬依赖它的任务改为硬依赖承载者（测试随承载者合入后才可见）；
+ * - 一个任务最多承载一个先行测试；先行测试必须有 verify 命令（程序要运行它确认先失败）。
+ */
+export function normalizeLeadingTests<T extends DagTask>(input: readonly T[]): { tasks: T[]; notes: string[]; errors: string[] } {
+  const tasks = input.map((t) => ({ ...t, depends_on: t.depends_on.map((d) => ({ ...d })) }));
+  const notes: string[] = [];
+  const errors: string[] = [];
+  const carried = new Map<string, string[]>();
+  for (const test of [...tasks].sort(byIdOrder)) {
+    if (!isLeadingTest(test, tasks)) continue;
+    if (!test.verify.length) errors.push(`${test.id}：先行验收测试必须有 verify 命令（例如 test），程序要运行它确认测试在实现前失败`);
+    const carrier = carrierOf(test, tasks)!;
+    carried.set(carrier, [...(carried.get(carrier) ?? []), test.id]);
+    for (const x of tasks) {
+      if (x.id === carrier || !hasHard(x, test.id)) continue;
+      x.depends_on = x.depends_on.filter((d) => d.task !== test.id);
+      const toCarrier = x.depends_on.find((d) => d.task === carrier);
+      const reason = `验收测试 ${test.id} 随 ${carrier} 一并合入`;
+      if (toCarrier) Object.assign(toCarrier, { type: 'hard', reason: toCarrier.reason?.trim() ? toCarrier.reason : reason });
+      else x.depends_on.push({ task: carrier, type: 'hard', reason });
+      notes.push(`${x.id} 对 ${test.id} 的硬依赖改为硬依赖 ${carrier}（${reason}）`);
+    }
+  }
+  for (const [carrier, tests] of carried) {
+    if (tests.length > 1) errors.push(`${carrier} 同时承载多个先行验收测试（${tests.join('、')}）：一个验收测试任务对应一个实现任务，请合并这些测试任务或拆分实现任务`);
+  }
+  return { tasks, notes, errors };
+}
 
 /** 返回环上的任务 id 序列（首尾相同），无环返回 null。所有依赖类型都参与环检测。 */
 export function findCycle(tasks: readonly DagTask[]): string[] | null {

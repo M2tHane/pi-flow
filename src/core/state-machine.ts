@@ -193,7 +193,7 @@ export const TRANSITIONS: readonly Rule[] = [
     effect: (t) => { t.impl_run = t.lease!.run_id; t.lease = null; t.worktree = null; },
   },
   {
-    // 偏离（fix 模式）：复现测试经审查后必须先失败；确认失败即完成，随修复任务一起合入
+    // 偏离：测试必须先失败（fix 的复现测试、build/feature 的先行验收测试）；确认失败即完成，随修复任务或承载者一起合入
     from: ['verifying'], to: 'done', trigger: 'repro_confirmed',
     check: (t, f) => {
       const results = f.verify_results ?? [];
