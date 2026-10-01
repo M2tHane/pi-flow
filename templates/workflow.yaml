@@ -22,18 +22,18 @@ models:                         # 档位到具体模型的映射，由用户填�
 modes:
   build:
     stages:
-      - { id: S0, name: requirements,   gate: { human: true } }
-      - { id: S1, name: architecture,   gate: { human: true, auto: [typecheck] } }
-      - { id: S2, name: infrastructure, gate: { auto: [install, typecheck, lint] } }
-      - { id: S3, name: slices,         gate: { all_tasks_done: true, auto: [test] } }
-      - { id: S4, name: integration,    gate: { auto: [e2e] } }
-      - { id: S5, name: release,        gate: { human: true } }
+      - { id: S0, name: requirements,   phase: discovery,  gate: { human: true } }
+      - { id: S1, name: architecture,   phase: planning,   gate: { human: true, auto: [typecheck] } }
+      - { id: S2, name: infrastructure, phase: execution,  gate: { auto: [install, typecheck, lint] } }
+      - { id: S3, name: slices,         phase: execution,  gate: { all_tasks_done: true, auto: [test] } }
+      - { id: S4, name: integration,    phase: acceptance, gate: { auto: [e2e] } }
+      - { id: S5, name: release,        phase: acceptance, gate: { human: true } }
   feature:
     stages:
-      - { id: F0, name: feature-spec,   gate: { human: true } }
-      - { id: F1, name: impact-and-dag, gate: { human: true, auto: [typecheck] } }
-      - { id: S3, name: slices,         gate: { all_tasks_done: true, auto: [test] } }
-      - { id: S4, name: regression,     gate: { auto: [test, e2e], human: true } }
+      - { id: F0, name: feature-spec,   phase: discovery,  gate: { human: true } }
+      - { id: F1, name: impact-and-dag, phase: planning,   gate: { human: true, auto: [typecheck] } }
+      - { id: S3, name: slices,         phase: execution,  gate: { all_tasks_done: true, auto: [test] } }
+      - { id: S4, name: regression,     phase: acceptance, gate: { auto: [test, e2e], human: true } }
 scopes:
   backend:    { rules: [rules/backend.md],      writes: ["src/server/**", "tests/server/**"] }
   database:   { rules: [rules/database.md],     writes: ["migrations/**", "src/db/**"] }

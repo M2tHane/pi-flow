@@ -187,9 +187,15 @@ const Gate = Type.Object({
   all_tasks_done: Type.Optional(Type.Boolean()),
 }, { additionalProperties: false });
 
+/** 给人看的高层阶段；底层阶段（S0…S5、F0…）与任务 DAG 只给程序用 */
+export const PHASES = ['discovery', 'planning', 'execution', 'acceptance'] as const;
+export type Phase = (typeof PHASES)[number];
+
 const StageDef = Type.Object({
   id: Type.String({ minLength: 1 }),
   name: Type.String({ minLength: 1 }),
+  /** 可选：该阶段在 /flow status 中归入哪个高层阶段；缺省按阶段 id 推断 */
+  phase: Type.Optional(Type.Enum(PHASES)),
   gate: Gate,
 }, { additionalProperties: false });
 

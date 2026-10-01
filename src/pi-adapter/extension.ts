@@ -20,6 +20,7 @@ import { runFlowConfig, type ModelOption } from '../commands/flow-config.ts';
 import { runFlowCommand, runFlowBuild, runFlowFix, FLOW_USAGE, type CommandEnv, type EngineHandle } from '../commands/flow.ts';
 import { DispatchParams, WaitParams, activeFlowId, flowDispatch, flowWait, statusText } from '../tools/orchestrator-tools.ts';
 import { PiLauncher } from './launcher.ts';
+import { lastFailureKind, notices, snapshotOf } from '../core/status-view.ts';
 import { packageRoots, pluginExtensionsFor } from './plugins.ts';
 
 export const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -107,6 +108,15 @@ export function engineFor(root: string): EngineHandle {
     onError: (e) => s.notify(`pi-flow 程序步骤出错：${(e as Error).message}`, 'warning'),
   });
   s.handle = { store, engine, config };
+  // 主动通知只在进入新阶段、出现需要你处理的事、任务首次失败重试时出现
+  let prev = snapshotOf(store, config);
+  engine.onChange(() => {
+    try {
+      const next = snapshotOf(store, config);
+      for (const n of notices(prev, next, (f, t) => lastFailureKind(store, f, t))) s.notify(n, n.includes('需要你处理') ? 'warning' : 'info');
+      prev = next;
+    } catch { /* 通知失败不影响流程 */ }
+  });
   return s.handle;
 }
 

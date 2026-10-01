@@ -12,6 +12,8 @@ import { splitArgs } from './args.ts';
 import { approveStage, rejectStage, unblockTask, startFlow } from '../core/stages.ts';
 import { continueFix } from '../modes/fix.ts';
 import { costReport, formatCost } from '../core/cost.ts';
+import { renderStatus } from '../core/status-view.ts';
+import { loadConfig } from '../core/config.ts';
 import { git } from '../core/git.ts';
 import type { StateStore as Store } from '../core/state-store.ts';
 import { existsSync } from 'node:fs';
@@ -43,7 +45,8 @@ export interface CommandEnv {
 
 export const FLOW_USAGE = [
   '用法：',
-  '  /flow status            当前流程、阶段、任务进度、等待你处理的事项',
+  '  /flow status            当前处于哪个阶段、进度、正在做什么、需要你处理什么',
+  '  /flow status --detail   完整的任务列表与内部状态',
   '  /flow next              由程序选择 ready 任务并派发',
   '  /flow resume            会话丢失后恢复，并进入调度模式',
   '  /flow doctor [--fix]    状态完整性与前置条件检查；--fix 清理残留 worktree 与提示文件',
@@ -122,7 +125,8 @@ export async function runFlowCommand(args: string, env: CommandEnv): Promise<str
     case 'status': {
       const store = env.store();
       if (argv.includes('--cost')) return formatCost(costReport(store), store.listFixLogs());
-      return fullStatus(store, null);
+      if (argv.includes('--detail')) return fullStatus(store, null);
+      return renderStatus(store, loadConfig(path.join(env.root, 'workflow.yaml')));
     }
     case 'abort': {
       const h = env.engine();
@@ -143,7 +147,7 @@ export async function runFlowCommand(args: string, env: CommandEnv): Promise<str
       const d = await h.engine.next(flowId);
       const head = d.length ? `已派发：${d.map((x) => `${x.task} → ${x.role}（${x.model}，run ${x.run_id}）`).join('；')}` : '没有可派发的任务。';
       if (env.waitForIdle) await h.engine.idle();
-      return `${head}\n${statusText(h.store, h.engine, flowId)}`;
+      return `${head}\n\n${renderStatus(h.store, h.config)}`;
     }
     case 'approve': {
       const h = env.engine();
@@ -152,7 +156,7 @@ export async function runFlowCommand(args: string, env: CommandEnv): Promise<str
         const text = await continueFix(h.store, flowId);
         await h.engine.pump(flowId);
         if (env.waitForIdle) await h.engine.idle();
-        return `${text}\n${statusText(h.store, h.engine, flowId)}`;
+        return `${text}\n\n${renderStatus(h.store, h.config)}`;
       }
       const flow = h.store.readFlow(flowId);
       if (flow.stage === flow.stages.at(-1) && flow.stage_status === 'awaiting_human' && !argv.includes('--yes')) {
@@ -166,7 +170,7 @@ export async function runFlowCommand(args: string, env: CommandEnv): Promise<str
         await h.engine.pump(flowId);
         const d = await h.engine.next(flowId);
         if (env.waitForIdle) await h.engine.idle();
-        return `${text}${d.length ? `\n已派发：${d.map((x) => `${x.task} → ${x.role}`).join('；')}` : ''}\n${statusText(h.store, h.engine, flowId)}`;
+        return `${text}${d.length ? `\n已派发：${d.map((x) => `${x.task} → ${x.role}`).join('；')}` : ''}\n\n${renderStatus(h.store, h.config)}`;
       }
       return text;
     }
@@ -200,7 +204,7 @@ export async function runFlowCommand(args: string, env: CommandEnv): Promise<str
       const h = env.engine();
       const flowId = activeFlowId(h.store);
       await h.engine.rerunGate(flowId);
-      return statusText(h.store, h.engine, flowId);
+      return renderStatus(h.store, h.config);
     }
     case 'help': case '-h': case '--help':
       return FLOW_USAGE;
@@ -242,7 +246,7 @@ export async function runFlowBuild(args: string, env: CommandEnv): Promise<strin
   lines.push(`已创建流程 ${flow.id}（${flow.mode}），阶段：${flow.stages.join(' → ')}；集成分支 ${flow.integration_branch}。`);
   if (d.length) lines.push(`已派发 ${d.map((x) => `${x.task} → ${x.role}（${x.model}）`).join('；')}。`);
   if (env.waitForIdle) await h.engine.idle();
-  lines.push(statusText(h.store, h.engine, flow.id));
+  lines.push('', renderStatus(h.store, h.config));
   return lines.join('\n');
 }
 
@@ -282,6 +286,6 @@ export async function runFlowFix(args: string, env: CommandEnv): Promise<string>
   await h.engine.pump(fix.id);
   lines.push(`已创建修复 ${fix.id}，scout 开始定位问题。`);
   if (env.waitForIdle) await h.engine.idle();
-  lines.push(fullStatus(h.store, h.engine));
+  lines.push('', renderStatus(h.store, h.config));
   return lines.join('\n');
 }

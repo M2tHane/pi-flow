@@ -106,8 +106,10 @@ test('超出 fix 规模时给出升级提示；用户可继续或中止', async 
     const fix = p.store.openFixFlow()!;
     assert.equal(fix.stage_status, 'awaiting_human');
     const status = await runFlowCommand('status', env(p, engine));
-    assert.match(status, /建议改用 \/flow-build --feature：需要修改契约/);
-    assert.match(status, /继续按修复处理 → \/flow approve/);
+    assert.match(status, /^需要你处理：\n- 修复 X-002 超出修复规模：需要修改契约/);
+    assert.match(status, /仍按修复处理 \/flow approve；改用功能流程 \/flow abort/);
+    assert.match(status, /\[需求 ✓ → 规划\]|需求 ✓ → \[规划\]/);
+    assert.match(await runFlowCommand('status --detail', env(p, engine)), /建议改用 \/flow-build --feature：需要修改契约/);
     assert.match(await runFlowCommand('abort', env(p, engine)), /确认请执行 \/flow abort --yes/);
     assert.match(await runFlowCommand('abort --yes', env(p, engine)), /已中止 X-002.*--feature/);
     assert.equal(p.store.openFixFlow(), null);

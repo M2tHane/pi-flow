@@ -110,6 +110,14 @@
                     "type": "string",
                     "minLength": 1
                   },
+                  "phase": {
+                    "enum": [
+                      "discovery",
+                      "planning",
+                      "execution",
+                      "acceptance"
+                    ]
+                  },
                   "gate": {
                     "type": "object",
                     "properties": {
@@ -159,6 +167,14 @@
                   "name": {
                     "type": "string",
                     "minLength": 1
+                  },
+                  "phase": {
+                    "enum": [
+                      "discovery",
+                      "planning",
+                      "execution",
+                      "acceptance"
+                    ]
                   },
                   "gate": {
                     "type": "object",

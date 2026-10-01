@@ -85,7 +85,8 @@ pi install /path/to/pi-flow
 
 | 命令 | 作用 |
 |---|---|
-| `/flow status` | 当前流程、阶段、任务进度、等待你处理的事项 |
+| `/flow status` | 当前处于哪个阶段（需求 → 规划 → 实施 → 验收 → 完成）、进度、正在做什么；需要你处理的事排在最上面 |
+| `/flow status --detail` | 完整的任务列表与内部状态（底层阶段、任务 DAG、失败原因） |
 | `/flow status --cost` | 按流程、阶段、角色、模型、任务汇总 token 与耗时；返工最多的任务；修复日志 |
 | `/flow next` | 由程序选择 ready 任务并派发 |
 | `/flow approve [--yes]` | 批准当前阶段闸门（仅你可以）。最后一个阶段会把集成分支合入主分支 |
@@ -96,6 +97,26 @@ pi install /path/to/pi-flow
 | `/flow resume` | 会话丢失后恢复，并进入调度模式 |
 | `/flow doctor [--fix]` | 状态完整性与前置条件检查；`--fix` 清理残留 worktree 与提示文件 |
 | `/flow init` | 初始化项目骨架（可重复执行，只补缺，不覆盖） |
+
+平时只需要看 `/flow status`：
+
+```
+需要你处理：无
+
+B-001「做一个待办应用」
+需求 ✓ → 规划 ✓ → [实施] → 验收 → 完成
+
+实施阶段：按任务拆解实现，逐个审查、验证并合入集成分支
+进度：7 / 11 个任务完成
+
+正在进行：
+- T-008 实现 UserService（backend-engineer）实现中
+- T-009 用户列表页面（frontend-engineer）等待重新派发（第 2 次，上次：审查打回）
+
+阻塞：无
+```
+
+高层阶段与底层阶段的对应写在 `workflow.yaml` 每个阶段的 `phase` 字段（discovery、planning、execution、acceptance），可以按需调整。pi-flow 只在进入新阶段、出现需要你处理的事、任务第一次未通过、流程结束时主动提醒你。
 
 执行 `/flow-build`、`/flow-fix` 或 `/flow resume` 后，当前会话进入**调度模式**：会话里的模型只能查看状态、派发任务和等待结果，不能自己改代码；每轮开头会看到"当前状态与唯一允许的下一步"。普通的 pi 会话不受影响。
 
@@ -135,7 +156,7 @@ AGENTS.md            极简说明
 | 关掉了 pi，流程还在吗 | 在。重新打开 pi，执行 `/flow resume`：会清理残留子进程、处理中断的任务和合并，然后继续 |
 | "另一个 pi 会话正在运行该项目的流程" | 同一项目同一时间只允许一个会话运行引擎。到那个会话中操作，或关闭它后再 `/flow resume` |
 | "状态完整性校验失败" | `.flow/` 被手工修改或损坏，程序已停止。执行 `/flow doctor` 查看具体文件；用 `git log -- .flow` 找回上一次正确的状态 |
-| 任务反复失败后转为阻塞 | `/flow status` 查看原因；修正需求或环境后 `/flow unblock <任务>`。失败上限在 `workflow.yaml` 的 `limits.max_attempts` |
+| 任务反复失败后转为阻塞 | `/flow status` 顶部会列出阻塞原因，`/flow status --detail` 查看每次失败的详情；修正需求或环境后 `/flow unblock <任务>`。失败上限在 `workflow.yaml` 的 `limits.max_attempts` |
 | "角色 X 没有设置模型" | 执行 `/flow-config` 为该角色选择模型 |
 | 闸门失败 | `/flow status` 显示失败命令与输出摘要（evidence 在 `.flow/flows/<流程>/evidence/stage-<阶段>/`）。修复后 `/flow gate` |
 | 合并冲突转为阻塞 | 冲突涉及契约或受保护文件时需要你人工合并；只在任务范围内的冲突会自动生成 merge-fix 任务 |

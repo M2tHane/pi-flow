@@ -1,7 +1,7 @@
 // 解析并校验 workflow.yaml：schema 校验 + 引用校验 + 角色策略推导。错误指出 YAML 路径与行号。
 import { readFileSync } from 'node:fs';
 import { LineCounter, parseDocument, isNode } from 'yaml';
-import { validate, type ThinkingLevel, type WorkflowFile } from './schemas.ts';
+import { PHASES, validate, type ThinkingLevel, type WorkflowFile } from './schemas.ts';
 
 export const BUILTIN_READ_TOOLS = ['read', 'grep', 'find', 'ls'] as const;
 export const BUILTIN_WRITE_TOOLS = ['write', 'edit'] as const;
@@ -132,7 +132,13 @@ export function parseConfig(source: string): FlowConfig {
   for (const mode of ['build', 'feature'] as const) {
     const stages = wf.modes[mode]?.stages ?? [];
     const seen = new Set<string>();
+    let lastPhase = -1;
     stages.forEach((s, i) => {
+      if (s.phase) {
+        const idx = PHASES.indexOf(s.phase);
+        if (idx < lastPhase) errors.push(`${at(['modes', mode, 'stages', i, 'phase'])}: phase ${s.phase} 不能排在 ${PHASES[lastPhase]} 之后（高层阶段只能按 ${PHASES.join(' → ')} 前进）`);
+        lastPhase = Math.max(lastPhase, idx);
+      }
       if (seen.has(s.id)) errors.push(`${at(['modes', mode, 'stages', i, 'id'])}: 阶段 id ${s.id} 重复`);
       seen.add(s.id);
       (s.gate.auto ?? []).forEach((c, j) => {

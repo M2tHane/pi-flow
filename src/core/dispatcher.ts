@@ -352,6 +352,12 @@ export class Engine {
     this.watchTimer.unref();
   }
 
+  /** 订阅状态变化（用于主动通知）；返回取消订阅函数 */
+  onChange(fn: () => void): () => void {
+    this.listeners.add(fn);
+    return () => this.listeners.delete(fn);
+  }
+
   /** 等待任何状态变化（或超时）；用于 flow_wait */
   waitForChange(timeoutMs: number): Promise<boolean> {
     return new Promise((resolve) => {
