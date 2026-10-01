@@ -89,9 +89,12 @@ export async function resume(d: ResumeDeps, decide?: (q: ResumeDecision) => Prom
     if (!t.lease || active.has(t.lease.run_id)) continue;
     const expired = now().getTime() >= Date.parse(t.lease.expires_at);
     if (t.status === 'review' || !expired) {
-      await store.transitionTask(flowId, t.id, { to: t.status, trigger: 'run_failed', actor: 'resume',
+      // 会话中断不是 subagent 的错：只记中断次数，不消耗失败预算
+      const next = await store.transitionTask(flowId, t.id, { to: t.status, trigger: 'run_interrupted', actor: 'resume',
         facts: { reason: `会话中断，run ${t.lease.run_id} 已终止${expired ? '且租约过期' : ''}` } });
-      actions.push(`${t.id}：run 已中断，保留 worktree，稍后重新派发`);
+      actions.push(next.status === 'blocked'
+        ? `${t.id}：会话已连续中断 ${next.interruptions} 次，转为阻塞`
+        : `${t.id}：run 已中断，保留 worktree，稍后重新派发（不计入失败次数）`);
       continue;
     }
     // in_progress 且租约过期

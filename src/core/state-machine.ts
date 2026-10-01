@@ -8,7 +8,10 @@ import { isProtected, matchesAny } from './paths.ts';
 export type Trigger =
   | 'schedule' | 'dispatch' | 'submit' | 'review_pass' | 'review_reject'
   | 'verify_pass' | 'verify_fail' | 'merge_start' | 'merge_done' | 'merge_verify_fail'
-  | 'merge_blocked' | 'merge_requeue' | 'block' | 'unblock' | 'lease_expired' | 'run_failed' | 'report' | 'repro_confirmed';
+  | 'merge_blocked' | 'merge_requeue' | 'block' | 'unblock' | 'lease_expired' | 'run_failed' | 'run_interrupted' | 'report' | 'repro_confirmed';
+
+/** 同一任务连续会话中断达到此次数转 blocked，防止无限重来 */
+export const MAX_INTERRUPTIONS = 5;
 
 export interface VerifyResult { command: string; exit_code: number }
 
@@ -207,6 +210,17 @@ export const TRANSITIONS: readonly Rule[] = [
     check: (t, f) => [...need(!!t.lease, '任务没有运行中的 run'), ...reasonRequired(f)],
   },
   {
+    // 偏离：会话中断（不是 subagent 的错）只记录次数，不消耗失败预算；保留 worktree，由引擎重新派发
+    from: ['in_progress'], to: 'in_progress', trigger: 'run_interrupted',
+    check: (t, f) => [...need(!!t.lease, '任务没有运行中的 run'), ...reasonRequired(f)],
+    effect: (t) => { t.lease = null; t.interruptions = (t.interruptions ?? 0) + 1; },
+  },
+  {
+    from: ['review'], to: 'review', trigger: 'run_interrupted',
+    check: (t, f) => [...need(!!t.lease, '任务没有运行中的审查 run'), ...reasonRequired(f)],
+    effect: (t) => { t.lease = null; t.interruptions = (t.interruptions ?? 0) + 1; },
+  },
+  {
     from: ['review'], to: 'review', trigger: 'run_failed', failure: true,
     check: (t, f) => [...need(!!t.lease, '任务没有运行中的审查 run'), ...reasonRequired(f)],
   },
@@ -270,6 +284,10 @@ export function planTransition(task: TaskFile, to: TaskStatus, trigger: Trigger,
       effective = 'blocked';
       next.blocked_reason = '租约过期两次';
     }
+  }
+  if (trigger === 'run_interrupted' && (next.interruptions ?? 0) >= MAX_INTERRUPTIONS) {
+    effective = 'blocked';
+    next.blocked_reason = `会话已连续中断 ${next.interruptions} 次：${facts.reason ?? ''}。请检查环境后 /flow unblock`;
   }
   next.status = effective;
   return { ok: true, task: next, to: effective, rule };

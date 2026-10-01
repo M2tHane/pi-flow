@@ -186,6 +186,9 @@
     - 由**程序**写入主工作区的 `rules/` 与 `workflow.yaml` 并单独提交：`workflow.yaml` 用 yaml 文档 API 修改以保留注释，修改后整体校验，不通过则拒绝；运行中引擎的命令配置同步更新。
     - "规则只有用户能改"保持成立：agent 只能写草案，应用要用户选择。规则变化会让提示缓存失效一次，输出中会提醒。
 
+67. **会话中断不计入失败预算**（修订第 36 条）：新增转移 `run_interrupted`（`in_progress → in_progress`、`review → review`），清空租约、保留 worktree，只增加任务的 `interruptions` 计数，不增加 attempts；连续中断达到 `MAX_INTERRUPTIONS = 5` 转 blocked。`resume` 处理"租约未过期但 run 已中断"以及审查中的任务时用它。租约真正过期仍按规格 attempts 加 1；同一会话内子进程自己异常退出（模型报错、连接失败）仍按 `run_failed` 计失败。
+68. **重新派发时告知已有改动**：实施任务的 worktree 相对 base_sha 有改动、或有未提交文件时，提示中加一节"工作区已有的改动"（`git diff --stat <base_sha>` 与 `git status`），说明这是之前运行留下的工作，要先检查再决定继续还是重写。subagent 的对话不恢复（子进程以 `--no-session` 运行）；是否改为持久化会话并用 `--session` 续跑，留待实测后再定。
+
 ## M8 设计要点
 
 - 交付物：

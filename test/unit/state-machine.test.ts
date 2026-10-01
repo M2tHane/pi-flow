@@ -192,3 +192,19 @@ test('run_failed：子进程未提交就退出，计一次失败并清空租约�
   const r2 = ok(planTransition(rv, 'review', 'run_failed', facts({ reason: '审查 run 崩溃' })));
   assert.equal(r2.to, 'blocked');
 });
+
+test('run_interrupted：会话中断不消耗失败预算，保留 worktree；连续中断达上限转 blocked', async () => {
+  const { MAX_INTERRUPTIONS } = await import('../../src/core/state-machine.ts');
+  const r = ok(planTransition(inProgress({ attempts: 2 }), 'in_progress', 'run_interrupted', facts({ reason: '会话中断' })));
+  assert.equal(r.task.attempts, 2, '不计入失败次数');
+  assert.equal(r.task.interruptions, 1);
+  assert.equal(r.task.lease, null);
+  assert.equal(r.task.worktree, '/wt/T-001');
+  bad(planTransition(r.task, 'in_progress', 'run_interrupted', facts({ reason: 'x' })), /没有运行中/);
+  const rv = ok(planTransition(mkTask('T-001', { status: 'review', lease: lease('r-2', RTOKEN) }), 'review', 'run_interrupted', facts({ reason: '中断' })));
+  assert.equal(rv.task.status, 'review');
+  bad(planTransition(mkTask('T-001', { status: 'review', lease: lease('r-2', RTOKEN) }), 'in_progress', 'run_interrupted', facts({ reason: '中断' })), /非法/);
+  const many = ok(planTransition(inProgress({ interruptions: MAX_INTERRUPTIONS - 1 }), 'in_progress', 'run_interrupted', facts({ reason: '又中断' })));
+  assert.equal(many.to, 'blocked');
+  assert.match(many.task.blocked_reason ?? '', /连续中断 5 次/);
+});

@@ -36,6 +36,8 @@ export interface AssembleInput {
   commands: Record<string, string>;
   /** 审查模式：base_sha..HEAD 的 diff --stat */
   diffStat?: string;
+  /** 实施模式：worktree 中本任务之前的运行留下的改动（git status 与相对 base_sha 的 diff --stat） */
+  existingWork?: string;
 }
 
 export interface AssembledPrompt { system: string; user: string }
@@ -63,6 +65,9 @@ export function assemblePrompt(i: AssembleInput): AssembledPrompt {
   ];
   if (i.mode === 'review') {
     parts.push(`## 待审查的改动\n基线提交 base_sha：${t.base_sha ?? '（未知）'}\n用 \`git diff ${t.base_sha ?? '<base_sha>'} HEAD\` 查看完整改动。\n\n\`\`\`\n${(i.diffStat ?? '').trim() || '（无）'}\n\`\`\``);
+  }
+  if (i.mode === 'impl' && i.existingWork?.trim()) {
+    parts.push(`## 工作区已有的改动\n这些改动是本任务之前的运行留下的（会话中断或被打回前的工作），还没有通过审查。先用 \`git status\` 与 \`git diff ${t.base_sha ?? '<base_sha>'}\` 检查，再决定继续完善还是重写；不要无故丢弃仍然有用的部分。\n\n\`\`\`\n${i.existingWork.trim()}\n\`\`\``);
   }
   if (i.handoff.trim()) {
     const h = i.handoff.trim();

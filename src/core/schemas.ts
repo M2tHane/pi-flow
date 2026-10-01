@@ -88,6 +88,8 @@ export const TaskFile = Type.Object({
   attempts: Type.Integer({ minimum: 0 }),
   violations: Type.Integer({ minimum: 0 }),
   lease_expirations: Type.Integer({ minimum: 0 }),
+  /** 会话中断（pi 崩溃、被强杀、用户关闭）导致 run 丢失的次数；不计入 attempts */
+  interruptions: Type.Optional(Type.Integer({ minimum: 0 })),
   lease: Nullable(Lease),
   impl_run: Nullable(Type.String()),
   branch: Nullable(Type.String()),

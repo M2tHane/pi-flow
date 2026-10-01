@@ -70,3 +70,14 @@ test('审查提示包含 base_sha 与验收标准', () => {
   assert.match(p.user, /flow_approve/);
   assert.match(p.user, /src\/a\.ts \| 3/);
 });
+
+test('重新派发时提示工作区已有的改动，位于任务说明之后、handoff 之前', () => {
+  const agent = { name: 'backend-engineer', tier: 'medium', thinking: null, description: '', prompt: 'R' };
+  const p = assemblePrompt({ agent, rules: [], task: mkTask('T-001', { base_sha: 'abc123' }), flowId: 'B-001', handoff: 'HANDOFF', mode: 'impl',
+    commands: config.commands, existingWork: ' src/server/t-001/a.ts | 3 +++\n\n未提交：\n?? src/server/t-001/b.ts' });
+  const iWork = p.user.indexOf('## 工作区已有的改动');
+  assert.ok(iWork > p.user.indexOf('## verify 命令') && iWork < p.user.indexOf('HANDOFF'));
+  assert.match(p.user, /git diff abc123[\s\S]*b\.ts/);
+  const review = assemblePrompt({ agent, rules: [], task: mkTask('T-001'), flowId: 'B-001', handoff: '', mode: 'review', commands: config.commands, existingWork: 'x' });
+  assert.doesNotMatch(review.user, /工作区已有的改动/, '审查提示不需要');
+});

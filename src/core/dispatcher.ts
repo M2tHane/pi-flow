@@ -166,6 +166,13 @@ export class Engine {
     const mode = role === REVIEWER_ROLE ? 'review' : 'impl';
     const diffStat = mode === 'review' && task.worktree && task.base_sha
       ? git(task.worktree, ['diff', '--stat', task.base_sha, 'HEAD']) : undefined;
+    // 重新派发时告诉实施者 worktree 里已有的改动（含未提交的），避免重做或覆盖
+    let existingWork: string | undefined;
+    if (mode === 'impl' && task.worktree && task.base_sha) {
+      const status = git(task.worktree, ['status', '--porcelain', '-uall']).trim();
+      const stat = git(task.worktree, ['diff', '--stat', task.base_sha]).trim();
+      if (status || stat) existingWork = [stat, status && `未提交：\n${status}`].filter(Boolean).join('\n\n');
+    }
     const skillNames = [...(STAGE_SKILLS[task.stage] ?? []), ...(mode === 'impl' ? ['write-handoff'] : [])];
     const skills = skillNames.map((n) => {
       const f = this.d.packageSkillsDir ? path.join(this.d.packageSkillsDir, n, 'SKILL.md') : '';
@@ -174,6 +181,7 @@ export class Engine {
     const prompt = assemblePrompt({
       agent, rules, skills, task, flowId, handoff: store.readHandoff(flowId, task.id), mode, commands: config.commands,
       ...(diffStat !== undefined ? { diffStat } : {}),
+      ...(existingWork ? { existingWork } : {}),
     });
     const runDir = path.join(worktreesRoot(root), '.runs', runId);
     mkdirSync(runDir, { recursive: true });

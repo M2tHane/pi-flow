@@ -68,7 +68,8 @@ test('任务进行中强杀引擎：残留 pi 子进程被清理，任务在原 
     await until(() => !processAlive(pid), 10_000);
     const t = store.readTask(p.flowId, 'T-001');
     assert.equal(t.status, 'in_progress');
-    assert.equal(t.attempts, 1);
+    assert.equal(t.attempts, 0, '会话中断不计入失败次数');
+    assert.equal(t.interruptions, 1);
 
     const engine = recoveryEngine(p, store, GOOD);
     await engine.pump(p.flowId);

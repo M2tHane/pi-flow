@@ -55,7 +55,8 @@ test('任务进行中会话中断：残留 run 被终止，保留 worktree，计
     const t = store.readTask(p.flowId, 'T-001');
     assert.equal(t.status, 'in_progress');
     assert.equal(t.lease, null);
-    assert.equal(t.attempts, 1);
+    assert.equal(t.attempts, 0, '会话中断不计入失败次数');
+    assert.equal(t.interruptions, 1);
     assert.ok(existsSync(t.worktree!), 'worktree 保留');
     assert.equal(store.readRun(runId).outcome, 'killed');
     assert.match(r.brief, /恢复摘要[\s\S]*T-001[\s\S]*最近事件/);
@@ -64,6 +65,9 @@ test('任务进行中会话中断：残留 run 被终止，保留 worktree，计
     const ok = makeEngine({ ...p, store }, async (role, _n, a) => (role === 'reviewer' ? approve(a) : good(a)));
     await ok.engine.pump(p.flowId);
     await ok.engine.idle();
+    // 新的 subagent 被告知工作区里已有上一次运行留下的改动
+    const respawn = ok.launcher.launched.find((x) => x.env['PI_FLOW_ROLE'] === 'backend-engineer')!;
+    assert.match(respawn.prompt, /## 工作区已有的改动[\s\S]*src\/server\/t-001\/a\.ts/);
     assert.equal(store.readTask(p.flowId, 'T-001').status, 'done');
     assert.deepEqual((await store.verifyIntegrity()).errors, []);
   } finally { p.cleanup(); }
