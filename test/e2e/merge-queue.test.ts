@@ -211,7 +211,7 @@ test('合并后验证使用 codegraph 给出的受影响测试；拿不到时退
   });
   try {
     const seen: string[][] = [];
-    const { engine } = makeEngine(p, async (role, _n, a) => {
+    const { engine, errors } = makeEngine(p, async (role, _n, a) => {
       if (role === 'reviewer') return approve(a);
       return implement(a, { [`src/server/${a.env.task.toLowerCase()}/a.ts`]: 'ok' });
     }, undefined, {
@@ -219,6 +219,7 @@ test('合并后验证使用 codegraph 给出的受影响测试；拿不到时退
     });
     await engine.next(p.flowId);
     await engine.idle();
+    assert.deepEqual(errors.map(String), []);
     const ev = (id: string) => readdirEvidence(p.dir, p.flowId, id).filter((f) => f.startsWith('merge-'));
     assert.deepEqual(ev('T-001').sort(), ['merge-a0-test_affected.log', 'merge-a0-typecheck.log']);
     assert.deepEqual(ev('T-002').sort(), ['merge-a0-test.log', 'merge-a0-typecheck.log']);

@@ -35,7 +35,8 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "node --test --test-reporter=spec \"test/unit/**/*.test.ts\" && node --test --test-concurrency=2 --test-reporter=spec \"test/e2e/**/*.test.ts\"",
-    "gen:schemas": "node scripts/gen-schemas.ts"
+    "gen:schemas": "node scripts/gen-schemas.ts",
+    "demo": "node scripts/demo.ts"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",

@@ -1,0 +1,8 @@
+{ "steps": [
+  { "tool_calls": [ { "name": "flow_claim", "arguments": {} } ] },
+  { "tool_calls": [ { "name": "write", "arguments": { "path": "src/server/todo/index.mjs", "content": "export function createTodo(title) {\n  return { title, done: false };\n}\n" } } ] },
+  { "tool_calls": [ { "name": "bash", "arguments": { "command": "node --test" } } ] },
+  { "tool_calls": [ { "name": "flow_note", "arguments": { "text": "实现完成，本地 node --test 通过" } } ] },
+  { "tool_calls": [ { "name": "flow_submit", "arguments": { "summary": "实现 createTodo" } } ] },
+  { "text": "完成" }
+] }

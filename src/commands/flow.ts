@@ -164,7 +164,9 @@ export async function runFlowCommand(args: string, env: CommandEnv): Promise<str
       const text = await approveStage({ root: env.root, store: h.store, config: h.config }, flowId, option(argv, '--note'));
       if (h.store.readState().active_flow) {
         await h.engine.pump(flowId);
+        const d = await h.engine.next(flowId);
         if (env.waitForIdle) await h.engine.idle();
+        return `${text}${d.length ? `\n已派发：${d.map((x) => `${x.task} → ${x.role}`).join('；')}` : ''}\n${statusText(h.store, h.engine, flowId)}`;
       }
       return text;
     }
@@ -190,6 +192,8 @@ export async function runFlowCommand(args: string, env: CommandEnv): Promise<str
       const att = option(argv, '--attempts');
       const text = await unblockTask({ root: env.root, store: h.store, config: h.config }, flowId, taskId, answer, att !== undefined ? Number(att) : undefined);
       await h.engine.pump(flowId);
+      if (h.store.readFlow(flowId).mode !== 'fix') await h.engine.next(flowId);
+      if (env.waitForIdle) await h.engine.idle();
       return text;
     }
     case 'gate': {

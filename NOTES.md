@@ -53,7 +53,7 @@
 | 项 | 状态 |
 |---|---|
 | serena 的 `prepareArguments`（修正参数名）发生在 `tool_call` 之前还是之后 | 待确认；影响 guard 看到的参数名 |
-| `tool_result` 层过滤敏感内容 | 待确认，M5 评估 |
+| `tool_result` 层过滤敏感内容（grep -r 等递归读取可能读到 .env） | 未实现，列为后续改进 |
 | 在 worktree 中 serena 的项目根是否等于子进程 cwd | 待 M3 实测 |
 
 ## 偏离记录
@@ -154,6 +154,29 @@
 55. **fix 日志** `.flow/fixes/<日期>-<序号>.md`：问题、根因、改动（`git show --stat`）、验证、成本（合计与按角色），由引擎写入并登记哈希。
 56. **`/flow status --cost`**：按流程、阶段、角色、模型、任务汇总 token 与耗时，并列出返工最多的任务（审查打回、验证失败、合并失败、运行失败，数据来自事件日志）和修复日志。token 字段为 null 的运行不估算，单独计数。
 
+57. **第三方插件在子进程中加载**（第 26 条已落实）：按角色用到的工具组（serena_read、serena_edit → pi-serena；codegraph → pi-codegraph；web → pi-web-access），先找项目级 `.pi/npm/node_modules`，再找用户级 `~/.pi/agent/npm/node_modules`，用 `-e <包根目录>` 加载，放在 guard 扩展之前。已实测：`-e` 可以指向包根目录；pi-web-access 的工具注册后默认不激活，`setActiveTools` 可以激活。
+58. **插件产物写入仓库本地 `info/exclude`**（`.serena/`、`.codegraph/`）：真实模型冒烟中发现，pi-serena 在 worktree 根目录生成 `.serena/project.yml`，导致提交被判越界。info/exclude 不被跟踪，所有 worktree 共享，也不改用户的 `.gitignore`。
+59. **并发重复派发的修复**：两个 run 同时结束时，两个 `pump` 可能同时给同一任务派审查，后一个租约会覆盖前一个。修复分两层：
+    - 新增 `acquireLease`，在事务内检查租约为空才写入；
+    - `pump` 按流程串行执行。
+60. **`/flow approve` 与 `/flow unblock` 之后由程序直接派发 ready 任务**（等同于 `/flow next`），不必再输入一条命令。
+61. **假模型脚本支持 variants**：按第一条用户消息中的关键字选择步骤，同一角色可以在不同阶段走不同脚本（演示用）。
+
+## M8 设计要点
+
+- 交付物：
+  - 角色提示 11 个：scout、researcher、architect 按各自工作方式定稿，其余按统一骨架；
+  - 规则 7 个；技能 5 个；提示模板 3 个（`/stage-kickoff`、`/feature-kickoff`、`/fix-brief`）；
+  - 文档模板；中文 README；`scripts/demo.ts`。
+- `scripts/demo.ts`：
+  - 默认用真实 pi 进程加假模型，从空仓库跑完 build 流程 S0→S5 并合入 main（10 次运行，约 11 秒）。
+  - `--real-fix` 用 `/flow-config` 中设置的真实模型跑一次 `/flow-fix`。
+- 真实模型冒烟（Workbuddy/glm-5.3-flash，2026-10-01，子进程加载 pi-serena 与 pi-codegraph）：
+  - 第一次：scout 与复现测试完成，修复因 `.serena/` 产物被判越界；模型按要求 `flow_block` 并准确说明原因。据此新增第 58 条。
+  - 第二次：全流程 185 秒完成，修复合入 main，fix 日志含根因与成本（5 次运行，输入 31.0k / 输出 2385 / 缓存读 109.0k），完整性校验通过。
+- 安装验证：`pi install -l <pi-flow 目录>` 后不带 `-e`，`/flow-config`、`/flow init` 正常。
+- **缓存提醒**：M8 修改了角色提示（scout、researcher、architect），新增了技能注入。这些属于子进程系统提示的稳定前缀，已有项目在升级后第一次派发时，提供商的提示缓存会失效一次。
+
 ## M7 设计要点
 
 - `src/modes/fix.ts` 的 `fixStep` 由引擎的 `pump` 调用，代替 fix 流程的阶段推进。顺序：scout → 升级判断 → 复现测试 → 修复 → 写日志并结束。
@@ -232,4 +255,5 @@
 
 ## 缓存提醒
 
-（规则与角色提示尚未编写，M8 后变更时在此记录缓存失效提醒。）
+- 2026-10-01（M8）：角色提示（scout、researcher、architect）变更，新增技能注入；升级后首次派发时提示缓存失效一次。
+- 以后修改 `agents/`、`rules/`、`skills/` 时，在此追加一条。

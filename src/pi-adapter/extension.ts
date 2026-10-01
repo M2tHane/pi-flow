@@ -20,6 +20,7 @@ import { runFlowConfig, type ModelOption } from '../commands/flow-config.ts';
 import { runFlowCommand, runFlowBuild, runFlowFix, FLOW_USAGE, type CommandEnv, type EngineHandle } from '../commands/flow.ts';
 import { DispatchParams, WaitParams, activeFlowId, flowDispatch, flowWait, statusText } from '../tools/orchestrator-tools.ts';
 import { PiLauncher } from './launcher.ts';
+import { packageRoots, pluginExtensionsFor } from './plugins.ts';
 
 export const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const TEMPLATE_WORKFLOW = path.join(PACKAGE_ROOT, 'templates', 'workflow.yaml');
@@ -99,7 +100,9 @@ export function engineFor(root: string): EngineHandle {
     roleSettings: () => loadRoleSettings(roleSettingsPath()),
     packageAgentsDir: path.join(PACKAGE_ROOT, 'agents'),
     subagentExtension: SUBAGENT_EXTENSION,
-    extraExtensions: () => extra,
+    // 测试用的额外扩展（假模型 provider）在前，随后是第三方插件；guard 所在的 subagent 扩展由引擎放在最后
+    extraExtensions: (role) => [...extra, ...pluginExtensionsFor(config, role, packageRoots(root, getAgentDir())).paths],
+    packageSkillsDir: path.join(PACKAGE_ROOT, 'skills'),
     mergeHooks: { affectedFiles: (_wt, changed) => affectedTests(root, changed), afterMerge: codegraphSync },
     onError: (e) => s.notify(`pi-flow 程序步骤出错：${(e as Error).message}`, 'warning'),
   });

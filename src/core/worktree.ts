@@ -1,5 +1,5 @@
 // worktree 与任务分支：从集成分支 HEAD 拉出，放在项目目录之外的同级目录。
-import { existsSync, mkdirSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { git, gitOk } from './git.ts';
 
@@ -54,4 +54,20 @@ export function removeWorktree(root: string, wt: string, branch?: string): void 
   if (existsSync(wt)) git(root, ['worktree', 'remove', '--force', wt]);
   git(root, ['worktree', 'prune']);
   if (branch && branchExists(root, branch)) git(root, ['branch', '-D', branch]);
+}
+
+/** 插件在工作目录中生成的产物（serena 的项目配置、codegraph 索引），不应进入任务快照 */
+export const TOOL_ARTIFACTS = ['.serena/', '.codegraph/'];
+
+/**
+ * 写入仓库本地的 info/exclude（不被跟踪，所有 worktree 共享），避免插件产物出现在任务 diff 中被判越界。
+ * 已核实：pi-serena 在项目根生成 .serena/.gitignore 与 .serena/project.yml。
+ */
+export function ensureLocalExcludes(root: string, patterns: readonly string[] = TOOL_ARTIFACTS): void {
+  const common = git(root, ['rev-parse', '--git-common-dir']).trim();
+  const file = path.join(path.isAbsolute(common) ? common : path.join(root, common), 'info', 'exclude');
+  mkdirSync(path.dirname(file), { recursive: true });
+  const cur = existsSync(file) ? readFileSync(file, 'utf8') : '';
+  const missing = patterns.filter((p) => !cur.split('\n').includes(p));
+  if (missing.length) appendFileSync(file, `${cur && !cur.endsWith('\n') ? '\n' : ''}# pi-flow：插件产物不进入任务快照\n${missing.join('\n')}\n`);
 }

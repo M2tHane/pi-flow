@@ -36,7 +36,10 @@ export function startFakeLlm(opts: { scriptsDir: string; logFile?: string; port?
         }) + '\n');
       }
       const file = path.join(opts.scriptsDir, `${payload.model}.json`);
-      const steps: Step[] = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')).steps : [];
+      // 脚本可以是 { steps } 或 { variants: [{ match, steps }] }：按第一条用户消息中是否包含 match 选择
+      const script = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) as { steps?: Step[]; variants?: { match: string; steps: Step[] }[] } : {};
+      const firstUser = JSON.stringify(payload.messages.find((m) => m.role === 'user')?.content ?? '');
+      const steps: Step[] = script.variants ? (script.variants.find((v) => firstUser.includes(v.match))?.steps ?? []) : (script.steps ?? []);
       const step: Step = steps[turn] ?? { text: '（脚本已结束）' };
       if (step.delay_ms) await new Promise((r) => setTimeout(r, step.delay_ms));
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });

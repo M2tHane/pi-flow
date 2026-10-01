@@ -582,6 +582,18 @@ export class StateStore {
     });
   }
 
+  /** 为 in_progress/review 且没有租约的任务取得租约（重新派发、派审查）。在事务内检查，避免并发重复派发。 */
+  async acquireLease(flow: string, id: string, lease: NonNullable<TaskFile['lease']>, actor: string, data: Record<string, unknown> = {}): Promise<TaskFile> {
+    return this.transaction((tx) => {
+      const t = tx.readTask(flow, id);
+      if (t.lease) throw new StateError(`任务 ${id} 已有运行中的 run ${t.lease.run_id}`);
+      if (t.status !== 'in_progress' && t.status !== 'review') throw new StateError(`任务 ${id} 当前是 ${t.status}，不能取得租约`);
+      const next = tx.putTask(flow, { ...t, lease });
+      tx.event({ flow, task: id, actor, type: 'dispatch', data: { run: lease.run_id, role: lease.role, ...data } });
+      return next;
+    });
+  }
+
   async appendHandoff(flow: string, task: string, text: string, actor: string): Promise<void> {
     await this.transaction((tx) => {
       tx.readTask(flow, task);

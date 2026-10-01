@@ -13,7 +13,7 @@ import { loadAgent } from './agents.ts';
 import { assemblePrompt, ruleFilesFor } from './prompt-assembler.ts';
 import { computeReady } from './dag.ts';
 import { selectDispatchable } from './scheduler.ts';
-import { createTaskWorktree, worktreesRoot } from './worktree.ts';
+import { createTaskWorktree, ensureLocalExcludes, worktreesRoot } from './worktree.ts';
 import { runVerify } from './verify-runner.ts';
 import { git } from './git.ts';
 import { RUN_ENV_KEYS } from '../tools/subagent-tools.ts';
@@ -102,6 +102,7 @@ export class Engine {
   /** 派发一个任务：ready → 实施；in_progress 无租约 → 重新派发实施；review 无租约 → 派发审查。立即返回 run_id。 */
   async dispatch(flowId: string, taskId: string): Promise<Dispatched> {
     const { store, root } = this.d;
+    ensureLocalExcludes(root);
     const flow = store.readFlow(flowId);
     let task = store.readTask(flowId, taskId);
     const role = task.status === 'review' ? REVIEWER_ROLE : task.role;
@@ -124,7 +125,7 @@ export class Engine {
       });
     } else if ((task.status === 'in_progress' || task.status === 'review') && !task.lease) {
       if (!task.worktree) throw new DispatchError(`任务 ${taskId} 没有 worktree，无法继续`);
-      task = await store.updateTask(flowId, taskId, { lease }, { actor: 'dispatcher', type: 'dispatch', data: { run: runId, role } });
+      task = await store.acquireLease(flowId, taskId, lease, 'dispatcher');
     } else {
       throw new DispatchError(`任务 ${taskId} 当前是 ${task.status}${task.lease ? `（run ${task.lease.run_id} 运行中）` : ''}，不能派发`);
     }
@@ -222,7 +223,16 @@ export class Engine {
   }
 
   /** 程序步骤：promote、给待审查任务派审查、执行 verify、重新派发被打回或失败的任务。 */
-  async pump(flowId: string): Promise<void> {
+  private pumpChain: Promise<void> = Promise.resolve();
+
+  /** 程序步骤按流程串行执行：多个 run 同时结束时，避免并发地重复执行同一步骤 */
+  pump(flowId: string): Promise<void> {
+    const next = this.pumpChain.then(() => this.pumpOnce(flowId), () => this.pumpOnce(flowId));
+    this.pumpChain = next.catch(() => {});
+    return next;
+  }
+
+  private async pumpOnce(flowId: string): Promise<void> {
     const report = this.d.onError ?? (() => {});
     try {
       await this.promote(flowId);

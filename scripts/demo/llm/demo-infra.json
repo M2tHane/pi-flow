@@ -1,0 +1,7 @@
+{ "steps": [
+  { "tool_calls": [ { "name": "flow_claim", "arguments": {} } ] },
+  { "tool_calls": [ { "name": "write", "arguments": { "path": "package.json", "content": "{\n  \"name\": \"todo-demo\",\n  \"type\": \"module\",\n  \"scripts\": { \"test\": \"node --test\" }\n}\n" } } ] },
+  { "tool_calls": [ { "name": "flow_note", "arguments": { "text": "脚手架完成" } } ] },
+  { "tool_calls": [ { "name": "flow_submit", "arguments": { "summary": "项目脚手架" } } ] },
+  { "text": "完成" }
+] }

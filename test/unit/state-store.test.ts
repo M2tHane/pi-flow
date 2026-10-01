@@ -332,3 +332,18 @@ test('updateTask 不能修改状态等受控字段', async () => {
     assert.equal(store.readTask(flow.id, 'T-001').status, 'pending');
   } finally { cleanup(); }
 });
+
+test('并发取得租约：只有一个成功（防止重复派发审查或重新派发）', async () => {
+  const { store, cleanup } = await setup();
+  try {
+    const flow = await flowWithTasks(store);
+    await toInProgress(store, flow.id, 'T-001');
+    await store.transitionTask(flow.id, 'T-001', { to: 'in_progress', trigger: 'run_failed', actor: 'x', facts: { reason: '崩溃' } });
+    const results = await Promise.allSettled([
+      store.acquireLease(flow.id, 'T-001', lease('r-a', 'a'), 'd'),
+      store.acquireLease(flow.id, 'T-001', lease('r-b', 'b'), 'd'),
+    ]);
+    assert.equal(results.filter((r) => r.status === 'fulfilled').length, 1);
+    assert.match(String((results.find((r) => r.status === 'rejected') as PromiseRejectedResult).reason), /已有运行中的 run/);
+  } finally { cleanup(); }
+});

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { writeFileSync, existsSync, mkdirSync, rmSync } from 'node:fs';
+import { writeFileSync, existsSync, mkdirSync, rmSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { createTaskWorktree, ensureIntegrationBranch, snapshot, changedFiles, isClean, removeWorktree, worktreesRoot } from '../../src/core/worktree.ts';
 import { tmpRepo } from '../helpers/repo.ts';
@@ -43,5 +43,25 @@ test('从集成分支建 worktree，快照与 diff，复用与清理', () => {
     removeWorktree(dir, wt.path, wt.branch);
     assert.ok(!existsSync(wt.path));
     assert.equal(git('branch', '--list', 'flow/B-001/T-001'), '');
+  } finally { cleanup(); }
+});
+
+import { ensureLocalExcludes } from '../../src/core/worktree.ts';
+
+test('插件产物写入 info/exclude，不进入任务快照；重复执行不重复写入', () => {
+  const { dir, git, cleanup } = setup();
+  try {
+    ensureLocalExcludes(dir);
+    ensureLocalExcludes(dir);
+    const ex = readFileSync(path.join(dir, '.git/info/exclude'), 'utf8');
+    assert.equal(ex.split('\n').filter((l) => l === '.serena/').length, 1);
+    ensureIntegrationBranch(dir, 'flow/B-001/integration', 'main');
+    const wt = createTaskWorktree(dir, 'B-001', 'T-001', 'flow/B-001/integration');
+    mkdirSync(path.join(wt.path, '.serena'));
+    writeFileSync(path.join(wt.path, '.serena/project.yml'), 'x');
+    writeFileSync(path.join(wt.path, 'a.ts'), 'a');
+    snapshot(wt.path, 'wip');
+    assert.deepEqual(changedFiles(wt.path, wt.base_sha), ['a.ts']);
+    void git;
   } finally { cleanup(); }
 });
