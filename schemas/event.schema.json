@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pi-flow/event.schema.json",
+  "type": "object",
+  "required": [
+    "seq",
+    "ts",
+    "flow",
+    "actor",
+    "type",
+    "prev_hash",
+    "hash"
+  ],
+  "properties": {
+    "seq": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "ts": {
+      "type": "string",
+      "minLength": 1
+    },
+    "flow": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "actor": {
+      "type": "string",
+      "minLength": 1
+    },
+    "type": {
+      "enum": [
+        "transition",
+        "violation",
+        "note",
+        "dispatch",
+        "lease_expired",
+        "approval",
+        "gate_result",
+        "merge",
+        "merge_conflict",
+        "integrity_error"
+      ]
+    },
+    "task": {
+      "type": "string"
+    },
+    "from": {
+      "type": "string"
+    },
+    "to": {
+      "type": "string"
+    },
+    "trigger": {
+      "type": "string"
+    },
+    "reason": {
+      "type": "string"
+    },
+    "evidence": {
+      "type": "string"
+    },
+    "data": {
+      "type": "object",
+      "patternProperties": {
+        "^.*$": {}
+      }
+    },
+    "entities": {
+      "type": "object",
+      "patternProperties": {
+        "^.*$": {
+          "type": "string"
+        }
+      }
+    },
+    "active_flow": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[BF]-[0-9]{3,}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "prev_hash": {
+      "type": "string",
+      "minLength": 64,
+      "maxLength": 64
+    },
+    "hash": {
+      "type": "string",
+      "minLength": 64,
+      "maxLength": 64
+    }
+  },
+  "additionalProperties": false
+}

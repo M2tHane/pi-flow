@@ -1,0 +1,545 @@
+// guard：工具调用拦截与角色策略（第 14 节）。纯判断，不做写入；违规记录由调用方交给 StateStore。
+// 判定顺序：1 工具白名单（含 orchestrator 读路径）→ 2 写路径白名单 → 3 受保护路径 → 4 bash 约束 → 5 敏感读取。
+import { existsSync, realpathSync } from 'node:fs';
+import { homedir } from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { minimatch } from 'minimatch';
+import { BUILTIN_READ_TOOLS, BUILTIN_WRITE_TOOLS, type FlowConfig, type ResolvedRole } from './config.ts';
+import { globsOverlap, isProtected, matchesAny, protectedGlobs } from './paths.ts';
+import { parseShell, type SimpleCommand, type Word } from './shell.ts';
+
+export type GuardRule = 'tool_whitelist' | 'read_paths' | 'write_paths' | 'protected' | 'bash' | 'sensitive';
+export type GuardDecision = { allow: true } | { allow: false; rule: GuardRule; reason: string };
+
+export interface ToolCall { toolName: string; input: Record<string, unknown> }
+
+export interface GuardContext {
+  config: FlowConfig;
+  role: string;
+  /** 子进程工作目录 */
+  cwd: string;
+  /** 可写根目录：实施类为任务 worktree，主工作区角色为项目根 */
+  workspaceRoot: string;
+  /** 主工作区（项目根）。与 workspaceRoot 不同时，主工作区整体不可写 */
+  mainRoot: string;
+  contractsLocked: boolean;
+  /** 任务 writes（merge-fix 为冲突文件列表）；与角色 writes 同时生效 */
+  writes?: string[];
+  /** 给 orchestrator 的指引中填入的 ready 任务 */
+  readyTaskId?: string;
+  homeDir?: string;
+}
+
+/**
+ * 扩展工具（serena 等）中被视为路径的参数名。
+ * 待 M0 核实 serena 真实参数名后补全；写工具取不到路径时按"无法校验即阻断"处理。
+ */
+export const DEFAULT_PATH_KEYS = ['path', 'paths', 'relative_path', 'file', 'files', 'file_path', 'filepath', 'filename', 'dir', 'directory', 'target'];
+
+const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
+const DEV_FILES = new Set(['/dev/null', '/dev/stdout', '/dev/stderr', '/dev/tty']);
+const OUTPUT_OPS = new Set(['>', '>>', '>|', '&>', '&>>', '<>', '>&']);
+const INPUT_OPS = new Set(['<', '<>', '<&']);
+
+const IMPL_FORBIDDEN: Record<string, string> = {
+  tee: '请用 write/edit 工具写文件', mv: '请用 write/edit 工具修改文件；如需移动或删除文件，在 handoff 中说明',
+  cp: '请用 write 工具创建文件', rm: '如需删除文件，在 handoff 中说明并调用 flow_block', rmdir: '如需删除目录，在 handoff 中说明',
+  curl: '只有 researcher 可以联网', wget: '只有 researcher 可以联网', ssh: '禁止远程连接', scp: '禁止远程连接', sftp: '禁止远程连接',
+  eval: 'eval 无法校验，请直接写出命令', popd: '不支持 popd',
+};
+const READONLY_COMMANDS = new Set([
+  'ls', 'cat', 'head', 'tail', 'wc', 'grep', 'egrep', 'fgrep', 'rg', 'find', 'git', 'pwd', 'echo', 'printf', 'tree', 'file',
+  'stat', 'du', 'sort', 'uniq', 'cut', 'tr', 'diff', 'cmp', 'jq', 'which', 'basename', 'dirname', 'realpath', 'true', 'false',
+  'test', '[', 'nl', 'column', 'comm', 'shasum', 'sha256sum', 'md5', 'md5sum', 'xxd', 'hexdump', 'od', 'date', 'cd',
+]);
+const GIT_READONLY = new Set([
+  'log', 'show', 'diff', 'status', 'blame', 'ls-files', 'ls-tree', 'rev-parse', 'cat-file', 'grep', 'shortlog', 'describe',
+  'merge-base', 'name-rev', 'rev-list', 'show-ref', 'branch',
+]);
+const GIT_IMPL_FORBIDDEN: Record<string, string> = {
+  rebase: '改写历史', 'filter-branch': '改写历史', 'filter-repo': '改写历史', 'update-ref': '改写引用', replace: '改写历史',
+  switch: '切换分支', worktree: '操作 worktree', clean: '删除未跟踪文件', push: '推送由引擎在合并时完成',
+  fetch: '联网', pull: '联网', remote: '修改远程配置', reflog: '改写 reflog', tag: '修改共享标签',
+};
+const SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh']);
+const WRAPPERS = new Set(['sudo', 'env', 'nohup', 'time', 'command', 'builtin', 'exec', 'nice', 'timeout', 'stdbuf', 'xargs']);
+
+const ok: GuardDecision = { allow: true };
+const deny = (rule: GuardRule, reason: string): GuardDecision => ({ allow: false, rule, reason });
+
+type Area = { area: 'workspace' | 'main' | 'outside'; abs: string; rel: string };
+
+class Evaluator {
+  readonly ctx: GuardContext;
+  readonly role: ResolvedRole;
+  readonly ws: string;
+  readonly main: string;
+  readonly home: string;
+
+  constructor(ctx: GuardContext) {
+    this.ctx = ctx;
+    this.role = ctx.config.role(ctx.role);
+    this.ws = realpathSafe(ctx.workspaceRoot);
+    this.main = realpathSafe(ctx.mainRoot);
+    this.home = ctx.homeDir ?? homedir();
+  }
+
+  get isOrchestrator() { return this.role.name === 'orchestrator'; }
+  get isReadonlyRole() { return !this.isOrchestrator && this.role.writes.length === 0; }
+
+  hint(): string {
+    if (this.isOrchestrator) {
+      return `你是调度者，不能直接修改代码。请调用 flow_dispatch(${this.ctx.readyTaskId ?? '<task_id>'}) 交给对应 subagent。`;
+    }
+    if (this.role.name === 'reviewer') return '你是只读审查者，不能修改任何文件；请通过 flow_approve 提交审查结论。';
+    if (this.isReadonlyRole) return `你是只读角色（${this.role.name}），不能修改任何文件；结论请写进 flow_note 并 flow_submit。`;
+    return `你是 ${this.role.name}，只能修改本任务 writes 内的文件；确需越界时调用 flow_block 说明原因，不要换一种方式再试。`;
+  }
+
+  /** 与 Pi 的 resolveToCwd 一致：Unicode 空格、去掉 @ 前缀、~、file://；再解析符号链接。 */
+  resolveToolPath(input: string, cwd = this.ctx.cwd): string {
+    let p = input.replace(UNICODE_SPACES, ' ');
+    if (p.startsWith('@')) p = p.slice(1);
+    if (p === '~') p = this.home;
+    else if (p.startsWith('~/')) p = path.join(this.home, p.slice(2));
+    if (/^file:\/\//.test(p)) p = fileURLToPath(p);
+    return realpathDeep(path.resolve(cwd, p));
+  }
+
+  classify(abs: string): Area {
+    const inWs = within(this.ws, abs);
+    if (inWs !== null) return { area: 'workspace', abs, rel: inWs };
+    const inMain = within(this.main, abs);
+    if (inMain !== null) return { area: 'main', abs, rel: inMain };
+    return { area: 'outside', abs, rel: abs };
+  }
+
+  effectiveWrites(): string[] {
+    return this.ctx.writes ?? this.role.writes;
+  }
+
+  checkWrite(rawPath: string, tool: string, cwd?: string): GuardDecision {
+    const a = this.classify(this.resolveToolPath(rawPath, cwd));
+    if (a.area === 'main') return deny('write_paths', `不能写主工作区（${a.rel}），只能修改当前 worktree 内的文件。${this.hint()}`);
+    if (a.area === 'outside') return deny('write_paths', `只能写当前 worktree 内的文件，${a.abs} 在其外。${this.hint()}`);
+    const writes = this.effectiveWrites();
+    const inTask = matchesAny(a.rel, writes) && matchesAny(a.rel, this.role.writes);
+    if (!inTask) {
+      return deny('write_paths', `${a.rel} 不在本任务可写范围内（${writes.join(', ') || '无'}）。${tool} 被阻断。${this.hint()}`);
+    }
+    if (isProtectedNocase(a.rel, this.ctx.contractsLocked)) {
+      return deny('protected', `${a.rel} 是受保护路径，对所有 agent 只读（${protectedGlobs({ contractsLocked: this.ctx.contractsLocked }).join('、')}）。`);
+    }
+    return ok;
+  }
+
+  checkSensitive(rawPath: string, cwd?: string): GuardDecision {
+    const a = this.classify(this.resolveToolPath(rawPath, cwd));
+    if (isSensitiveRel(a.rel)) return deny('sensitive', `禁止读取敏感文件 ${a.rel}（.env*、*.pem、secrets/**）。`);
+    return ok;
+  }
+
+  checkReadPaths(rawPath: string | undefined): GuardDecision {
+    const allowed = this.role.readPaths;
+    if (!allowed) return ok;
+    const a = this.classify(this.resolveToolPath(rawPath ?? '.'));
+    if (a.area !== 'workspace' || !matchesAny(a.rel, allowed)) {
+      return deny('read_paths', `${this.role.name} 只能读取 ${allowed.join('、')}，${a.rel} 不在其中。${this.hint()}`);
+    }
+    return ok;
+  }
+
+  run(call: ToolCall): GuardDecision {
+    const { toolName: tool, input } = call;
+    // 1. 工具白名单
+    if (!this.role.tools.has(tool)) {
+      return deny('tool_whitelist', this.isOrchestrator ? this.hint() : `角色 ${this.role.name} 无权使用工具 ${tool}。${this.hint()}`);
+    }
+    const kind = this.ctx.config.toolKind(tool);
+    const builtin = (BUILTIN_READ_TOOLS as readonly string[]).includes(tool) || (BUILTIN_WRITE_TOOLS as readonly string[]).includes(tool);
+    const paths = extractPaths(input, builtin ? ['path'] : DEFAULT_PATH_KEYS);
+
+    if (kind === 'read' || kind === 'ext-read') {
+      if (kind === 'read') {
+        const rp = this.checkReadPaths(paths[0]);
+        if (!rp.allow) return rp;
+      }
+      for (const p of paths) {
+        const s = this.checkSensitive(p);
+        if (!s.allow) return s;
+      }
+      // find 的 pattern、grep 的 glob 是文件名模式
+      for (const key of ['pattern', 'glob'] as const) {
+        const v = input[key];
+        if ((tool === 'find' && key === 'pattern') || (tool === 'grep' && key === 'glob')) {
+          if (typeof v === 'string' && sensitiveGlob(v)) return deny('sensitive', `禁止搜索敏感文件（${v}）。`);
+        }
+      }
+      return ok;
+    }
+    if (kind === 'write') {
+      // 2 + 3. 写路径白名单与受保护路径
+      if (!paths.length) return deny('write_paths', `无法确定 ${tool} 的写入路径，已按写操作阻断。${this.hint()}`);
+      for (const p of paths) {
+        const d = this.checkWrite(p, tool);
+        if (!d.allow) return d;
+      }
+      return ok;
+    }
+    if (kind === 'bash') {
+      const command = input['command'];
+      if (typeof command !== 'string') return deny('bash', 'bash 调用缺少 command 参数');
+      return new BashChecker(this).check(command, this.ctx.cwd);
+    }
+    return ok;
+  }
+}
+
+class BashChecker {
+  private readonly ev: Evaluator;
+  private readonly readonly: boolean;
+
+  constructor(ev: Evaluator) {
+    this.ev = ev;
+    this.readonly = ev.role.bash === 'readonly';
+  }
+
+  check(command: string, startCwd: string, depth = 0): GuardDecision {
+    if (depth > 4) return deny('bash', '嵌套的 shell 层数过多，无法校验');
+    const parsed = parseShell(command);
+    if (parsed.errors.length) return deny('bash', `无法解析的命令（${parsed.errors[0]}），已阻断。请改写为简单命令。`);
+    let cwd = startCwd;
+    for (const cmd of parsed.commands) {
+      const r = this.checkCommand(cmd, cmd.nested ? startCwd : cwd, depth);
+      if (!r.decision.allow) return r.decision;
+      if (r.cwd && !cmd.nested) cwd = r.cwd;
+    }
+    return ok;
+  }
+
+  private checkCommand(cmd: SimpleCommand, cwd: string, depth: number): { decision: GuardDecision; cwd?: string } {
+    const red = this.checkRedirects(cmd, cwd);
+    if (!red.allow) return { decision: red };
+
+    let words = cmd.words;
+    // 剥离包装命令
+    for (;;) {
+      const name = words[0];
+      if (!name) return { decision: ok };
+      if (name.dynamic || name.glob) return { decision: deny('bash', `命令名 ${name.text} 含变量或通配，无法校验，已阻断`) };
+      const base = path.basename(name.text);
+      if (!WRAPPERS.has(base)) break;
+      if (this.readonly && !['xargs', 'command', 'time'].includes(base)) {
+        return { decision: deny('bash', `只读角色不能使用 ${base}。${this.ev.hint()}`) };
+      }
+      const rest = stripWrapper(base, words.slice(1));
+      if (!rest.length && base === 'env') return { decision: deny('sensitive', '禁止打印环境变量（可能含密钥）。') };
+      words = rest;
+    }
+    const name = path.basename(words[0]!.text);
+    const args = words.slice(1);
+
+    // 嵌套 shell：递归校验 -c 内容
+    if (SHELLS.has(name)) {
+      const ci = args.findIndex((w) => /^-[a-z]*c[a-z]*$/.test(w.text));
+      if (ci >= 0) {
+        const inner = args[ci + 1];
+        if (!inner || inner.dynamic) return { decision: deny('bash', `${name} -c 的内容含变量，无法校验`) };
+        return { decision: this.check(inner.text, cwd, depth + 1) };
+      }
+      if (this.readonly) return { decision: deny('bash', `只读角色不能执行脚本。${this.ev.hint()}`) };
+    }
+
+    if (['printenv', 'set', 'export', 'declare'].includes(name) && (name === 'printenv' || args.length === 0 || args[0]?.text === '-p')) {
+      return { decision: deny('sensitive', '禁止打印环境变量（可能含密钥）。') };
+    }
+
+    // 5. 敏感读取（参数）
+    for (const w of args) {
+      const s = this.sensitiveWord(w, cwd);
+      if (!s.allow) return { decision: s };
+    }
+
+    if (name === 'cd' || name === 'pushd') return this.checkCd(args, cwd);
+
+    if (this.readonly) return { decision: this.checkReadonly(name, args) };
+
+    // 4. 实施类角色的 bash 约束
+    if (name in IMPL_FORBIDDEN) return { decision: deny('bash', `禁止使用 ${name}：${IMPL_FORBIDDEN[name]}。`) };
+    if ((name === 'sed' || name === 'gsed') && args.some((w) => /^-[^-]*i/.test(w.text) || w.text.startsWith('--in-place'))) {
+      return { decision: deny('bash', '禁止 sed -i 原地修改，请用 edit 工具。') };
+    }
+    if (name === 'perl' && args.some((w) => /^-[^-]*i/.test(w.text))) return { decision: deny('bash', '禁止 perl -i 原地修改，请用 edit 工具。') };
+    if (name === 'git') return { decision: this.checkGitImpl(args) };
+    if (name === 'find') {
+      const f = this.checkFind(args, cwd, depth);
+      if (!f.allow) return { decision: f };
+    }
+    return { decision: ok };
+  }
+
+  private checkRedirects(cmd: SimpleCommand, cwd: string): GuardDecision {
+    for (const r of cmd.redirects) {
+      if (r.fdDup || r.op === '<<' || r.op === '<<-' || r.op === '<<<') continue;
+      const t = r.target;
+      if (INPUT_OPS.has(r.op)) {
+        const s = this.sensitiveWord(t, cwd);
+        if (!s.allow) return s;
+        if (r.op !== '<>') continue;
+      }
+      if (!OUTPUT_OPS.has(r.op)) continue;
+      if (t.dynamic || t.glob) return deny('bash', `重定向目标 ${t.text} 含变量或通配，无法校验，已阻断`);
+      const target = t.tilde ? path.join(this.ev.home, t.text.slice(1)) : t.text;
+      if (DEV_FILES.has(target) || /^\/dev\/fd\/\d+$/.test(target)) continue;
+      if (this.readonly) return deny('bash', `只读角色不能重定向输出到文件（${t.text}）。${this.ev.hint()}`);
+      const a = this.ev.classify(realpathDeep(path.resolve(cwd, target)));
+      if (a.area === 'main') return deny('bash', `不能写主工作区（${a.rel}）。${this.ev.hint()}`);
+      if (a.area === 'workspace' && isProtectedNocase(a.rel, this.ev.ctx.contractsLocked)) {
+        return deny('protected', `${a.rel} 是受保护路径，对所有 agent 只读。`);
+      }
+    }
+    return ok;
+  }
+
+  private checkCd(args: Word[], cwd: string): { decision: GuardDecision; cwd?: string } {
+    const target = args.find((w) => !w.text.startsWith('-') || w.text === '-');
+    if (!target || target.text === '-' || target.tilde) {
+      return { decision: deny('bash', '禁止切到 worktree 之外（cd 无参数、cd -、cd ~）。') };
+    }
+    if (target.dynamic) return { decision: deny('bash', `cd 目标 ${target.text} 含变量，无法校验`) };
+    const abs = realpathDeep(path.resolve(cwd, target.text));
+    if (this.ev.classify(abs).area !== 'workspace') {
+      return { decision: deny('bash', `禁止切到 worktree 之外：${target.text}。`) };
+    }
+    return { decision: ok, cwd: abs };
+  }
+
+  private checkReadonly(name: string, args: Word[]): GuardDecision {
+    const no = (why: string) => deny('bash', `只读角色不能执行该命令（${why}）。${this.ev.hint()}`);
+    if (!READONLY_COMMANDS.has(name)) return no(name);
+    const flags = args.map((w) => w.text);
+    const positional = flags.filter((f) => !f.startsWith('-'));
+    if (name === 'find' && flags.some((f) => /^-(exec|execdir|ok|okdir|delete|fprint|fprint0|fprintf|fls)$/.test(f))) return no(`find ${flags.find((f) => /^-(exec|execdir|ok|okdir|delete|fp|fl)/.test(f))}`);
+    if (name === 'sort' && flags.some((f) => f === '-o' || f.startsWith('--output') || /^-[a-z]*o/.test(f))) return no('sort -o');
+    if (name === 'tree' && flags.some((f) => f === '-o')) return no('tree -o');
+    if ((name === 'uniq' || name === 'xxd') && positional.length >= 2) return no(`${name} 输出到文件`);
+    if (name === 'date' && flags.some((f) => f === '-s' || f.startsWith('--set'))) return no('date -s');
+    if (name === 'git') {
+      const g = parseGit(args);
+      if (g.globals.length) return no(`git ${g.globals[0]}`);
+      if (!g.sub || !GIT_READONLY.has(g.sub)) return no(`git ${g.sub ?? ''}`);
+      if (g.rest.some((w) => w.text.startsWith('--output') || w.text === '-o' && g.sub !== 'log')) return no('git --output');
+      if (g.sub === 'branch' && g.rest.some((w) => !['-a', '-r', '-v', '-vv', '--list', '-l', '--show-current', '--all', '--remotes'].includes(w.text))) {
+        return no('git branch 只能列出分支');
+      }
+    }
+    return ok;
+  }
+
+  private checkGitImpl(args: Word[]): GuardDecision {
+    const g = parseGit(args);
+    if (g.globals.length) return deny('bash', `禁止使用 git ${g.globals[0]} 操作其他仓库或工作区。`);
+    if (!g.sub) return ok;
+    const rest = g.rest.map((w) => w.text);
+    const why = GIT_IMPL_FORBIDDEN[g.sub];
+    if (why) return deny('bash', `禁止 git ${g.sub}（${why}）。`);
+    const dd = rest.indexOf('--');
+    const beforeDd = dd >= 0 ? rest.slice(0, dd) : rest;
+    switch (g.sub) {
+      case 'reset': {
+        const okArgs = beforeDd.every((a) => a === '-q' || a === '--quiet' || (dd >= 0 && a === 'HEAD'));
+        if (!okArgs) return deny('bash', '禁止 git reset 改写历史；取消暂存请用 git reset -- <文件>。');
+        return ok;
+      }
+      case 'commit':
+        if (rest.some((a) => a === '--amend' || a.startsWith('--fixup') || a.startsWith('--squash'))) return deny('bash', '禁止 git commit --amend 等改写历史的操作。');
+        return ok;
+      case 'checkout': {
+        // 只允许 git checkout [<提交>] -- <文件>：按提交恢复文件，不会切换分支
+        const positional = beforeDd.filter((a) => a !== '-q' && a !== '--quiet');
+        if (dd < 0 || positional.length > 1 || positional.some((a) => a.startsWith('-'))) {
+          return deny('bash', '禁止 git checkout 切换分支；恢复文件请用 git checkout [<提交>] -- <文件>。');
+        }
+        return ok;
+      }
+      case 'branch':
+        if (rest.some((a) => !['-a', '-r', '-v', '-vv', '--list', '-l', '--show-current', '--all', '--remotes'].includes(a))) {
+          return deny('bash', '禁止创建、删除、重命名分支；任务分支由引擎管理。');
+        }
+        return ok;
+      case 'config':
+        if (!rest.some((a) => a === '--get' || a === '--list' || a === '-l' || a.startsWith('--get'))) {
+          return deny('bash', '禁止修改 git 配置（worktree 与主仓库共享配置）。');
+        }
+        return ok;
+      default:
+        return ok;
+    }
+  }
+
+  private checkFind(args: Word[], cwd: string, depth: number): GuardDecision {
+    for (let k = 0; k < args.length; k++) {
+      const a = args[k]!.text;
+      if (a === '-delete') return deny('bash', '禁止 find -delete。');
+      if (/^-(fprint|fprint0|fprintf|fls)$/.test(a)) {
+        const t = args[k + 1];
+        if (!t) continue;
+        const area = this.ev.classify(realpathDeep(path.resolve(cwd, t.text)));
+        if (t.dynamic || area.area === 'main' || (area.area === 'workspace' && isProtectedNocase(area.rel, this.ev.ctx.contractsLocked))) {
+          return deny('bash', `find ${a} 的目标不允许：${t.text}`);
+        }
+      }
+      if (/^-(exec|execdir|ok|okdir)$/.test(a)) {
+        const end = args.findIndex((w, j) => j > k && (w.text === ';' || w.text === '+'));
+        const inner = args.slice(k + 1, end < 0 ? undefined : end);
+        const r = this.checkCommand({ assignments: [], words: inner, redirects: [], nested: true }, cwd, depth + 1);
+        if (!r.decision.allow) return r.decision;
+      }
+    }
+    return ok;
+  }
+
+  private sensitiveWord(w: Word, cwd: string): GuardDecision {
+    if (w.dynamic) return ok;
+    let text = w.text;
+    const eq = text.startsWith('-') ? text.indexOf('=') : -1;
+    if (text.startsWith('-')) {
+      if (eq < 0) return ok;
+      text = text.slice(eq + 1);
+    }
+    if (!text) return ok;
+    if (w.tilde) text = path.join(this.ev.home, text.slice(1));
+    if (w.glob) {
+      return sensitiveGlob(text) ? deny('sensitive', `禁止读取敏感文件（${w.text}）。`) : ok;
+    }
+    return this.ev.checkSensitive(text, cwd);
+  }
+}
+
+function stripWrapper(name: string, rest: Word[]): Word[] {
+  let k = 0;
+  const skipOpts = (withArg: Set<string>) => {
+    while (k < rest.length && rest[k]!.text.startsWith('-')) {
+      const t = rest[k]!.text;
+      k += withArg.has(t) ? 2 : 1;
+      if (t === '--') break;
+    }
+  };
+  switch (name) {
+    case 'env':
+      skipOpts(new Set(['-u', '-C', '-S']));
+      while (k < rest.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(rest[k]!.text)) k++;
+      break;
+    case 'sudo': skipOpts(new Set(['-u', '-g', '-C', '-D', '-h', '-p', '-r', '-t', '-U'])); break;
+    case 'nice': skipOpts(new Set(['-n'])); break;
+    case 'timeout': skipOpts(new Set(['-s', '-k', '--signal', '--kill-after'])); k++; break;
+    case 'stdbuf': skipOpts(new Set(['-i', '-o', '-e'])); break;
+    case 'xargs': skipOpts(new Set(['-I', '-n', '-P', '-L', '-d', '-E', '-s', '-a', '-i'])); break;
+    default: skipOpts(new Set());
+  }
+  return rest.slice(k);
+}
+
+function parseGit(args: Word[]): { globals: string[]; sub: string | null; rest: Word[] } {
+  const globals: string[] = [];
+  let k = 0;
+  while (k < args.length && args[k]!.text.startsWith('-')) {
+    const t = args[k]!.text;
+    if (t === '-C' || t === '--git-dir' || t === '--work-tree' || t === '--namespace') { globals.push(t); k += 2; continue; }
+    if (t.startsWith('--git-dir=') || t.startsWith('--work-tree=')) globals.push(t.split('=')[0]!);
+    if (t === '-c') { k += 2; continue; }
+    k++;
+  }
+  return { globals, sub: args[k]?.text ?? null, rest: args.slice(k + 1) };
+}
+
+function extractPaths(input: Record<string, unknown>, keys: readonly string[]): string[] {
+  const out: string[] = [];
+  for (const k of keys) {
+    const v = input[k];
+    if (typeof v === 'string' && v) out.push(v);
+    else if (Array.isArray(v)) for (const x of v) if (typeof x === 'string' && x) out.push(x);
+  }
+  return out;
+}
+
+function isProtectedNocase(rel: string, contractsLocked: boolean): boolean {
+  return isProtected(rel.toLowerCase(), { contractsLocked });
+}
+
+function isSensitiveRel(rel: string): boolean {
+  const segs = rel.toLowerCase().split('/');
+  const baseName = segs.at(-1) ?? '';
+  return baseName.startsWith('.env') || baseName.endsWith('.pem') || segs.slice(0, -1).includes('secrets') || baseName === 'secrets';
+}
+
+/** 文件名模式是否可能匹配敏感文件。按 shell 语义，未以 . 开头的模式不匹配点文件。 */
+function sensitiveGlob(pattern: string): boolean {
+  const segs = pattern.toLowerCase().split('/').filter(Boolean);
+  const last = segs.at(-1) ?? '';
+  if (segs.some((s) => s.includes('secret'))) return true;
+  if (last.startsWith('.') && globsOverlap(last, '.env*')) return true;
+  if (last === '*' || last === '**') return false;
+  // 如 *.pem、*.p?m：按非点文件语义匹配
+  return minimatch('key.pem', last);
+}
+
+function within(root: string, abs: string): string | null {
+  const rel = path.relative(root, abs);
+  if (rel === '') return '.';
+  if (rel.startsWith('..') || path.isAbsolute(rel)) return null;
+  return rel.split(path.sep).join('/');
+}
+
+function realpathSafe(p: string): string {
+  try {
+    return realpathSync.native(p);
+  } catch {
+    return path.resolve(p);
+  }
+}
+
+/** 解析最近的已存在祖先的真实路径（处理符号链接与大小写），再拼回不存在的部分。 */
+function realpathDeep(abs: string): string {
+  const tail: string[] = [];
+  let cur = abs;
+  while (!existsSync(cur)) {
+    const parent = path.dirname(cur);
+    if (parent === cur) return abs;
+    tail.unshift(path.basename(cur));
+    cur = parent;
+  }
+  return path.join(realpathSafe(cur), ...tail);
+}
+
+export function checkToolCall(call: ToolCall, ctx: GuardContext): GuardDecision {
+  return new Evaluator(ctx).run(call);
+}
+
+export interface ViolationSink {
+  recordViolation(v: {
+    flow: string | null; task: string | null; run: string; role: string; tool: string; rule: string; reason: string; detail?: string;
+  }, maxPerRun: number): Promise<{ count: number; terminate: boolean; blocked: boolean }>;
+}
+
+export interface RunRef { flow: string | null; task: string | null; run: string }
+
+export type EnforceResult =
+  | { allow: true }
+  | { allow: false; reason: string; rule: GuardRule; count: number; terminate: boolean };
+
+/** 判定并在阻断时记录 violation（第 14 节第 6 条）。由 pi-adapter 的工具调用钩子调用。 */
+export async function enforceToolCall(call: ToolCall, ctx: GuardContext, sink: ViolationSink, run: RunRef): Promise<EnforceResult> {
+  const d = checkToolCall(call, ctx);
+  if (d.allow) return d;
+  const max = ctx.config.limits.max_violations_per_run;
+  const command = call.toolName === 'bash' && typeof call.input['command'] === 'string' ? call.input['command'] : undefined;
+  const detail = command ? command.slice(0, 200) : typeof call.input['path'] === 'string' ? call.input['path'] : undefined;
+  const r = await sink.recordViolation({ ...run, role: ctx.role, tool: call.toolName, rule: d.rule, reason: d.reason,
+    ...(detail ? { detail } : {}) }, max);
+  const tail = r.terminate
+    ? `\n违规次数已达上限 ${max}，本次运行将被终止，任务转为 blocked，等待用户处理。`
+    : `\n（违规 ${r.count}/${max}，达到上限将终止本次运行）`;
+  return { allow: false, rule: d.rule, reason: d.reason + tail, count: r.count, terminate: r.terminate };
+}

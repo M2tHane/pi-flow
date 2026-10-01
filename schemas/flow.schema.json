@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pi-flow/flow.schema.json",
+  "type": "object",
+  "required": [
+    "id",
+    "mode",
+    "title",
+    "stages",
+    "stage",
+    "stage_status",
+    "integration_branch",
+    "base_sha",
+    "approvals",
+    "created_at",
+    "version"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[BF]-[0-9]{3,}$"
+    },
+    "mode": {
+      "anyOf": [
+        {
+          "type": "string",
+          "const": "build"
+        },
+        {
+          "type": "string",
+          "const": "feature"
+        }
+      ]
+    },
+    "title": {
+      "type": "string"
+    },
+    "stages": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "minItems": 1
+    },
+    "stage": {
+      "type": "string",
+      "minLength": 1
+    },
+    "stage_status": {
+      "enum": [
+        "active",
+        "awaiting_gate",
+        "awaiting_human",
+        "done",
+        "aborted"
+      ]
+    },
+    "integration_branch": {
+      "type": "string",
+      "minLength": 1
+    },
+    "base_sha": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "approvals": {
+      "type": "object",
+      "patternProperties": {
+        "^.*$": {
+          "type": "object",
+          "required": [
+            "by",
+            "at"
+          ],
+          "properties": {
+            "by": {
+              "type": "string",
+              "const": "human"
+            },
+            "at": {
+              "type": "string",
+              "minLength": 1
+            },
+            "note": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    },
+    "created_at": {
+      "type": "string",
+      "minLength": 1
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,187 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pi-flow/run.schema.json",
+  "type": "object",
+  "required": [
+    "run_id",
+    "flow",
+    "task",
+    "role",
+    "model",
+    "started_at",
+    "ended_at",
+    "tokens",
+    "outcome",
+    "token_hash",
+    "violations",
+    "version"
+  ],
+  "properties": {
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "flow": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "task": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "role": {
+      "type": "string",
+      "minLength": 1
+    },
+    "model": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "started_at": {
+      "type": "string",
+      "minLength": 1
+    },
+    "ended_at": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "tokens": {
+      "type": "object",
+      "required": [
+        "input",
+        "output",
+        "cache_read",
+        "cache_write"
+      ],
+      "properties": {
+        "input": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "output": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cache_read": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cache_write": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "outcome": {
+      "anyOf": [
+        {
+          "anyOf": [
+            {
+              "type": "string",
+              "const": "submitted"
+            },
+            {
+              "type": "string",
+              "const": "approved"
+            },
+            {
+              "type": "string",
+              "const": "rejected"
+            },
+            {
+              "type": "string",
+              "const": "blocked"
+            },
+            {
+              "type": "string",
+              "const": "failed"
+            },
+            {
+              "type": "string",
+              "const": "killed"
+            },
+            {
+              "type": "string",
+              "const": "lease_expired"
+            },
+            {
+              "type": "string",
+              "const": "noted"
+            }
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "token_hash": {
+      "type": "string",
+      "minLength": 64,
+      "maxLength": 64
+    },
+    "violations": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    }
+  },
+  "additionalProperties": false
+}

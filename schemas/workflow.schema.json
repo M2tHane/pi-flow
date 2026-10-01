@@ -1,0 +1,287 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pi-flow/workflow.schema.json",
+  "type": "object",
+  "required": [
+    "version",
+    "project",
+    "main_branch",
+    "commands",
+    "limits",
+    "models",
+    "modes",
+    "scopes",
+    "tool_groups",
+    "roles"
+  ],
+  "properties": {
+    "version": {
+      "type": "number",
+      "const": 1
+    },
+    "project": {
+      "type": "string",
+      "minLength": 1
+    },
+    "main_branch": {
+      "type": "string",
+      "minLength": 1
+    },
+    "commands": {
+      "type": "object",
+      "patternProperties": {
+        "^.*$": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "required": [
+        "max_parallel",
+        "max_attempts",
+        "lease_minutes",
+        "max_violations_per_run",
+        "max_task_files",
+        "fix_max_files"
+      ],
+      "properties": {
+        "max_parallel": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_attempts": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "lease_minutes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_violations_per_run": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_task_files": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "fix_max_files": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "models": {
+      "type": "object",
+      "patternProperties": {
+        "^.*$": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "modes": {
+      "type": "object",
+      "properties": {
+        "build": {
+          "type": "object",
+          "required": [
+            "stages"
+          ],
+          "properties": {
+            "stages": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "name",
+                  "gate"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "gate": {
+                    "type": "object",
+                    "properties": {
+                      "human": {
+                        "type": "boolean"
+                      },
+                      "auto": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "all_tasks_done": {
+                        "type": "boolean"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": false
+              },
+              "minItems": 1
+            }
+          },
+          "additionalProperties": false
+        },
+        "feature": {
+          "type": "object",
+          "required": [
+            "stages"
+          ],
+          "properties": {
+            "stages": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "name",
+                  "gate"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "gate": {
+                    "type": "object",
+                    "properties": {
+                      "human": {
+                        "type": "boolean"
+                      },
+                      "auto": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "all_tasks_done": {
+                        "type": "boolean"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": false
+              },
+              "minItems": 1
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "scopes": {
+      "type": "object",
+      "patternProperties": {
+        "^.*$": {
+          "type": "object",
+          "required": [
+            "writes"
+          ],
+          "properties": {
+            "rules": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "writes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    },
+    "tool_groups": {
+      "type": "object",
+      "patternProperties": {
+        "^.*$": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "roles": {
+      "type": "object",
+      "patternProperties": {
+        "^.*$": {
+          "type": "object",
+          "required": [
+            "model",
+            "tools"
+          ],
+          "properties": {
+            "model": {
+              "type": "string",
+              "minLength": 1
+            },
+            "thinking": {
+              "type": "string"
+            },
+            "scopes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "tools": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "read_paths": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "writes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "env": {
+              "type": "object",
+              "patternProperties": {
+                "^.*$": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  },
+  "additionalProperties": false
+}

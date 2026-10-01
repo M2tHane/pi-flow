@@ -1,0 +1,8 @@
+{ "steps": [
+  { "tool_calls": [ { "name": "flow_claim", "arguments": {} } ] },
+  { "tool_calls": [ { "name": "write", "arguments": { "path": ".flow/hack.json", "content": "{}" } } ] },
+  { "tool_calls": [ { "name": "write", "arguments": { "path": "src/server/t-001/a.ts", "content": "export const a = 1;\n" } } ], "usage": { "prompt_tokens": 800, "completion_tokens": 30, "cached_tokens": 600 } },
+  { "tool_calls": [ { "name": "flow_note", "arguments": { "text": "完成 a.ts；尝试写 .flow 被拒" } } ] },
+  { "tool_calls": [ { "name": "flow_submit", "arguments": { "summary": "实现 a.ts" } } ] },
+  { "text": "已提交" }
+] }

@@ -1,0 +1,58 @@
+// pi-flow 用到的 Pi API 的最小类型声明，摘自 @earendil-works/pi-coding-agent 0.99.2 与 pi-ai 的 .d.ts（已核实）。
+// 运行时由 Pi（jiti）提供这些模块；只有 src/pi-adapter/ 可以引用它们。Pi 升级后需对照 NOTES.md 重新核实。
+declare module '@earendil-works/pi-coding-agent' {
+  export type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  export interface PiModel { provider: string; id: string; name: string; reasoning: boolean }
+  export interface ModelRegistry {
+    getAll(): PiModel[];
+    getAvailable(): PiModel[];
+    find(provider: string, modelId: string): PiModel | undefined;
+  }
+  export interface ExtensionUIContext {
+    select(title: string, options: string[]): Promise<string | undefined>;
+    confirm(title: string, message: string): Promise<boolean>;
+    input(title: string, placeholder?: string): Promise<string | undefined>;
+    notify(message: string, type?: 'info' | 'warning' | 'error'): void;
+  }
+  export interface ExtensionContext {
+    ui: ExtensionUIContext;
+    hasUI: boolean;
+    mode: 'tui' | 'rpc' | 'json' | 'print';
+    cwd: string;
+    modelRegistry: ModelRegistry;
+    shutdown(): void;
+  }
+  export interface TextContent { type: 'text'; text: string }
+  export interface AgentToolResult { content: TextContent[]; details: unknown }
+  export interface ToolDefinition {
+    name: string;
+    label: string;
+    description: string;
+    parameters: unknown;
+    execute(toolCallId: string, params: any, signal: AbortSignal | undefined, onUpdate: unknown, ctx: ExtensionContext): Promise<AgentToolResult>;
+  }
+  export interface ToolCallEvent { type: 'tool_call'; toolCallId: string; toolName: string; input: Record<string, unknown> }
+  export interface ToolCallEventResult { block?: boolean; reason?: string; terminate?: boolean }
+  export interface AutocompleteItem { value: string; label: string; description?: string }
+  export interface RegisteredCommandOptions {
+    description?: string;
+    getArgumentCompletions?: (argumentPrefix: string) => AutocompleteItem[] | null | Promise<AutocompleteItem[] | null>;
+    handler: (args: string, ctx: ExtensionContext) => Promise<void>;
+  }
+  export interface ExtensionAPI {
+    registerCommand(name: string, options: RegisteredCommandOptions): void;
+    registerTool(tool: ToolDefinition): void;
+    getAllTools(): { name: string }[];
+    getActiveTools(): string[];
+    setActiveTools(names: string[]): void;
+    on(event: 'session_start' | 'session_shutdown', handler: (event: unknown, ctx: ExtensionContext) => unknown): () => void;
+    on(event: 'tool_call', handler: (event: ToolCallEvent, ctx: ExtensionContext) => Promise<ToolCallEventResult | void> | ToolCallEventResult | void): () => void;
+  }
+  export function getAgentDir(): string;
+  export const CONFIG_DIR_NAME: string;
+}
+
+declare module '@earendil-works/pi-ai' {
+  import type { PiModel, ThinkingLevel } from '@earendil-works/pi-coding-agent';
+  export function getSupportedThinkingLevels(model: PiModel): ThinkingLevel[];
+}

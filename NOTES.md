@@ -1,0 +1,132 @@
+# pi-flow 开发笔记
+
+## 已验证版本号
+
+| 组件 | 版本 | 来源 / 说明 |
+|---|---|---|
+| Node | 24.18.0 | 本机；package.json 要求 >=22。测试直接用 Node 原生 TS 类型剥离运行（要求 erasable syntax，不用参数属性、enum、namespace） |
+| Pi | `@earendil-works/pi-coding-agent` **0.99.2**（用户已升级，以此为准） | 旧包名 `@mariozechner/pi-coding-agent` 停在 0.73.1 |
+| typebox | 1.3.27（devDependency，与 Pi 0.99.2 内置版本一致） | Pi `docs/packages.md`：typebox 属于 Pi 内置核心包，作为 `peerDependencies: "*"` 声明，不打包 |
+| proper-lockfile | 4.1.2 | 与 Pi 自身依赖同版本；npm 官方包，作者 moxystudio；用途：`.flow/` 跨进程文件锁 |
+| minimatch | 10.2.6 | 与 Pi 自身依赖同版本；isaacs 维护；用途：glob 匹配 |
+| yaml | 2.9.0 | 与 Pi 自身依赖同版本；eemeli 维护；用途：解析 workflow.yaml 并定位行号 |
+| typescript | 5.9.3 | devDependency，仅 typecheck |
+
+依赖选择理由：上述运行时依赖均是 Pi 本身已使用的库，版本对齐，装 pi-flow 不会引入新的供应链来源。测试框架用 Node 内置 `node:test`，不另装。
+
+## M0：Pi API 矩阵（Pi 0.99.2）
+
+核实方式：**实测**＝在 playground 中用真实 pi 进程运行（探针在 `playground/probes/`，假模型在 `test/fixtures/fake-llm/`）；**源码**＝读 0.99.2 的 `.d.ts` / 源码或官方文档、示例。
+
+| 能力 | 结论 | 核实 |
+|---|---|---|
+| 包名与安装 | `@earendil-works/pi-coding-agent`；`pi install npm:<pkg>`、本地路径、`-l` 写项目 `.pi/settings.json` | 源码（docs/packages.md） |
+| package 清单 | `package.json` 的 `pi.extensions/skills/prompts/themes`；Pi 核心包放 `peerDependencies: "*"`；扩展 .ts 由 jiti 直接加载 | 源码；实测（-e 加载本仓库 .ts，能解析本仓库 node_modules 中的 yaml/minimatch，`typebox` 由 Pi 提供） |
+| 注册斜杠命令与参数 | `pi.registerCommand(name, {description, getArgumentCompletions, handler(args, ctx)})`；`args` 是**原始字符串**，需自行拆分（`src/commands/args.ts`） | 实测 |
+| 非交互运行命令 | `pi -p "/cmd args"` 直接执行扩展命令，不调用模型；`ctx.hasUI=false` | 实测 |
+| 交互 UI | `ctx.ui.select/confirm/input/notify`；RPC 模式经 `extension_ui_request/response` 转发（`hasUI=true`, `mode="rpc"`）；json/print 无 UI | 实测（`test/e2e/rpc-driver.ts` 驱动 `/flow-config` 菜单） |
+| 注册工具 | `pi.registerTool({name, label, description, parameters, execute(id, params, signal, onUpdate, ctx)})`，返回 `{content, details}` | 实测 |
+| 拦截工具调用 | `pi.on('tool_call')` 返回 `{block: true, reason}`；reason 作为错误结果交给模型；handler 抛错按阻断处理 | 实测；源码；真实模型收到阻断原因后按指示停止、未换方式重试 |
+| 多个 tool_call handler 的顺序 | **按扩展加载顺序执行；后面的 handler 看到前面修改过的 input，且不再校验**。guard 必须最后加载 | 实测（A 改参数，B 看到改后的值） |
+| 动态启用工具 | `pi.setActiveTools(names)` 在 `session_start` 中调用即生效；请求里声明的工具随之收窄 | 实测 |
+| 追加系统提示 | `before_agent_start` 中修改 `event.systemPromptOptions.appendSystemPrompt`，每轮请求都带上 | 实测 |
+| 会话与每轮钩子 | `session_start`、`before_agent_start`、`turn_start/turn_end`、`agent_settled`、`session_shutdown` 等 | 源码；实测（session_start、before_agent_start、turn_end） |
+| 子进程 | `pi --mode json -p --no-session --no-extensions --no-skills --no-prompt-templates --no-context-files -e <ext>... --model provider/id --thinking <level> --tools a,b --append-system-prompt <file> "<prompt>"`；**stdin 必须关闭**（否则 -p 等待输入）；工作目录 = spawn 的 cwd；环境变量直接继承到工具执行 | 实测；官方 subagent 示例同此用法 |
+| token 用量 | 每条 assistant `message_end.message.usage = {input, output, cacheRead, cacheWrite, reasoning, totalTokens, cost}`；`input` 不含缓存命中；同时给出 `provider`、`model`、`thinkingLevel`、`stopReason`、`errorMessage` | 实测（假模型；真实模型 Workbuddy/glm-5.3-flash：单轮 input 523/output 3；含工具调用的 3 轮合计 input 1736、output 67、cacheRead 768，缓存命中可计入） |
+| 模型与思考级别 | 思考级别 `off/minimal/low/medium/high/xhigh/max`；`getSupportedThinkingLevels(model)`（pi-ai）给出每个模型支持的级别，例如 Workbuddy/glm-5.3-flash 只支持 `low/high/xhigh` | 实测 |
+| 用户配置目录 | `getAgentDir()` = `~/.pi/agent`（`PI_CODING_AGENT_DIR` 可覆盖）；官方 preset 示例把全局配置放在这里，项目配置放在 `<cwd>/.pi/` | 实测；源码 |
+| 内置工具参数 | `read{path}`、`write{path,content}`、`edit{path,edits[]}`、`bash{command}`、`grep{pattern,path?,glob?}`、`find{pattern,path?}`、`ls{path?}`；另有 `powershell` | 源码 |
+| 路径解析 | Unicode 空格归一、去掉 `@` 前缀、展开 `~`、`file://`；guard 按同样规则解析 | 源码 |
+
+### 第三方插件（只下载 tarball 读源码，未安装、未执行）
+
+| 插件 | 版本 | 来源 | 结论 |
+|---|---|---|---|
+| `@bacnh85/pi-serena` | 0.9.20 | github.com/bacnh85/pi-extensions，维护者 bacnh85 | 20 个工具。读：`serena_get_symbols_overview`、`find_symbol`、`find_referencing_symbols`、`search_for_pattern`、`find_declaration`、`find_implementations`、`get_diagnostics_for_file`。编辑：`replace_symbol_body`、`insert_before_symbol`、`insert_after_symbol`、`safe_delete_symbol`、`replace_content`、`rename_symbol`。其他：`status`、`list_tools`、`restart_language_server`、`restart_worker`、`get_current_config`、`check_onboarding_performed`、`onboarding`（均带 `serena_` 前缀）。文件参数是 `relative_path`（相对 serena 项目根），已在 guard 的 `DEFAULT_PATH_KEYS` 中 |
+| `@vndv/pi-codegraph` | 0.1.10 | github.com/vndv/pi-codegraph | 8 个工具：`codegraph_search`、`callers`、`callees`、`impact`、`explore`、`node`、`status`、`files`；参数是符号或查询，不是文件路径 |
+| `pi-web-access` | 0.35.0 | github.com/nicobailon/pi-web-access | 默认工具名 `web_search`、`fetch_content`、`get_search_content`、`source_check`（源码中可配置重命名） |
+| `@tigorhutasuhut/pi-rules` | 0.6.0 | github.com/tigorlazuardi/pi-rules | 支持 `paths`（glob）frontmatter；`pi-rules:config` 补丁只能改 `enabled`、`sources`（目录来源）、`nudges`，**不能按角色或任务挑选规则** |
+| `pi-subagents` | 0.74.0 | github.com/nicobailon/pi-subagents | 角色文件 frontmatter：`name`、`description`、`tools`（逗号分隔）、`model`（provider/id）、`thinking`、`systemPromptMode`、`inheritProjectContext`、`inheritSkills`、`skills`、`extensions` |
+
+## 待确认
+
+| 项 | 状态 |
+|---|---|
+| serena 的 `prepareArguments`（修正参数名）发生在 `tool_call` 之前还是之后 | 待确认；影响 guard 看到的参数名 |
+| `tool_result` 层过滤敏感内容 | 待确认，M5 评估 |
+| 在 worktree 中 serena 的项目根是否等于子进程 cwd | 待 M3 实测 |
+
+## 偏离记录
+
+1. **新增转移 `merging -> queued_merge`（触发 `merge_requeue`）。** 第 18 节第 4 步要求恢复时把未完成的 merging 回滚到 queued_merge，但第 10 节转移表未列出。按"不在表中一律拒绝"的原则，必须显式加入。回滚时任务放回队首。
+2. **"任一进行中状态"取 `in_progress`、`review`、`verifying`、`queued_merge`、`merging`。** `pending`、`ready` 不能被 `flow_block` 转 blocked（没有 run 在处理它们）。
+3. **review 打回、verify 失败、合并后验证失败回到 `in_progress` 时清空租约**，表示"等待重新派发"：worktree 保留，由调度器重新派发一个新 run 继续在原 worktree 上工作（不经状态转移，只记 `dispatch` 事件）。M3 实现调度时按此处理。
+4. **互斥判断范围扩大**：ready -> in_progress 时，不仅与 `in_progress` 任务比较，也与 `review`、`verifying`、`queued_merge`、`merging` 中的任务比较（它们的改动尚未合入，同时开工必然冲突）。
+5. **`blocked -> ready`（unblock）清空 worktree、分支、base_sha**，与 ready 的定义一致（重新从集成分支 HEAD 建 worktree）。旧 worktree 的回收由调用方（M3 worktree 模块）负责；如需保留旧工作，由 `/flow unblock` 在 M5/M6 提供选项。
+6. **任务文件新增字段**：`lease_expirations`（租约过期两次转 blocked）、`impl_run`（校验审查 run 不同于实施 run）、`blocked_reason`、`last_failure`（打回意见与失败原因，供下一次派发使用）、`merge_fix_for`、`conflict_files`（merge-fix 专用）。`lease` 结构为 `{run_id, role, token_hash, acquired_at, expires_at}`。
+7. **run 记录新增 `violations` 与 `version` 字段**；`outcome` 允许 null（运行中）。
+8. **阶段状态机**（M1 先实现，M6 使用）：`active -> awaiting_gate -> (awaiting_human ->) done`，自动闸门失败回 `active`，用户可 reject 回 `active` 或 abort。`approve`、`reject`、`abort` 只接受 actor=`human`。`done` 后由 `advanceStage` 进入下一阶段；最后一个阶段完成后清除 `active_flow`。
+9. **契约锁定判定**：流程 `approvals` 含 `S1` 或 `F1` 时 `docs/contracts/**` 视为受保护路径。
+
+10. **所有 subagent 角色隐式拥有 `flow_block`**（orchestrator 除外）。第 8 节模板的工具列表里没有它，但第 13、16 节要求"遇到歧义先 flow_block"。
+11. **guard 比第 14 节更严的地方**：
+    - `git push` 全部禁止（不止 `--force`），推送由引擎完成。
+    - 额外禁止 `git fetch/pull/remote/config（写）/tag/clean/worktree/switch`，以及创建、删除分支。原因：worktree 与主仓库共享 refs 和 config。
+    - 额外禁止 `scp`、`sftp`、`rmdir`、`eval`、`popd`。
+    - 禁止打印环境变量（`env`、`printenv`、`export -p`、`set`），因为可能含密钥。
+    - 命令名、重定向目标、`cd` 目标含变量或通配时一律阻断，无法解析的命令一律阻断。
+    - 写工具（write、edit、serena 编辑）只能写当前 worktree；主工作区整体不可写，worktree 之外也不可写。bash 重定向到 worktree 之外的普通路径（如 `/tmp/x.log`）放行，主工作区与受保护路径阻断。
+    - 写路径同时受角色 writes 与任务 writes（merge-fix 为冲突文件）约束，取两者交集。
+    - 受保护路径与敏感路径按大小写不敏感匹配（macOS 默认文件系统大小写不敏感）；路径先解析符号链接。
+12. **配置层的越权检查**（`config.ts`）：orchestrator 只能有 `read`、`flow_status`、`flow_dispatch`、`flow_wait`；`flow_approve` 只能给 reviewer，`flow_propose_tasks` 只能给 architect；没有可写范围的角色不能有写工具；`bash` 与 `bash_readonly` 不能同时声明；未知工具名报错。
+13. **第 20 节第 6 条（主工作区出现未提交改动视为越权）推迟到 M5**，与 context-injector 每轮检查一起实现。
+14. **配置里的 `read` 只对应 Pi 的 `read` 工具**，不隐含 `grep`、`find`、`ls`；需要时在角色工具列表中显式写出。
+
+15. **新增 `/flow-config`（用户需求）**：为各角色设置模型与思考级别，保存到用户级 `~/.pi/agent/pi-flow.json`。**优先级：pi-flow.json > workflow.yaml 的档位**。`workflow.yaml` 的 `roles.<role>.thinking` 现在按思考级别枚举校验。设置时只允许选 `modelRegistry.getAvailable()` 中的模型，以及该模型支持的思考级别。
+16. **规则注入不经 pi-rules**：pi-rules 无法按角色或任务挑选规则；写入 worktree 的 `.pi/rules/` 又会出现在 diff 中并碰到受保护路径。改为由 prompt-assembler 按任务 scopes 选出规则文件，经 `--append-system-prompt` 注入。子进程不加载 pi-rules（`--no-extensions`，只用 `-e` 显式加载 pi-flow 自己的扩展与所需插件，guard 最后）。
+17. **`serena_rename_symbol`、`serena_onboarding`、`serena_restart_*` 不分配给任何角色**：rename 会改动所有引用处，guard 只能看到一个 `relative_path`。
+18. **角色文件的模型档位用 `tier:` 字段**，不用 pi-subagents 的 `model:`（后者是 provider/id），避免语义冲突。
+19. **测试用假模型**：`test/fixtures/fake-llm/` 是 OpenAI 兼容的本地流式服务，按脚本返回文本或工具调用，并记录每次请求的系统提示与工具声明；通过 `registerProvider` 注册为 `fakellm/<脚本名>`。端到端测试走 Pi 的真实 provider 链路，不依赖真实模型。
+
+20. **新增转移 `run_failed`**（`in_progress→in_progress`、`review→review`）：子进程未提交或未给出审查结论就退出（崩溃、模型放弃、连接失败）时，清空租约并计一次失败，达上限转 blocked。第 10 节未覆盖这一情况；不计数会导致无限重派。
+21. **guard 允许 `git checkout <提交> -- <文件>`**：提交被拒后，越界文件已进入快照提交，需要按 base_sha 恢复；该形式只恢复文件、不切换分支。新增文件用 `git rm`。
+22. **并发上限只计实施 run（in_progress）**，审查 run 与 verify 不占名额。
+23. **程序步骤自动执行**：提交后自动派审查、审查通过后自动 verify、被打回或失败后自动重新派发实施（受 attempts 上限约束）。orchestrator 的 `flow_dispatch` 只接受 ready 任务。
+24. **`/flow next` 在非交互模式（`pi -p`）下等待全部运行与程序步骤结束**再返回，否则进程退出会丢失后续步骤；交互模式立即返回。
+25. **orchestrator 工具只在项目已有 `.flow/` 时注册**，不影响普通 pi 会话。orchestrator 会话的 guard、工具收窄与每轮注入在 M5/M6 实现。
+26. **子进程加载第三方插件（serena、codegraph、web）尚未实现**：引擎预留 `extraExtensions(role)`，插件安装路径的解析放到 M6/M8；未加载的插件工具在 `--tools` 中被 Pi 忽略。
+27. **状态提交落在主工作区当前分支**（通常是 main），前缀 `flow-state:`。单个任务走完一轮约 13 个状态提交；如嫌多，后续可改为按阶段合并提交（需同时调整完整性校验）。
+
+## M3 设计要点
+
+- **进程拓扑**：引擎运行在 orchestrator 所在的 pi 进程内；每个 run 是一个 `pi --mode json -p` 子进程（`PiLauncher`），工作目录为任务 worktree。子进程中的 `subagent.ts` 扩展直接读写主工作区 `.flow/`（`PI_FLOW_ROOT`），靠文件锁与 git 重试并发安全。
+- **run token**：24 字节随机数，只经环境变量 `PI_FLOW_RUN_TOKEN` 传入；`.flow/` 只存其 sha256。已验证模型请求中不出现 token。
+- **提示文件**：`<项目>.worktrees/.runs/<run>/system.md`（不放在 `.flow/`，避免成为未登记文件）。
+- **提交快照**：`flow_submit` 先把 worktree 改动提交为快照（作者 pi-flow），再以 `base_sha..HEAD` 计算 diff 交给状态机校验。
+- **verify**：`sh -c` 在 worktree 中执行，去掉 `PI_FLOW_*` 环境变量，默认超时 15 分钟，按进程组终止；每次尝试的输出保存为 `evidence/<task>/verify-a<次数>-<命令>.log`。
+- **测试分层**：`test/fixtures/fake-subagent`（进程内脚本，走真实 guard 与工具，快）；`test/e2e/pi-subprocess.test.ts`（真实 pi 子进程 + 假 LLM，验证适配层）；`playground/make-smoke.ts`（真实模型冒烟，不进自动化测试）。
+- **真实模型冒烟结果**（Workbuddy/glm-5.3-flash，2026-10-01）：实施 33 秒（input 4042 / output 185 / cacheRead 7936），审查 22 秒（1916 / 210 / 5056），verify 通过，0 违规，完整性校验通过。
+
+## M2 设计要点
+
+- `config.ts`：先用 schema 校验结构，再校验引用（scope、工具组、命令、模型档位、阶段 id），错误格式为 `roles.x.scopes[1]（第 N 行）: ...`。占位符模型给警告。工具分类：内置读、内置写、`serena_edit` 组为写，`web` 组为联网，其他组按只读扩展工具处理；同一工具同时在读组和编辑组时按写处理。`activeTools(role)` 给出子进程应启用的工具，`bash_readonly` 映射为 `bash`。
+- `shell.ts`：极简 shell 解析器。支持引号、转义、`$()`、反引号、`<()`、`$(())`、`${}`、heredoc（未加引号时扫描其中的命令替换）、重定向、fd 复制、子 shell 与分组。解析失败返回错误。
+- `guard.ts`：`checkToolCall` 是纯判定函数，`enforceToolCall` 在阻断时调用 `StateStore.recordViolation`。违规按 run 计数（以事件日志为准）；达到 `max_violations_per_run` 时，run 标记为 `killed`，任务经转移表转 `blocked`，返回 `terminate=true` 由调用方终止子进程。
+- **guard 已知局限**（第 24 节第 1 条，兜底是 `flow_submit` 的 diff 检查）：
+  - 脚本文件（`bash x.sh`、`node script.js`、`pnpm <script>`）内部的行为无法检查。
+  - `grep -r` 等递归读取可能读到 `.env` 内容。
+  - glob 敏感判断是启发式的。
+
+## M1 设计要点
+
+- **唯一写入口**：所有 `.flow/` 写入都经 `StateStore.transaction`。流程：取文件锁 → 重放未完成事务 → 校验 state.json 与事件日志头一致 → 执行回调暂存写入 → schema 校验 → 写事务日志 `tx.json` → 应用（临时文件 + rename）→ 追加事件 → 写 state.json → 删除事务日志 → `git commit`（前缀 `flow-state:`，只提交 `.flow/`，不影响用户已暂存的其他文件）。
+- **事务必须附带事件**；无事件的写入被拒。
+- **完整性**：事件带哈希链（键排序的规范 JSON + sha256）；每个事务的最后一条事件记录本事务写入的所有文件哈希（`entities`），以及 `active_flow` 的变化。`verifyIntegrity` 校验：哈希链、序号连续、state.json 的 head/version/active_flow、每个登记文件的哈希与 schema、`.flow/` 下是否存在未登记文件、是否存在未重放的事务日志。
+- **facts 不采信调用方**：stage 是否 active、依赖状态、并发数、互斥、合并队列状态、handoff 与 evidence 是否存在、契约是否锁定，均由 StateStore 计算并覆盖调用方传入的同名字段。token、diff、verify 结果、rebase 结果等由程序内模块（M3/M4）提供。
+- **乐观版本**：每个带 version 的文件写入时必须基于当前版本，自动加 1。
+- **状态字段不可旁路**：`updateTask` 只能改 `lease`、`worktree`、`branch`、`base_sha`；status、attempts 等只能经转移表改变。
+- **glob 关系判断**（`paths.ts`）：`globWithin` 保守（不确定判"不在内"），`globsOverlap` 保守（不确定判"重叠"）。
+
+## 缓存提醒
+
+（规则与角色提示尚未编写，M8 后变更时在此记录缓存失效提醒。）

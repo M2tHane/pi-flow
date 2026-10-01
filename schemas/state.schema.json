@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pi-flow/state.schema.json",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "version",
+    "active_flow",
+    "events_head"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "number",
+      "const": 1
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "active_flow": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[BF]-[0-9]{3,}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "events_head": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

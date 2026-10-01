@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pi-flow/merge-queue.schema.json",
+  "type": "object",
+  "required": [
+    "queue",
+    "merging",
+    "version"
+  ],
+  "properties": {
+    "queue": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "flow",
+          "task",
+          "enqueued_at"
+        ],
+        "properties": {
+          "flow": {
+            "type": "string"
+          },
+          "task": {
+            "type": "string",
+            "pattern": "^T-[0-9]{3,}$"
+          },
+          "enqueued_at": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "merging": {
+      "anyOf": [
+        {
+          "type": "object",
+          "required": [
+            "flow",
+            "task",
+            "started_at"
+          ],
+          "properties": {
+            "flow": {
+              "type": "string"
+            },
+            "task": {
+              "type": "string",
+              "pattern": "^T-[0-9]{3,}$"
+            },
+            "started_at": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,67 @@
+version: 1
+project: my-project
+main_branch: main
+commands:                       # verify 与闸门只能引用这里定义的命令名
+  install:   "pnpm install"
+  typecheck: "pnpm typecheck"
+  lint:      "pnpm lint"
+  test:      "pnpm test"
+  test_affected: "pnpm test --related {files}"
+  e2e:       "pnpm e2e"
+limits:
+  max_parallel: 2
+  max_attempts: 3
+  lease_minutes: 45
+  max_violations_per_run: 3
+  max_task_files: 12
+  fix_max_files: 5              # 超过则建议升级为 feature
+models:                         # 档位到具体模型的映射，由用户填写
+  strong: "<provider/model>"
+  medium: "<provider/model>"
+  cheap:  "<provider/model>"
+modes:
+  build:
+    stages:
+      - { id: S0, name: requirements,   gate: { human: true } }
+      - { id: S1, name: architecture,   gate: { human: true, auto: [typecheck] } }
+      - { id: S2, name: infrastructure, gate: { auto: [install, typecheck, lint] } }
+      - { id: S3, name: slices,         gate: { all_tasks_done: true, auto: [test] } }
+      - { id: S4, name: integration,    gate: { auto: [e2e] } }
+      - { id: S5, name: release,        gate: { human: true } }
+  feature:
+    stages:
+      - { id: F0, name: feature-spec,   gate: { human: true } }
+      - { id: F1, name: impact-and-dag, gate: { human: true, auto: [typecheck] } }
+      - { id: S3, name: slices,         gate: { all_tasks_done: true, auto: [test] } }
+      - { id: S4, name: regression,     gate: { auto: [test, e2e], human: true } }
+scopes:
+  backend:    { rules: [rules/backend.md],      writes: ["src/server/**", "tests/server/**"] }
+  database:   { rules: [rules/database.md],     writes: ["migrations/**", "src/db/**"] }
+  frontend:   { rules: [rules/frontend.md],     writes: ["src/web/**", "tests/web/**"] }
+  ui:         { rules: [rules/ui.md],           writes: ["design/**", "src/web/components/base/**"] }
+  shared:     { rules: [rules/shared-types.md], writes: ["src/shared/**"] }
+  acceptance: { rules: [rules/testing.md],      writes: ["tests/acceptance/**", "tests/e2e/**"] }
+  docs:       { writes: ["docs/**"] }
+  research:   { writes: ["docs/research/**"] }
+  infra:      { writes: ["package.json", "pnpm-lock.yaml", "tsconfig*.json", ".github/**"] }
+tool_groups:                    # 已核实：pi-serena 0.9.20、pi-codegraph 0.1.10、pi-web-access 0.35.0
+  serena_read: [serena_get_symbols_overview, serena_find_symbol, serena_find_referencing_symbols, serena_search_for_pattern,
+                serena_find_declaration, serena_find_implementations, serena_get_diagnostics_for_file]
+  # 一律按写操作对待。serena_rename_symbol 会改动所有引用处的文件，guard 无法限定范围，故不纳入
+  serena_edit: [serena_replace_symbol_body, serena_insert_before_symbol, serena_insert_after_symbol,
+                serena_safe_delete_symbol, serena_replace_content]
+  codegraph:   [codegraph_search, codegraph_callers, codegraph_callees, codegraph_impact, codegraph_explore,
+                codegraph_node, codegraph_status, codegraph_files]
+  web:         [web_search, fetch_content, get_search_content, source_check]
+roles:
+  orchestrator:      { model: medium, tools: [read, flow_status, flow_dispatch, flow_wait], read_paths: ["docs/**", ".flow/**"], writes: [] }
+  architect:         { model: strong, scopes: [docs, shared], tools: [read, write, edit, "@serena_read", "@codegraph", flow_propose_tasks, flow_note, flow_submit] }
+  researcher:        { model: cheap,  scopes: [research], tools: [read, write, "@web", flow_note, flow_submit] }
+  db-engineer:       { model: medium, scopes: [database], tools: [read, write, edit, bash, "@serena_read", "@serena_edit", flow_claim, flow_note, flow_submit], env: { PI_SERENA_STRICT: "1" } }
+  backend-engineer:  { model: medium, scopes: [backend],  tools: [read, write, edit, bash, "@serena_read", "@serena_edit", flow_claim, flow_note, flow_submit], env: { PI_SERENA_STRICT: "1" } }
+  frontend-engineer: { model: medium, scopes: [frontend], tools: [read, write, edit, bash, "@serena_read", "@serena_edit", flow_claim, flow_note, flow_submit], env: { PI_SERENA_STRICT: "1" } }
+  ui-designer:       { model: medium, scopes: [ui],       tools: [read, write, edit, flow_claim, flow_note, flow_submit] }
+  infra-engineer:    { model: medium, scopes: [infra],    tools: [read, write, edit, bash, flow_claim, flow_note, flow_submit] }
+  test-engineer:     { model: medium, scopes: [acceptance], tools: [read, write, edit, bash, "@serena_read", "@codegraph", flow_claim, flow_note, flow_submit] }
+  reviewer:          { model: strong, scopes: [], tools: [read, bash_readonly, "@serena_read", "@codegraph", flow_approve], writes: [] }
+  scout:             { model: cheap,  scopes: [], tools: [read, bash_readonly, "@serena_read", "@codegraph", flow_note, flow_submit], writes: [] }
