@@ -1,0 +1,112 @@
+{
+ "steps": [
+  {
+   "tool_calls": [
+    {
+     "name": "write",
+     "arguments": {
+      "path": "src/server/t-001/a.ts",
+      "content": "我自己来写"
+     }
+    }
+   ]
+  },
+  {
+   "tool_calls": [
+    {
+     "name": "read",
+     "arguments": {
+      "path": "src/server/t-001/a.ts"
+     }
+    }
+   ]
+  },
+  {
+   "tool_calls": [
+    {
+     "name": "flow_status",
+     "arguments": {}
+    }
+   ]
+  },
+  {
+   "tool_calls": [
+    {
+     "name": "flow_dispatch",
+     "arguments": {
+      "task_id": "T-001"
+     }
+    }
+   ]
+  },
+  {
+   "tool_calls": [
+    {
+     "name": "flow_wait",
+     "arguments": {
+      "task_id": "T-001",
+      "timeout_s": 60
+     }
+    }
+   ]
+  },
+  {
+   "tool_calls": [
+    {
+     "name": "flow_wait",
+     "arguments": {
+      "task_id": "T-001",
+      "timeout_s": 60
+     }
+    }
+   ]
+  },
+  {
+   "tool_calls": [
+    {
+     "name": "flow_wait",
+     "arguments": {
+      "task_id": "T-001",
+      "timeout_s": 60
+     }
+    }
+   ]
+  },
+  {
+   "tool_calls": [
+    {
+     "name": "flow_wait",
+     "arguments": {
+      "task_id": "T-001",
+      "timeout_s": 60
+     }
+    }
+   ]
+  },
+  {
+   "tool_calls": [
+    {
+     "name": "flow_wait",
+     "arguments": {
+      "task_id": "T-001",
+      "timeout_s": 60
+     }
+    }
+   ]
+  },
+  {
+   "tool_calls": [
+    {
+     "name": "flow_wait",
+     "arguments": {
+      "task_id": "T-001",
+      "timeout_s": 60
+     }
+    }
+   ]
+  },
+  {
+   "text": "T-001 已完成"
+  }
+ ]
+}

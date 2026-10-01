@@ -109,6 +109,36 @@
 33. **有 `flow_submit` 的角色隐式拥有 `flow_claim`**：第 8 节模板对 architect、researcher、scout 漏写了它，而角色提示要求先 claim。
 34. **`<项目>.worktrees/.runs/<run>/` 中的提示文件目前不自动清理**，便于排查问题；M5 的 `/flow doctor` 负责清理。
 
+35. **会话启动时不自动执行恢复**，只做只读检查并提示执行 `/flow resume`。原因：恢复会终止残留子进程，如果另一个 pi 会话正在运行同一流程，会误杀它的子进程。为此新增**引擎锁**（`<项目>.worktrees/.engine.lock`，记录 pid）：同一项目同一时间只允许一个会话运行引擎；持有者进程退出后可以接管。
+36. **未过期但已中断的租约**（最常见：用户关掉了 pi）按 `run_failed` 处理：保留 worktree，计一次失败，重新派发后在原 worktree 继续。第 18 节只规定了过期租约的处理。过期租约按规格处理：worktree 干净 → 回到 ready（回收 worktree）；有改动 → 由用户选择继续或丢弃，无界面时挂起，列入摘要。
+37. **调度模式（orchestrator 模式）显式进入**：执行 `/flow resume`（M6 起还包括 `/flow-build`、`/flow-fix`）后，本会话：
+    - 只启用 orchestrator 的工具（write、edit、bash 被移除，Pi 直接返回 "Tool not found"）；
+    - 所有工具调用都经过 guard（read 只能读 `docs/`、`.flow/`）；
+    - 每轮在系统提示末尾追加 orchestrator 角色提示与"状态 + 唯一允许的下一步"。
+
+    普通 pi 会话不受影响（逃生口）。注意：主会话中如果加载了其他扩展，pi-flow 的 tool_call 处理函数未必最后执行（见 M0 矩阵）；主要防线是工具移除。
+38. **主工作区越权检测按"轮"比较**：before_agent_start 时记录 `.flow/` 之外的未提交改动，agent_end 时比较，新出现的改动记为 violation 并提示。用户在两轮之间自己的改动不计；用户在 agent 运行期间同时手改文件，可能被误报（提示中已说明可以忽略）。
+39. **`/flow init` 不生成 `.pi/settings.json`、不同步 `.pi/rules/`**：pi-flow 以本地路径或 npm 包安装，来源由用户决定；规则由 prompt-assembler 注入（见第 16 条），不经 pi-rules。
+40. **`/flow doctor --fix` 只做安全清理**：删除未被任何任务引用的 worktree、已结束 run 的提示文件、`git worktree prune`；不修改 `.flow/` 状态。状态问题由 `/flow resume` 或用户处理。
+41. **`flow_wait` 等待的任务已是 done 或 blocked 时立即返回**，避免空等到超时。
+
+## M5 设计要点
+
+- `resume()` 的步骤：
+  1. 重放事务日志；
+  2. 完整性校验，不一致时直接在事件日志末尾追加 `integrity_error` 后停止（不更新 state.json，后续写入继续被拒绝）；
+  3. 终止残留子进程（run 记录中的 pid，按进程组终止），把 run 标记为 killed；
+  4. 处理租约（见第 36 条）；
+  5. 恢复中断的合并：先 `rebase --abort`；集成分支已包含任务 HEAD 时补完为 done，否则放回队首；worktree 丢失时转 blocked；
+  6. 生成 resume brief：状态、恢复操作、需要用户决定的事项、进行中任务的 handoff、最近 10 条事件。
+- 引擎租约看守：`startLeaseWatch()` 每 30 秒检查一次，租约到期的 run 被终止，按 run_failed 计一次失败。
+- 强杀验收（`test/e2e/crash-recovery.test.ts`）：引擎在独立 node 进程中运行（真实 pi 子进程 + 假 LLM），分别在任务进行中、合并进行中 `SIGKILL`。任务进行中：残留的 pi 子进程被清理，任务在原 worktree 上完成。合并进行中：合并回滚到队首，最终只合入一次。
+- 调度模式端到端（`test/e2e/orchestrator-session.test.ts`）：在真实 pi 主会话中执行 `/flow resume` 后发出调度指令。验证：
+  - 写工具不可用；
+  - 读 `src/` 被拦下并记录违规；
+  - 注入的下一步是 `flow_dispatch(T-001)`；
+  - 派发、等待、实施、审查、verify、合并全部跑通。
+
 ## M4 设计要点
 
 - `MergeQueue.processNext` 由引擎的 `pump` 驱动：合并名额空闲、且队首属于当前流程时处理它。进程内有互斥标志，存储层只有一个 `merging` 名额，双重保证同一时间只合并一个。

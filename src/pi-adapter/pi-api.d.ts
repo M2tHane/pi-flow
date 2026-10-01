@@ -31,6 +31,13 @@ declare module '@earendil-works/pi-coding-agent' {
     parameters: unknown;
     execute(toolCallId: string, params: any, signal: AbortSignal | undefined, onUpdate: unknown, ctx: ExtensionContext): Promise<AgentToolResult>;
   }
+  export interface BeforeAgentStartEvent {
+    type: 'before_agent_start';
+    prompt: string;
+    readonly systemPrompt: string;
+    /** 可变：后续 handler 看到修改；appendSystemPrompt 会追加到系统提示 */
+    systemPromptOptions: { appendSystemPrompt?: string; [k: string]: unknown };
+  }
   export interface ToolCallEvent { type: 'tool_call'; toolCallId: string; toolName: string; input: Record<string, unknown> }
   export interface ToolCallEventResult { block?: boolean; reason?: string; terminate?: boolean }
   export interface AutocompleteItem { value: string; label: string; description?: string }
@@ -45,7 +52,8 @@ declare module '@earendil-works/pi-coding-agent' {
     getAllTools(): { name: string }[];
     getActiveTools(): string[];
     setActiveTools(names: string[]): void;
-    on(event: 'session_start' | 'session_shutdown', handler: (event: unknown, ctx: ExtensionContext) => unknown): () => void;
+    on(event: 'session_start' | 'session_shutdown' | 'agent_end', handler: (event: unknown, ctx: ExtensionContext) => unknown): () => void;
+    on(event: 'before_agent_start', handler: (event: BeforeAgentStartEvent, ctx: ExtensionContext) => unknown): () => void;
     on(event: 'tool_call', handler: (event: ToolCallEvent, ctx: ExtensionContext) => Promise<ToolCallEventResult | void> | ToolCallEventResult | void): () => void;
   }
   export function getAgentDir(): string;

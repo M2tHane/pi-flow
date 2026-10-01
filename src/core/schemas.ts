@@ -147,6 +147,8 @@ export const RunFile = Type.Object({
   ])),
   token_hash: Type.String({ minLength: 64, maxLength: 64 }),
   violations: Type.Integer({ minimum: 0 }),
+  /** 子进程 pid（进程组 id）；用于恢复时清理残留进程 */
+  pid: Type.Optional(Nullable(Type.Integer({ minimum: 1 }))),
   version: Type.Integer({ minimum: 1 }),
 }, { additionalProperties: false });
 export type RunFile = Static<typeof RunFile>;

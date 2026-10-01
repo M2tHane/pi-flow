@@ -134,6 +134,7 @@ export class Engine {
       throw new DispatchError(`子进程启动失败：${(e as Error).message}`);
     }
     this.runs.set(runId, { flow: flowId, task: taskId, role, handle });
+    if (handle.pid) await store.updateRun(runId, { pid: handle.pid }, 'dispatcher', '记录子进程');
     this.track(handle.done.then((r) => this.onExit(runId, r), (e) => this.onExit(runId, {
       exitCode: null, stderrTail: String(e), tokens: { input: null, output: null, cache_read: null, cache_write: null },
       model: null, turns: 0, stopReason: null, error: String(e), lastText: '',
@@ -264,6 +265,29 @@ export class Engine {
 
   private notify(): void {
     for (const l of [...this.listeners]) l();
+  }
+
+  /** 租约到期仍在运行的 run：终止子进程，退出处理会按 run_failed 计一次失败。返回被终止的 run。 */
+  checkLeases(): string[] {
+    const killed: string[] = [];
+    for (const [runId, r] of this.runs) {
+      let t: TaskFile;
+      try { t = this.d.store.readTask(r.flow, r.task); } catch { continue; }
+      if (t.lease?.run_id === runId && this.now().getTime() >= Date.parse(t.lease.expires_at)) {
+        r.handle.kill();
+        killed.push(runId);
+      }
+    }
+    return killed;
+  }
+
+  private watchTimer: NodeJS.Timeout | null = null;
+
+  /** 周期性检查租约（不阻止进程退出） */
+  startLeaseWatch(intervalMs = 30_000): void {
+    if (this.watchTimer) return;
+    this.watchTimer = setInterval(() => this.checkLeases(), intervalMs);
+    this.watchTimer.unref();
   }
 
   /** 等待任何状态变化（或超时）；用于 flow_wait */

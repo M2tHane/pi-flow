@@ -178,6 +178,17 @@
       "type": "integer",
       "minimum": 0
     },
+    "pid": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "version": {
       "type": "integer",
       "minimum": 1

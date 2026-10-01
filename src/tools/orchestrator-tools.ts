@@ -63,11 +63,13 @@ export async function flowWait(store: StateStore, engine: Engine, p: Static<type
   const before = snapshot();
   const deadline = Date.now() + (p.timeout_s ?? 300) * 1000;
   let changed: string[] = [];
+  const settled = (id: string) => ['done', 'blocked'].includes(store.readTask(flowId, id).status);
+  if (p.task_id && settled(p.task_id)) return { text: `${p.task_id} 已是 ${store.readTask(flowId, p.task_id).status}。\n\n${statusText(store, engine, flowId)}`, details: { changed: [] } };
   while (Date.now() < deadline) {
     await engine.waitForChange(Math.min(5000, deadline - Date.now()));
     const now = snapshot();
     changed = [...now].filter(([id, v]) => before.get(id) !== v).map(([id]) => id);
-    if (p.task_id ? changed.includes(p.task_id) : changed.length) break;
+    if (p.task_id ? changed.includes(p.task_id) || settled(p.task_id) : changed.length) break;
     if (!engine.activeRuns().length && !p.task_id) break;
   }
   const tasks = store.listTasks(flowId);

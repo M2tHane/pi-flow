@@ -9,6 +9,8 @@ export interface Step {
   text?: string;
   tool_calls?: { name: string; arguments: Record<string, unknown> }[];
   usage?: { prompt_tokens: number; completion_tokens: number; cached_tokens?: number };
+  /** 返回前延迟（模拟慢模型），毫秒 */
+  delay_ms?: number;
 }
 
 export interface FakeLlm { url: string; close(): Promise<void> }
@@ -22,7 +24,7 @@ export function startFakeLlm(opts: { scriptsDir: string; logFile?: string; port?
     }
     let body = '';
     req.on('data', (c) => { body += c; });
-    req.on('end', () => {
+    req.on('end', async () => {
       const payload = JSON.parse(body || '{}') as { model: string; messages: { role: string; content: unknown }[]; tools?: { function: { name: string } }[] };
       const turn = payload.messages.filter((m) => m.role === 'assistant').length;
       if (opts.logFile) {
@@ -36,6 +38,7 @@ export function startFakeLlm(opts: { scriptsDir: string; logFile?: string; port?
       const file = path.join(opts.scriptsDir, `${payload.model}.json`);
       const steps: Step[] = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')).steps : [];
       const step: Step = steps[turn] ?? { text: '（脚本已结束）' };
+      if (step.delay_ms) await new Promise((r) => setTimeout(r, step.delay_ms));
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
       const id = `chatcmpl-${turn}`;
       const send = (delta: unknown, finish: string | null = null, usage?: unknown) =>

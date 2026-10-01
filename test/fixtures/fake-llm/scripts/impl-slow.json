@@ -1,0 +1,5 @@
+{ "steps": [
+  { "tool_calls": [ { "name": "flow_claim", "arguments": {} } ] },
+  { "tool_calls": [ { "name": "write", "arguments": { "path": "src/server/t-001/a.ts", "content": "half\n" } } ] },
+  { "delay_ms": 120000, "text": "（被杀前不会到达）" }
+] }

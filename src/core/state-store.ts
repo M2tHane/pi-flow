@@ -562,7 +562,7 @@ export class StateStore {
   }
 
   /** 更新 run 记录（结束时间、token、模型、结果）。 */
-  async updateRun(id: string, patch: Partial<Pick<RunFile, 'ended_at' | 'tokens' | 'model' | 'outcome'>>, actor: string, reason?: string): Promise<RunFile> {
+  async updateRun(id: string, patch: Partial<Pick<RunFile, 'ended_at' | 'tokens' | 'model' | 'outcome' | 'pid'>>, actor: string, reason?: string): Promise<RunFile> {
     return this.transaction((tx) => {
       const run = tx.readJson<RunFile>(runRel(id));
       if (!run) throw new StateError(`run ${id} 不存在`);
@@ -661,6 +661,29 @@ export class StateStore {
       tx.event({ flow: flowId, actor, type: 'transition', from, to: flow.stage, data: { entity: 'stage' } });
       return next;
     });
+  }
+
+  /**
+   * 记录完整性错误。状态不一致时普通事务会被拒绝，这里直接在事件日志末尾追加一条 integrity_error（链接到最后一条可解析的事件），
+   * 不更新 state.json，因此不一致会继续被检出，直到用户处理。
+   */
+  async appendIntegrityError(errors: string[], actor = 'resume'): Promise<void> {
+    const release = await lockfile.lock(this.flowDir, { lockfilePath: path.join(this.flowDir, LOCK), retries: 50 });
+    try {
+      const ep = this.abs('events.jsonl');
+      const last = readEvents(ep).events.at(-1) ?? null;
+      const ev = buildEvent(last, {
+        ts: this.now().toISOString(), flow: null, actor, type: 'integrity_error',
+        reason: errors.slice(0, 20).join('；').slice(0, 4000), data: { count: errors.length },
+      });
+      if (existsSync(ep)) {
+        const raw = readFileSync(ep, 'utf8');
+        if (raw.length && !raw.endsWith('\n')) truncateSync(ep, Buffer.byteLength(raw.slice(0, raw.lastIndexOf('\n') + 1)));
+      }
+      appendEvents(ep, [ev]);
+    } finally {
+      await release();
+    }
   }
 
   // —— 完整性 ——

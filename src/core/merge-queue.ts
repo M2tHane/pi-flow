@@ -116,6 +116,38 @@ export class MergeQueue {
     return { kind: 'merged', task: t.id, sha, finished };
   }
 
+  /**
+   * 恢复被中断的合并（第 18 节第 4 步）：集成分支已包含其提交则补完状态，否则放回队首。
+   * 返回 'done'、'requeued'、'blocked' 或 null（没有中断的合并）。
+   */
+  async recoverInterrupted(flowId: string): Promise<'done' | 'requeued' | 'blocked' | null> {
+    const mq = this.store.readMergeQueue();
+    if (!mq.merging || mq.merging.flow !== flowId) return null;
+    const t = this.store.readTask(flowId, mq.merging.task);
+    const integ = this.store.readFlow(flowId).integration_branch;
+    const wt = t.worktree;
+    if (wt && existsSync(wt)) {
+      const rebaseDir = git(wt, ['rev-parse', '--git-path', 'rebase-merge']).trim();
+      if (existsSync(path.isAbsolute(rebaseDir) ? rebaseDir : path.join(wt, rebaseDir))) gitOk(wt, ['rebase', '--abort']);
+      const head = headSha(wt);
+      if (gitOk(this.root, ['merge-base', '--is-ancestor', head, integ])) {
+        await this.store.transitionTask(flowId, t.id, {
+          to: 'done', trigger: 'merge_done', actor: 'resume', evidence: head,
+          facts: { rebase_ok: true, post_verify_ok: true, fast_forwarded: true, reason: '恢复：集成分支已包含该任务的提交' },
+        });
+        await this.store.recordEvent({ flow: flowId, task: t.id, actor: 'resume', type: 'merge', evidence: head, data: { recovered: true } });
+        removeWorktree(this.root, wt, t.branch ?? undefined);
+        await this.finishSuspended(flowId, this.store.readTask(flowId, t.id), head);
+        return 'done';
+      }
+      await this.store.transitionTask(flowId, t.id, { to: 'queued_merge', trigger: 'merge_requeue', actor: 'resume' });
+      return 'requeued';
+    }
+    await this.store.transitionTask(flowId, t.id, { to: 'blocked', trigger: 'merge_blocked', actor: 'resume',
+      facts: { reason: `合并中断且 worktree 丢失（${wt ?? '无'}），无法自动恢复` } });
+    return 'blocked';
+  }
+
   /** merge-fix 合入后，沿 merge_fix_for 链把挂起的原任务标记为 done */
   private async finishSuspended(flowId: string, fix: TaskFile, sha: string): Promise<string[]> {
     const out: string[] = [];
