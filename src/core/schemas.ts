@@ -265,6 +265,20 @@ export const ProposalFile = Type.Object({
 }, { additionalProperties: false });
 export type ProposalFile = Static<typeof ProposalFile>;
 
+// —— 需求访谈：开流程之前由主会话与用户访谈，程序保存摘要（.flow/brief.json，同一时间一份） ——
+
+export const BriefFile = Type.Object({
+  mode: Type.Union([Type.Literal('build'), Type.Literal('feature'), Type.Literal('fix')]),
+  description: Type.String(),
+  sections: Type.Record(Type.String(), Type.String({ maxLength: 4000 })),
+  status: Type.Union([Type.Literal('collecting'), Type.Literal('confirmed'), Type.Literal('cancelled')]),
+  flow: Nullable(FlowId),
+  created_at: IsoTime,
+  updated_at: IsoTime,
+  version: Type.Integer({ minimum: 1 }),
+}, { additionalProperties: false });
+export type BriefFile = Static<typeof BriefFile>;
+
 // —— ~/.pi/agent/pi-flow.json：用户通过 /flow-config 设置的角色模型与思考级别 ——
 
 export const RoleSettingsFile = Type.Object({
@@ -287,6 +301,7 @@ export const SCHEMAS = {
   workflow: WorkflowFile,
   'role-settings': RoleSettingsFile,
   proposal: ProposalFile,
+  brief: BriefFile,
 } as const;
 export type SchemaKind = keyof typeof SCHEMAS;
 

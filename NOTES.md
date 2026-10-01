@@ -171,6 +171,15 @@
     - 主动通知只在四种情况出现：进入新阶段、出现需要你处理的事、任务第一次未通过、流程结束。
     - 底层状态机、调度与合并不变。
 
+63. **调度模式切换主会话模型**：进入调度（或访谈）模式时记住当前模型、思考级别与工具，切到 `/flow-config` 中 orchestrator 的设置（不可用或没有凭据时提示并保留）。新增 `/flow off`；没有进行中的流程与修复时自动退出并恢复。
+64. **需求访谈（开流程之前）**：`/flow-build`、`--feature`、`/flow-fix` 默认先访谈。
+    - 主会话换上 `agents/interviewer.md` 提示，一次一问并给出建议答案。
+    - 可用工具只有 `read`（同 orchestrator，只能读 `docs/`、`.flow/`）和新增的 `flow_brief`。`flow_brief` 总是注册，但 `defaultActive: false`。
+    - 摘要由程序保存在 `.flow/brief.json`（同一时间一份，登记哈希）。清单完整后，**用户**执行 `--confirm` 才开流程；摘要复制到 `flows/<id>/brief.md`，作为 S0/F0 设计任务与 fix 中 scout 的输入。
+    - `--direct "<描述>"` 与 `--from <文件>` 跳过访谈；`--cancel` 放弃。
+    - 删除提示模板 `/feature-kickoff`、`/fix-brief`，已被访谈取代。
+65. **`/flow answer`**：阻塞任务的问题由用户在输入框中亲手作答（`ctx.ui.input`），不经模型转述，避免主会话模型自问自答绕过"只有人能解除阻塞"。无界面时提示用 `/flow unblock <任务> "<回答>"`。状态视图中阻塞项的建议命令改为 `/flow answer <任务>`。
+
 ## M8 设计要点
 
 - 交付物：

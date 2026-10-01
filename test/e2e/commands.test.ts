@@ -47,11 +47,12 @@ test('/flow unblock 附回答写入 handoff 并回到 ready；approve 在没有�
   } finally { p.cleanup(); }
 });
 
-test('/flow-build：缺少描述报错；已有进行中的流程时拒绝并提示 /flow resume', async () => {
+test('/flow-build：--direct 缺少描述报错；已有进行中的流程时拒绝并提示 /flow resume', async () => {
   const p = await setupProject();
   try {
     const { engine } = makeEngine(p, async () => {});
-    await assert.rejects(runFlowBuild('', env(p, engine)), /需要描述/);
     await assert.rejects(runFlowBuild('--feature "导出"', env(p, engine)), /已有进行中的流程 B-001.*\/flow resume/);
+    await p.store.transitionStage(p.flowId, { to: 'aborted', trigger: 'abort', actor: 'human' });
+    await assert.rejects(runFlowBuild('--direct', env(p, engine)), /需要描述/);
   } finally { p.cleanup(); }
 });

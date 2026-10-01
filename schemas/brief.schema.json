@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pi-flow/brief.schema.json",
+  "type": "object",
+  "required": [
+    "mode",
+    "description",
+    "sections",
+    "status",
+    "flow",
+    "created_at",
+    "updated_at",
+    "version"
+  ],
+  "properties": {
+    "mode": {
+      "anyOf": [
+        {
+          "type": "string",
+          "const": "build"
+        },
+        {
+          "type": "string",
+          "const": "feature"
+        },
+        {
+          "type": "string",
+          "const": "fix"
+        }
+      ]
+    },
+    "description": {
+      "type": "string"
+    },
+    "sections": {
+      "type": "object",
+      "patternProperties": {
+        "^.*$": {
+          "type": "string",
+          "maxLength": 4000
+        }
+      }
+    },
+    "status": {
+      "anyOf": [
+        {
+          "type": "string",
+          "const": "collecting"
+        },
+        {
+          "type": "string",
+          "const": "confirmed"
+        },
+        {
+          "type": "string",
+          "const": "cancelled"
+        }
+      ]
+    },
+    "flow": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[BFX]-[0-9]{3,}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "created_at": {
+      "type": "string",
+      "minLength": 1
+    },
+    "updated_at": {
+      "type": "string",
+      "minLength": 1
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    }
+  },
+  "additionalProperties": false
+}

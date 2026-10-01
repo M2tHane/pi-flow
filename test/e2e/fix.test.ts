@@ -65,7 +65,7 @@ test('/flow-fix：scout → 复现测试先失败 → 修复 → 审查 → 直�
   const p = await project();
   try {
     const { engine, errors } = makeEngine(p, scripts(), SETTINGS);
-    const out = await runFlowFix('"加法结果不对：add(1,2) 返回 -1"', env(p, engine));
+    const out = await runFlowFix('--direct "加法结果不对：add(1,2) 返回 -1"', env(p, engine));
     assert.deepEqual(errors, []);
     assert.match(out, /已创建修复 X-002/);
     const fixId = 'X-002';
@@ -102,7 +102,7 @@ test('超出 fix 规模时给出升级提示；用户可继续或中止', async 
   const p = await project();
   try {
     const { engine } = makeEngine(p, scripts(findings({ estimated_files: 9, contract_change: true })), SETTINGS);
-    await runFlowFix('"导出功能有问题"', env(p, engine));
+    await runFlowFix('--direct "导出功能有问题"', env(p, engine));
     const fix = p.store.openFixFlow()!;
     assert.equal(fix.stage_status, 'awaiting_human');
     const status = await runFlowCommand('status', env(p, engine));
@@ -115,7 +115,7 @@ test('超出 fix 规模时给出升级提示；用户可继续或中止', async 
     assert.equal(p.store.openFixFlow(), null);
 
     // 再来一次，这次选择继续
-    await runFlowFix('"导出功能有问题（第二次）"', env(p, engine));
+    await runFlowFix('--direct "导出功能有问题（第二次）"', env(p, engine));
     assert.equal(p.store.openFixFlow()!.stage_status, 'awaiting_human');
     const r = await runFlowCommand('approve', env(p, engine));
     assert.match(r, /继续按修复处理/);
@@ -127,10 +127,10 @@ test('fix 与 build 流程：流程运行中拒绝；等待审批时需确认；
   const p = await setupProject({ yaml: YAML, files: { 'src/server/calc/add.ts': 'BUG\n' } });
   try {
     const { engine } = makeEngine(p, scripts(), SETTINGS);
-    await assert.rejects(runFlowFix('"x"', env(p, engine)), /进行中的流程 B-001 正在阶段 S3 运行/);
+    await assert.rejects(runFlowFix('--direct "x"', env(p, engine)), /进行中的流程 B-001 正在阶段 S3 运行/);
     await p.store.transitionStage(p.flowId, { to: 'awaiting_gate', trigger: 'submit_gate', actor: 'engine' });
     await p.store.transitionStage(p.flowId, { to: 'awaiting_human', trigger: 'gate_passed', actor: 'engine', needs_human: true });
-    assert.match(await runFlowFix('"x"', env(p, engine)), /确认请执行 \/flow-fix "<描述>" --yes/);
+    assert.match(await runFlowFix('--direct "x"', env(p, engine)), /确认请在原命令后加 --yes/);
     await assert.rejects(p.store.createFixFlow('a', 'main', p.git('rev-parse', 'main')).then(() => p.store.createFixFlow('b', 'main', p.git('rev-parse', 'main'))), /已有进行中的修复/);
     assert.equal(p.store.readState().active_flow, 'B-001', 'fix 不占用活动流程指针');
   } finally { p.cleanup(); }
@@ -140,7 +140,7 @@ test('成本汇总与 runs 记录一致；返工统计来自事件日志', async
   const p = await project();
   try {
     const { engine } = makeEngine(p, scripts(), SETTINGS);
-    await runFlowFix('"加法结果不对"', env(p, engine));
+    await runFlowFix('--direct "加法结果不对"', env(p, engine));
     const runs = p.store.listRuns();
     const c = costReport(p.store);
     for (const k of ['input', 'output', 'cache_read', 'cache_write'] as const) {

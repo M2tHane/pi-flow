@@ -41,9 +41,10 @@ export async function ensureStageTasks(d: StageDeps, flowId: string, revision?: 
   if (!tasks.length) return [];
   await d.store.addTasks(flowId, tasks, 'engine');
   for (const t of tasks) {
+    const brief = d.store.readFlowBrief(flowId).trim();
     await d.store.appendHandoff(flowId, t.id, revision
       ? `用户在闸门审批时打回，意见：\n${revision}\n\n请据此修订已有文档。`
-      : `用户的描述：\n${flow.title}`, revision ? 'human' : 'engine');
+      : brief ? `用户确认的需求摘要（据此撰写，正常情况下无需再向用户提问）：\n\n${brief}` : `用户的描述：\n${flow.title}`, revision ? 'human' : 'engine');
   }
   return tasks.map((t) => t.id);
 }

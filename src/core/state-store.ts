@@ -7,7 +7,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import lockfile from 'proper-lockfile';
 import {
-  validate, type FlowFile, type MergeQueueFile, type RunFile, type ProposalFile, type SchemaKind, type StageStatus, type StateFile,
+  validate, type FlowFile, type MergeQueueFile, type RunFile, type ProposalFile, type BriefFile, type SchemaKind, type StageStatus, type StateFile,
   type TaskFile, type TaskStatus, type FlowEvent,
 } from './schemas.ts';
 import {
@@ -69,6 +69,7 @@ export function schemaKindOf(rel: string): SchemaKind | null {
   if (/^flows\/[^/]+\/tasks\/[^/]+\.json$/.test(rel)) return 'task';
   if (/^runs\/[^/]+\.json$/.test(rel)) return 'run';
   if (/^flows\/[^/]+\/proposal\.json$/.test(rel)) return 'proposal';
+  if (rel === 'brief.json') return 'brief';
   return null;
 }
 
@@ -683,6 +684,35 @@ export class StateStore {
       }
       return { count, terminate, blocked };
     });
+  }
+
+  readBrief(): BriefFile | null {
+    return this.readJsonRel<BriefFile>('brief.json');
+  }
+
+  /** 写入需求访谈摘要；mutate 收到当前摘要（可能为 null），返回新摘要 */
+  async writeBrief(mutate: (cur: BriefFile | null, ts: string) => Omit<BriefFile, 'version'> & { version?: number }, actor: string, reason: string): Promise<BriefFile> {
+    return this.transaction((tx) => {
+      const cur = tx.readJson<BriefFile>('brief.json');
+      const next = mutate(cur, tx.ts);
+      const saved = tx.putJson('brief.json', 'brief', { ...next, version: cur?.version ?? 1 });
+      tx.event({ flow: next.flow, actor, type: 'note', reason, data: { brief: next.mode, status: next.status } });
+      return saved;
+    });
+  }
+
+  /** 流程的需求摘要（访谈确认后写入），供设计阶段任务与 scout 使用 */
+  async saveFlowBrief(flow: string, markdown: string): Promise<void> {
+    await this.transaction((tx) => {
+      tx.readFlow(flow);
+      tx.putText(`flows/${flow}/brief.md`, markdown);
+      tx.event({ flow, actor: 'human', type: 'note', reason: '需求摘要' });
+    });
+  }
+
+  readFlowBrief(flow: string): string {
+    const abs = this.abs(`flows/${flow}/brief.md`);
+    return existsSync(abs) ? readFileSync(abs, 'utf8') : '';
   }
 
   readProposal(flow: string): ProposalFile | null {

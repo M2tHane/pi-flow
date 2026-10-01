@@ -31,6 +31,8 @@ declare module '@earendil-works/pi-coding-agent' {
     label: string;
     description: string;
     parameters: unknown;
+    /** false 时注册后不激活（需 setActiveTools 激活） */
+    defaultActive?: boolean;
     execute(toolCallId: string, params: any, signal: AbortSignal | undefined, onUpdate: unknown, ctx: ExtensionContext): Promise<AgentToolResult>;
   }
   export interface BeforeAgentStartEvent {
@@ -57,6 +59,8 @@ declare module '@earendil-works/pi-coding-agent' {
     /** 设置本会话模型（不改默认配置）；该 provider 没有配置凭据时返回 false */
     setModel(model: PiModel): Promise<boolean>;
     getThinkingLevel(): ThinkingLevel;
+    /** 以用户身份发送消息，总会触发一轮 */
+    sendUserMessage(content: string): void;
     /** 设置本会话思考级别（按模型能力收窄） */
     setThinkingLevel(level: ThinkingLevel): void;
     on(event: 'session_start' | 'session_shutdown' | 'agent_end', handler: (event: unknown, ctx: ExtensionContext) => unknown): () => void;

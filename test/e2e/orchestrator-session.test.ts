@@ -72,17 +72,18 @@ test('调度模式：orchestrator 不能自己写代码，只能 dispatch/wait�
   }
 });
 
-test('真实 pi：在空仓库执行 /flow-build，自动初始化并完成 S0 任务，停在等待人工批准', { skip: !piAvailable && 'pi 不可用', timeout: 300_000 }, async () => {
+test('真实 pi：空仓库执行 /flow-build 先访谈需求，确认后完成 S0 任务，停在等待人工批准', { skip: !piAvailable && 'pi 不可用', timeout: 300_000 }, async () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'pi-flow-build-'));
   const agentDir = mkdtempSync(path.join(tmpdir(), 'pi-flow-agentdir-'));
   try {
     execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir });
     writeFileSync(path.join(agentDir, 'pi-flow.json'), JSON.stringify({ version: 1, roles: {
-      architect: { model: 'fakellm/arch-prd' }, reviewer: { model: 'fakellm/review-pass' } } }));
+      orchestrator: { model: 'fakellm/interviewer' }, architect: { model: 'fakellm/arch-prd' }, reviewer: { model: 'fakellm/review-pass' } } }));
     const provider = path.join(ROOT, 'test/fixtures/fake-llm/provider.ts');
     const out = await new Promise<{ status: number | null; text: string }>((resolve) => {
       const c = spawn('pi', ['-p', '--no-session', '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-context-files',
-        '-e', provider, '-e', path.join(ROOT, 'src/pi-adapter/extension.ts'), '/flow-build "做一个待办应用"'], {
+        '-e', provider, '-e', path.join(ROOT, 'src/pi-adapter/extension.ts'), '--model', 'fakellm/plain',
+        '/flow-build "做一个待办应用"', '单用户网页端，其余按你的建议', '/flow-build --confirm'], {
         cwd: dir, stdio: ['ignore', 'pipe', 'pipe'],
         env: { ...process.env, PI_CODING_AGENT_DIR: agentDir, FAKE_LLM_URL: llm.url, FAKE_LLM_SCRIPTS: SCRIPTS, PI_FLOW_EXTRA_EXTENSIONS: provider },
       });
@@ -101,6 +102,13 @@ test('真实 pi：在空仓库执行 /flow-build，自动初始化并完成 S0 �
     assert.equal(store.readTask('B-001', 'T-001').status, 'done');
     assert.match(execFileSync('git', ['show', 'flow/B-001/integration:docs/PRD.md'], { cwd: dir, encoding: 'utf8' }), /待办应用 PRD/);
     assert.match(out.text, /\/flow approve/);
+    assert.match(out.text, /开始需求访谈（新项目）/);
+    const all = readFileSync(LOG, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    const iv = all.filter((x) => x.model === 'interviewer');
+    assert.deepEqual([...iv[0].tools].sort(), ['flow_brief', 'read'], '访谈只能读文档与记录需求');
+    assert.match(JSON.stringify(iv[0].system), /需求访谈者[\s\S]*待补充/);
+    const arch = all.find((x) => x.model === 'arch-prd' && x.turn === 0);
+    assert.match(JSON.stringify(arch.last), /用户确认的需求摘要[\s\S]*不做多人协作/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
     rmSync(`${dir}.worktrees`, { recursive: true, force: true });

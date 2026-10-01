@@ -11,6 +11,9 @@ import { activeFlowId, statusText } from '../tools/orchestrator-tools.ts';
 import { splitArgs } from './args.ts';
 import { approveStage, rejectStage, unblockTask, startFlow } from '../core/stages.ts';
 import { continueFix } from '../modes/fix.ts';
+import { readFileSync } from 'node:fs';
+import type { BriefFile } from '../core/schemas.ts';
+import { CHECKLISTS, CONFIRM_COMMAND, MODE_LABEL, activeBrief, cancelBrief, confirmBrief, markConfirmed, renderBrief, startBrief, type InterviewMode } from '../modes/interview.ts';
 import { costReport, formatCost } from '../core/cost.ts';
 import { renderStatus } from '../core/status-view.ts';
 import { loadConfig } from '../core/config.ts';
@@ -39,6 +42,8 @@ export interface CommandEnv {
   availableModels(): string[];
   /** 进入调度模式（orchestrator）：收窄工具、切换到 orchestrator 的模型；返回提示信息 */
   activateOrchestrator(): Promise<string | void> | string | void;
+  /** 进入需求访谈模式（主会话只能读文档与记录需求） */
+  activateInterview?(mode: InterviewMode): Promise<void> | void;
   /** 退出调度模式：恢复进入前的模型、思考级别与工具 */
   deactivateOrchestrator?(): Promise<string> | string;
   /** 非交互模式：命令结束后进程退出，需要等待引擎跑完 */
@@ -56,7 +61,8 @@ export const FLOW_USAGE = [
   '  /flow init              初始化项目骨架（可重复执行，不覆盖）',
   '  /flow approve [--yes]   批准当前阶段闸门（仅用户）；最后一个阶段会把集成分支合入主分支',
   '  /flow reject "<意见>"   打回设计阶段（S0/S1/F0/F1），生成修订任务',
-  '  /flow unblock <任务> ["<回答>"] [--attempts N]   解除阻塞，可附上对任务提问的回答',
+  '  /flow answer [<任务>]   回答阻塞任务提出的问题（弹出输入框），回答后任务继续',
+  '  /flow unblock <任务> ["<回答>"] [--attempts N]   解除阻塞（无界面时用它回答）',
   '  /flow gate              闸门失败并修复后，重跑当前阶段闸门',
   '  /flow status --cost     成本统计：按流程、阶段、角色、模型、任务汇总 token 与耗时，返工最多的任务',
   '  /flow abort [--yes]     中止当前修复或流程（集成分支保留，主分支不受影响）',
@@ -209,6 +215,8 @@ export async function runFlowCommand(args: string, env: CommandEnv): Promise<str
       await h.engine.rerunGate(flowId);
       return renderStatus(h.store, h.config);
     }
+    case 'answer':
+      return runFlowAnswer(argv, env);
     case 'off':
       if (!env.deactivateOrchestrator) return '当前环境不支持调度模式。';
       return env.deactivateOrchestrator();
@@ -221,31 +229,96 @@ export async function runFlowCommand(args: string, env: CommandEnv): Promise<str
 
 export const BUILD_USAGE = [
   '用法：',
-  '  /flow-build "<项目描述>"              从零建新项目（S0 需求 → S1 架构 → S2 基础设施 → S3 切片 → S4 集成 → S5 发布）',
-  '  /flow-build --feature "<功能描述>"    在已有项目上加功能（F0 功能说明 → F1 影响面与 DAG → S3 → S4 回归）',
+  '  /flow-build ["<项目描述>"]              先与你访谈需求，确认后从零建新项目',
+  '  /flow-build --feature ["<功能描述>"]    先访谈功能需求，确认后在已有项目上加功能',
+  '  /flow-build --confirm                   需求访谈完成后确认，开始流程',
+  '  /flow-build --cancel                    放弃当前的需求访谈',
+  '  /flow-build --direct "<描述>"           跳过访谈直接开始（加 --feature 为功能）',
+  '  /flow-build --from <文件>               用写好的需求文档直接开始（加 --feature 为功能）',
   '小改动（单文件、几十行以内）直接用 pi 更划算；缺陷修复用 /flow-fix。',
 ].join('\n');
+
+export const FIX_USAGE = [
+  '用法：',
+  '  /flow-fix ["<问题描述>"]          先问清现象与复现步骤，确认后开始修复',
+  '  /flow-fix --confirm [--yes]       访谈完成后确认，开始修复',
+  '  /flow-fix --cancel                放弃当前的访谈',
+  '  /flow-fix --direct "<问题描述>"   跳过访谈直接修复',
+  '  /flow-fix --from <文件>           用写好的问题描述直接修复',
+  '流程：scout 定位 → （超出规模时请你决定）→ 复现测试（必须先失败）→ 修复 → 审查 → verify → 直接合入主分支。',
+].join('\n');
+
+async function ensureInitialized(env: CommandEnv, lines: string[]): Promise<void> {
+  if (!existsSync(path.join(env.root, '.flow', 'state.json')) || !existsSync(path.join(env.root, 'workflow.yaml'))) {
+    lines.push(formatInit(await initProject(env.root, env.packageRoot)));
+  }
+}
+
+function readFromFile(env: CommandEnv, argv: string[]): string | null {
+  const file = option(argv, '--from');
+  if (file === undefined) return null;
+  const abs = path.resolve(env.root, file);
+  if (!existsSync(abs)) throw new Error(`找不到文件 ${file}`);
+  const text = readFileSync(abs, 'utf8').trim();
+  if (!text) throw new Error(`${file} 是空文件`);
+  return text;
+}
+
+/** build/feature 流程不能与进行中的流程并存 */
+function assertNoActiveFlow(h: EngineHandle): void {
+  const active = h.store.readState().active_flow;
+  if (active) {
+    const f = h.store.readFlow(active);
+    throw new Error(`已有进行中的流程 ${f.id}「${f.title}」。同一时间只允许一个 build 或 feature 流程；请执行 /flow resume 继续。`);
+  }
+}
+
+/** 开始一次需求访谈（主会话进入访谈模式） */
+async function beginInterview(env: CommandEnv, mode: InterviewMode, description: string, lines: string[]): Promise<string> {
+  const h = env.engine();
+  if (activeBrief(h.store)) await cancelBrief(h.store);
+  const brief = await startBrief(h.store, mode, description);
+  await env.activateInterview?.(mode);
+  lines.push(`开始需求访谈（${MODE_LABEL[mode]}）。我会一次问一个问题，问清 ${CHECKLISTS[mode].map((x) => x.label).join('、')}。`);
+  lines.push(`问完后执行 ${CONFIRM_COMMAND[mode]} 开始；不想访谈可以用 --direct "<描述>" 或 --from <文件>。`);
+  if (!env.ui) lines.push('（当前没有交互界面：请直接发送你的回答，访谈者会记录。）');
+  void brief;
+  return lines.join('\n');
+}
 
 /** /flow-build 与 /flow-build --feature */
 export async function runFlowBuild(args: string, env: CommandEnv): Promise<string> {
   const argv = splitArgs(args);
   if (argv[0] === 'help' || argv[0] === '--help') return BUILD_USAGE;
-  const feature = argv.includes('--feature');
-  let description = (feature ? option(argv, '--feature') : argv.filter((a) => !a.startsWith('--')).join(' '))?.trim() ?? '';
-  if (!description && env.ui?.input) description = (await env.ui.input(feature ? '描述要加的功能' : '描述要做的项目', '一两句话即可，后续会补充'))?.trim() ?? '';
-  if (!description) throw new Error(`需要描述。\n${BUILD_USAGE}`);
-
   const lines: string[] = [];
-  if (!existsSync(path.join(env.root, '.flow', 'state.json')) || !existsSync(path.join(env.root, 'workflow.yaml'))) {
-    lines.push(formatInit(await initProject(env.root, env.packageRoot)));
-  }
+  await ensureInitialized(env, lines);
   const h = env.engine();
-  const active = h.store.readState().active_flow;
-  if (active) {
-    const f = h.store.readFlow(active);
-    throw new Error(`已有进行中的流程 ${f.id}「${f.title}」（阶段 ${f.stage}）。同一时间只允许一个 build 或 feature 流程；请执行 /flow resume 继续。`);
+  if (argv.includes('--cancel')) { await cancelBrief(h.store); await env.deactivateOrchestrator?.(); return '已放弃需求访谈。'; }
+
+  if (argv.includes('--confirm')) {
+    const b = await confirmBrief(h.store, 'build');
+    assertNoActiveFlow(h);
+    return startBuildFlow(env, b.mode as 'build' | 'feature', b.description || b.sections['goal'] || '新项目', renderBrief(b), lines, b);
   }
-  const flow = await startFlow({ root: env.root, store: h.store, config: h.config }, feature ? 'feature' : 'build', description);
+
+  const feature = argv.includes('--feature');
+  const fromFile = readFromFile(env, argv);
+  const description = argv.filter((a, i) => !a.startsWith('--') && argv[i - 1] !== '--from').join(' ').trim();
+  assertNoActiveFlow(h);
+  const mode = feature ? 'feature' : 'build';
+  if (fromFile) return startBuildFlow(env, mode, fromFile.split('\n')[0]!.replace(/^#+\s*/, '').slice(0, 120) || '新项目', fromFile, lines);
+  if (argv.includes('--direct')) {
+    if (!description) throw new Error(`--direct 需要描述。\n${BUILD_USAGE}`);
+    return startBuildFlow(env, mode, description, '', lines);
+  }
+  return beginInterview(env, mode, description, lines);
+}
+
+async function startBuildFlow(env: CommandEnv, mode: 'build' | 'feature', title: string, brief: string, lines: string[], confirmed?: BriefFile): Promise<string> {
+  const h = env.engine();
+  const flow = await startFlow({ root: env.root, store: h.store, config: h.config }, mode, title);
+  if (brief) await h.store.saveFlowBrief(flow.id, brief);
+  if (confirmed) await markConfirmed(h.store, flow.id);
   await env.activateOrchestrator();
   await h.engine.pump(flow.id);
   const d = await h.engine.next(flow.id);
@@ -256,24 +329,34 @@ export async function runFlowBuild(args: string, env: CommandEnv): Promise<strin
   return lines.join('\n');
 }
 
-export const FIX_USAGE = [
-  '用法：/flow-fix "<问题描述>" [--yes]',
-  '流程：scout 定位 → （超出规模时请你决定）→ 复现测试（必须先失败）→ 修复 → 审查 → verify → 直接合入主分支 → 写 .flow/fixes/ 日志（含成本）。',
-  '单文件、几十行以内的小改动直接用 pi 更划算。',
-].join('\n');
-
 /** /flow-fix */
 export async function runFlowFix(args: string, env: CommandEnv): Promise<string> {
   const argv = splitArgs(args);
   if (argv[0] === 'help' || argv[0] === '--help') return FIX_USAGE;
-  let description = argv.filter((a) => !a.startsWith('--')).join(' ').trim();
-  if (!description && env.ui?.input) description = (await env.ui.input('描述要修复的问题', '现象、复现步骤、期望行为'))?.trim() ?? '';
-  if (!description) throw new Error(`需要问题描述。\n${FIX_USAGE}`);
   const lines: string[] = [];
-  if (!existsSync(path.join(env.root, '.flow', 'state.json')) || !existsSync(path.join(env.root, 'workflow.yaml'))) {
-    lines.push(formatInit(await initProject(env.root, env.packageRoot)));
-  }
+  await ensureInitialized(env, lines);
   const h = env.engine();
+  if (argv.includes('--cancel')) { await cancelBrief(h.store); await env.deactivateOrchestrator?.(); return '已放弃访谈。'; }
+
+  let description: string;
+  let brief = '';
+  let confirmed: BriefFile | undefined;
+  if (argv.includes('--confirm')) {
+    confirmed = await confirmBrief(h.store, 'fix');
+    description = confirmed.description || confirmed.sections['symptom'] || '修复';
+    brief = renderBrief(confirmed);
+  } else {
+    const fromFile = readFromFile(env, argv);
+    const desc = argv.filter((a, i) => !a.startsWith('--') && argv[i - 1] !== '--from').join(' ').trim();
+    if (fromFile) { description = fromFile.split('\n')[0]!.replace(/^#+\s*/, '').slice(0, 120); brief = fromFile; }
+    else if (argv.includes('--direct')) {
+      if (!desc) throw new Error(`--direct 需要问题描述。\n${FIX_USAGE}`);
+      description = desc;
+    } else {
+      return beginInterview(env, 'fix', desc, lines);
+    }
+  }
+
   const active = h.store.readState().active_flow;
   if (active) {
     const f = h.store.readFlow(active);
@@ -282,16 +365,44 @@ export async function runFlowFix(args: string, env: CommandEnv): Promise<string>
     }
     if (!argv.includes('--yes')) {
       const msg = `流程 ${f.id} 正在等待审批（阶段 ${f.stage}）。修复会直接合入 ${h.config.raw.main_branch}，与该流程并行。`;
-      if (!env.ui) return `${msg}\n确认请执行 /flow-fix "<描述>" --yes`;
+      if (!env.ui) return `${msg}\n确认请在原命令后加 --yes`;
       if ((await env.ui.select(`${msg}继续？`, ['继续修复', '取消'])) !== '继续修复') return '已取消。';
     }
   }
   const main = h.config.raw.main_branch;
   const fix = await h.store.createFixFlow(description, main, git(env.root, ['rev-parse', main]).trim());
+  if (brief) await h.store.saveFlowBrief(fix.id, brief);
+  if (confirmed) await markConfirmed(h.store, fix.id);
   await env.activateOrchestrator();
   await h.engine.pump(fix.id);
   lines.push(`已创建修复 ${fix.id}，scout 开始定位问题。`);
   if (env.waitForIdle) await h.engine.idle();
   lines.push('', renderStatus(h.store, h.config));
   return lines.join('\n');
+}
+
+/** /flow answer：回答阻塞任务提出的问题（答案来自用户输入，不经模型转述） */
+export async function runFlowAnswer(argv: string[], env: CommandEnv): Promise<string> {
+  const h = env.engine();
+  const flows = [h.store.readState().active_flow, h.store.openFixFlow()?.id].filter((x): x is string => !!x);
+  const blocked = flows.flatMap((f) => h.store.listTasks(f).filter((t) => t.status === 'blocked').map((t) => ({ flow: f, t })));
+  if (!blocked.length) return '没有等待你回答的问题。';
+  const wanted = argv[1];
+  let pick = wanted ? blocked.find((x) => x.t.id === wanted) : blocked.length === 1 ? blocked[0] : undefined;
+  if (wanted && !pick) throw new Error(`任务 ${wanted} 不在阻塞状态。等待回答的：${blocked.map((x) => x.t.id).join('、')}`);
+  if (!env.ui?.input) {
+    return `等待你回答的问题：\n${blocked.map((x) => `- ${x.t.id}「${x.t.title}」：${x.t.blocked_reason}\n  → /flow unblock ${x.t.id} "<你的回答>"`).join('\n')}`;
+  }
+  if (!pick) {
+    const labels = blocked.map((x) => `${x.t.id}：${(x.t.blocked_reason ?? '').slice(0, 80)}`);
+    const sel = await env.ui.select('选择要回答的问题', labels);
+    if (!sel) return '已取消。';
+    pick = blocked[labels.indexOf(sel)];
+  }
+  const answer = (await env.ui.input(`${pick!.t.id}「${pick!.t.title}」的问题：\n${pick!.t.blocked_reason}`, '你的回答（可留空，只解除阻塞）')) ?? undefined;
+  if (answer === undefined) return '已取消。';
+  const text = await unblockTask({ root: env.root, store: h.store, config: h.config }, pick!.flow, pick!.t.id, answer);
+  await h.engine.pump(pick!.flow);
+  if (h.store.readFlow(pick!.flow).mode !== 'fix') await h.engine.next(pick!.flow);
+  return `${text}${answer.trim() ? '回答已交给该任务。' : ''}`;
 }

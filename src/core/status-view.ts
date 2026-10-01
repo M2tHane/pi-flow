@@ -125,7 +125,7 @@ export function actionsNeeded(store: StateStore, config: FlowConfig): Action[] {
       }
     }
     for (const t of tasks.filter((x) => x.status === 'blocked')) {
-      out.push({ key: `${flow.id}:blocked:${t.id}:${t.version}`, text: `${t.id}「${short(t.title, 40)}」阻塞：${short(t.blocked_reason ?? '')}`, command: `/flow unblock ${t.id} "<回答或说明>"` });
+      out.push({ key: `${flow.id}:blocked:${t.id}:${t.version}`, text: `${t.id}「${short(t.title, 40)}」阻塞：${short(t.blocked_reason ?? '')}`, command: `/flow answer ${t.id}` });
     }
   }
   return out;

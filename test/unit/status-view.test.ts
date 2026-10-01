@@ -48,7 +48,7 @@ test('/flow status 精简视图：阶段条、进度、正在进行、需要你�
 
     await p.store.transitionTask(p.flowId, 'T-001', { to: 'blocked', trigger: 'block', actor: 'run:r-1', facts: { reason: '用 PostgreSQL 还是 SQLite？' } });
     out = renderStatus(p.store, p.config);
-    assert.match(out, /^需要你处理：\n- T-001「用户服务」阻塞：用 PostgreSQL 还是 SQLite？\n  → \/flow unblock T-001/);
+    assert.match(out, /^需要你处理：\n- T-001「用户服务」阻塞：用 PostgreSQL 还是 SQLite？\n  → \/flow answer T-001/);
     assert.match(out, /阻塞：T-001/);
 
     await p.store.transitionStage(p.flowId, { to: 'awaiting_gate', trigger: 'submit_gate', actor: 'engine' });

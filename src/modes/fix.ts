@@ -67,7 +67,7 @@ export async function fixStep(c: FixContext, flowId: string): Promise<void> {
       id: 'T-001', stage: 'X1', kind: 'analysis', title: `定位问题：${flow.title}`.slice(0, 200), role: SCOUT, scopes: [],
       depends_on: [], inputs: [], writes: [], verify: [],
       acceptance: ['给出问题位置与根因假设', '列出修复需要改动的具体文件（impact_files）', '判断是否需要改契约，并给出建议的实施角色'],
-    }, `用户报告的问题：\n${flow.title}`);
+    }, c.store.readFlowBrief(flowId).trim() ? `用户确认的问题描述：\n\n${c.store.readFlowBrief(flowId).trim()}` : `用户报告的问题：\n${flow.title}`);
     await c.dispatch(flowId, id);
     return;
   }
