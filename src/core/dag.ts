@@ -199,3 +199,32 @@ export function mutexPairs(tasks: readonly Pick<TaskFile, 'id' | 'writes'>[]): [
   }
   return out;
 }
+
+export interface DagReport {
+  task_count: number;
+  critical_path: string[];
+  critical_path_length: number;
+  max_width: number;
+  hard_ratio: number;
+  warnings: string[];
+}
+
+/** 第 11 节第 7 条：任务数、关键路径长度（只计硬依赖）、最大并行宽度、硬依赖占比；关键路径过长时提示 */
+export function dagReport(tasks: readonly StatTask[], warnings: string[] = []): DagReport {
+  const s = dagStats(tasks);
+  const w = [...warnings];
+  if (s.taskCount >= 4 && s.criticalPathLength / s.taskCount > 0.6) {
+    w.push(`关键路径 ${s.criticalPathLength} / 任务数 ${s.taskCount}：硬依赖可能用多了。能对着契约或 mock 先做的，改为软依赖并配 integration 任务。`);
+  }
+  return {
+    task_count: s.taskCount, critical_path: s.criticalPath, critical_path_length: s.criticalPathLength,
+    max_width: s.maxWidth, hard_ratio: Math.round(s.hardRatio * 100) / 100, warnings: w,
+  };
+}
+
+export function formatDagReport(r: DagReport): string {
+  return [
+    `任务数 ${r.task_count}，关键路径长度 ${r.critical_path_length}（${r.critical_path.join(' → ')}），最大并行宽度 ${r.max_width}，硬依赖占比 ${Math.round(r.hard_ratio * 100)}%`,
+    ...r.warnings.map((x) => `! ${x}`),
+  ].join('\n');
+}

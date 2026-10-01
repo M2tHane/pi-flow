@@ -4,6 +4,7 @@ import type { StateStore } from '../core/state-store.ts';
 import type { Engine } from '../core/dispatcher.ts';
 import { TASK_STATUSES, type TaskFile } from '../core/schemas.ts';
 import { FlowToolError, type ToolResult } from './subagent-tools.ts';
+import { proposalSummary } from '../core/stages.ts';
 
 export const DispatchParams = Type.Object({ task_id: Type.String({ pattern: '^T-[0-9]{3,}$' }) });
 export const WaitParams = Type.Object({
@@ -36,7 +37,13 @@ export function statusText(store: StateStore, engine: Engine | null, flowId: str
   if (blocked.length) lines.push(`阻塞，需要用户处理：\n${blocked.map((t) => `- ${t.id}：${one(t.blocked_reason ?? '')} → /flow unblock ${t.id}`).join('\n')}`);
   const failing = tasks.filter((t) => t.last_failure && t.status !== 'blocked' && t.status !== 'done');
   if (failing.length) lines.push(`最近失败：\n${failing.map((t) => `- ${t.id}（第 ${t.attempts} 次）：${one(t.last_failure!)}`).join('\n')}`);
-  if (flow.stage_status === 'awaiting_human') lines.push(`等待用户：阶段 ${flow.stage} 的闸门待批准 → /flow approve`);
+  if (flow.stage_status === 'awaiting_human') {
+    lines.push(`等待用户：阶段 ${flow.stage} 的闸门待批准 → /flow approve（或 /flow reject "<意见>"）`);
+    const p = proposalSummary(store, flowId);
+    if (p && ['S1', 'F1'].includes(flow.stage)) lines.push(p);
+  }
+  const gateFail = [...store.readEvents()].reverse().find((e) => e.flow === flowId && e.type === 'gate_result');
+  if (gateFail && gateFail.to === 'active' && flow.stage_status === 'active') lines.push(`阶段闸门未通过：${one(gateFail.reason ?? '', 300)}（修复后执行 /flow gate 重跑）`);
   return lines.join('\n');
 }
 

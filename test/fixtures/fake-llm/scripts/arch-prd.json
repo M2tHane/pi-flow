@@ -1,0 +1,7 @@
+{ "steps": [
+  { "tool_calls": [ { "name": "flow_claim", "arguments": {} } ] },
+  { "tool_calls": [ { "name": "write", "arguments": { "path": "docs/PRD.md", "content": "# 待办应用 PRD\n\n## 非目标\n- 不做多人协作\n\n## 验收标准\n- POST /todos 返回 201\n" } } ] },
+  { "tool_calls": [ { "name": "flow_note", "arguments": { "text": "PRD 初稿完成；假设单用户" } } ] },
+  { "tool_calls": [ { "name": "flow_submit", "arguments": { "summary": "撰写 PRD 初稿" } } ] },
+  { "text": "完成" }
+] }

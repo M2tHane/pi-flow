@@ -5,7 +5,8 @@ import { Type, type Static } from 'typebox';
 import type { FlowConfig } from '../core/config.ts';
 import { StateError, type StateStore } from '../core/state-store.ts';
 import { hashToken } from '../core/state-machine.ts';
-import type { TaskFile } from '../core/schemas.ts';
+import { ProposedTask, type TaskFile } from '../core/schemas.ts';
+import { validateDag, dagReport, formatDagReport } from '../core/dag.ts';
 import { changedFiles, snapshot } from '../core/worktree.ts';
 
 export const NOTE_LIMIT = 4000;
@@ -163,11 +164,34 @@ export async function flowBlock(ctx: ToolContext, p: Static<typeof BlockParams>)
   return { text: '已标记为阻塞，等待用户处理。请直接结束。' };
 }
 
+export const DESIGN_STAGES = ['S1', 'F1'];
+export const ProposeParams = Type.Object({ tasks: Type.Array(ProposedTask, { minItems: 1, maxItems: 200, description: '任务列表（DAG）。id 用 T-001 起的临时编号，批准后由程序重新编号' }) });
+
+export async function flowProposeTasks(ctx: ToolContext, p: Static<typeof ProposeParams>): Promise<ToolResult> {
+  const t = checkRun(ctx);
+  if (!DESIGN_STAGES.includes(t.stage)) throw new FlowToolError(`flow_propose_tasks 只能在 S1（架构）或 F1（影响面与 DAG）阶段使用，当前任务属于 ${t.stage}。`);
+  const flow = ctx.store.readFlow(ctx.env.flow);
+  const later = flow.stages.slice(flow.stages.indexOf(t.stage) + 1);
+  const errors: string[] = [];
+  for (const x of p.tasks) {
+    if (!later.includes(x.stage)) errors.push(`${x.id}：stage ${x.stage} 不合法，只能是 ${later.join('、')}`);
+    if (x.kind === 'merge-fix' || x.kind === 'review-fix') errors.push(`${x.id}：kind ${x.kind} 由程序生成，不能提交`);
+    if (x.role === 'orchestrator' || x.role === 'reviewer') errors.push(`${x.id}：角色 ${x.role} 不能承担任务`);
+  }
+  const v = validateDag(p.tasks.map((x) => ({ ...x })), ctx.config.dagCatalog());
+  errors.push(...v.errors);
+  if (errors.length) throw new FlowToolError(`任务列表校验失败，未保存：\n${errors.map((e) => `- ${e}`).join('\n')}\n建议：逐条修正后重新调用 flow_propose_tasks。`);
+  const report = dagReport(p.tasks, v.warnings);
+  await ctx.store.saveProposal(ctx.env.flow, { stage: t.stage, run: ctx.env.run, created_at: (ctx.now?.() ?? new Date()).toISOString(), tasks: p.tasks, report }, actor(ctx));
+  return { text: `任务列表已保存（用户批准本阶段闸门后生效，可在批准前重新提交覆盖）。\n${formatDagReport(report)}`, details: { ...report } };
+}
+
 export const SUBAGENT_TOOLS = {
   flow_claim: { params: ClaimParams, description: '确认任务与租约，返回任务说明、输入文件、验收标准、可写范围与 verify 命令。开始工作前先调用。', run: (c: ToolContext) => flowClaim(c) },
   flow_note: { params: NoteParams, description: '追加 handoff 笔记（做到哪、下一步、踩过的坑、未决问题）。提交前必须至少写一次。', run: (c: ToolContext, p: Static<typeof NoteParams>) => flowNote(c, p) },
   flow_submit: { params: SubmitParams, description: '提交本任务进入审查。程序会检查改动是否都在可写范围内。', run: (c: ToolContext, p: Static<typeof SubmitParams>) => flowSubmit(c, p) },
   flow_approve: { params: ApproveParams, description: '审查结论：pass 或 reject。reject 必须附 issues（位置、问题、期望的修改）。', run: (c: ToolContext, p: Static<typeof ApproveParams>) => flowApprove(c, p) },
-  flow_block: { params: BlockParams, description: '遇到歧义或需要越界时标记任务阻塞，交给用户决定。', run: (c: ToolContext, p: Static<typeof BlockParams>) => flowBlock(c, p) },
+  flow_block: { params: BlockParams, description: '遇到歧义或需要越界时标记任务阻塞，交给用户决定。需要向用户提问时，一次只问一个问题。', run: (c: ToolContext, p: Static<typeof BlockParams>) => flowBlock(c, p) },
+  flow_propose_tasks: { params: ProposeParams, description: '（仅 architect，仅 S1/F1）提交任务 DAG：依赖分硬/软，硬依赖必须写 reason，软依赖必须配 integration 任务。返回关键路径与并行宽度报告。', run: (c: ToolContext, p: Static<typeof ProposeParams>) => flowProposeTasks(c, p) },
 } as const;
 export type SubagentToolName = keyof typeof SUBAGENT_TOOLS;

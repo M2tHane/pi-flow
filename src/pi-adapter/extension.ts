@@ -17,7 +17,7 @@ import { enforceToolCall } from '../core/guard.ts';
 import { dirtyFiles, newDrift, nextStep, turnContext } from '../core/context-injector.ts';
 import { parseAgentFile } from '../core/agents.ts';
 import { runFlowConfig, type ModelOption } from '../commands/flow-config.ts';
-import { runFlowCommand, FLOW_USAGE, type CommandEnv, type EngineHandle } from '../commands/flow.ts';
+import { runFlowCommand, runFlowBuild, FLOW_USAGE, type CommandEnv, type EngineHandle } from '../commands/flow.ts';
 import { DispatchParams, WaitParams, activeFlowId, flowDispatch, flowWait, statusText } from '../tools/orchestrator-tools.ts';
 import { PiLauncher } from './launcher.ts';
 
@@ -120,7 +120,7 @@ export default function piFlow(pi: ExtensionAPI): void {
     s.notify = (m, l) => report(ctx, m, l);
     return {
       root, packageRoot: PACKAGE_ROOT,
-      ui: ctx.hasUI ? { select: (t, o) => ctx.ui.select(t, o), notify: (m, l) => ctx.ui.notify(m, l) } : null,
+      ui: ctx.hasUI ? { select: (t, o) => ctx.ui.select(t, o), input: (t, p) => ctx.ui.input(t, p), notify: (m, l) => ctx.ui.notify(m, l) } : null,
       engine: () => engineFor(root),
       store: () => s.handle?.store ?? new StateStore(root),
       roleSettings: () => loadRoleSettings(roleSettingsPath()),
@@ -216,14 +216,26 @@ export default function piFlow(pi: ExtensionAPI): void {
   });
 
   pi.registerCommand('flow', {
-    description: 'pi-flow 管理：status、next、resume、doctor、init',
-    getArgumentCompletions: (prefix) => ['status', 'next', 'resume', 'doctor', 'init', 'help']
+    description: 'pi-flow 管理：status、next、resume、approve、reject、unblock、gate、doctor、init',
+    getArgumentCompletions: (prefix) => ['status', 'next', 'resume', 'approve', 'reject', 'unblock', 'gate', 'doctor', 'init', 'help']
       .filter((x) => x.startsWith(prefix.trim())).map((x) => ({ value: x, label: x })),
     handler: async (args, ctx) => {
       try {
         report(ctx, await runFlowCommand(args, commandEnv(ctx)));
       } catch (e) {
         report(ctx, `${(e as Error).message}${/未知子命令/.test((e as Error).message) ? '' : `\n${FLOW_USAGE.split('\n')[0]} /flow help`}`, 'error');
+      }
+    },
+  });
+
+  pi.registerCommand('flow-build', {
+    description: 'pi-flow：从零建新项目，或 --feature 在已有项目上加功能',
+    getArgumentCompletions: (prefix) => (prefix.trim() === '' || '--feature'.startsWith(prefix.trim()) ? [{ value: '--feature', label: '--feature' }] : null),
+    handler: async (args, ctx) => {
+      try {
+        report(ctx, await runFlowBuild(args, commandEnv(ctx)));
+      } catch (e) {
+        report(ctx, (e as Error).message, 'error');
       }
     },
   });

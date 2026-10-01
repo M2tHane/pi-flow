@@ -18,6 +18,10 @@ import { runVerify } from './verify-runner.ts';
 import { git } from './git.ts';
 import { RUN_ENV_KEYS } from '../tools/subagent-tools.ts';
 import { MergeQueue, type MergeHooks, type MergeResult } from './merge-queue.ts';
+import { runStageGate, gateFailedWithoutChange, type GateOutcome } from './gates.ts';
+import { ensureStageTasks } from './stages.ts';
+import { STAGE_SKILLS } from '../modes/plan.ts';
+import { existsSync, readFileSync } from 'node:fs';
 
 export const REVIEWER_ROLE = 'reviewer';
 
@@ -46,6 +50,9 @@ export interface EngineDeps {
   mergeHooks?: MergeHooks;
   /** 每次合并处理完成的回调 */
   onMerge?: (r: MergeResult) => void;
+  /** 技能目录（skills/<name>/SKILL.md）；子进程以 --no-skills 运行，技能由提示注入 */
+  packageSkillsDir?: string;
+  onGate?: (r: GateOutcome) => void;
 }
 
 export interface Dispatched { run_id: string; task: string; role: string; model: string }
@@ -157,8 +164,13 @@ export class Engine {
     const mode = role === REVIEWER_ROLE ? 'review' : 'impl';
     const diffStat = mode === 'review' && task.worktree && task.base_sha
       ? git(task.worktree, ['diff', '--stat', task.base_sha, 'HEAD']) : undefined;
+    const skillNames = [...(STAGE_SKILLS[task.stage] ?? []), ...(mode === 'impl' ? ['write-handoff'] : [])];
+    const skills = skillNames.map((n) => {
+      const f = this.d.packageSkillsDir ? path.join(this.d.packageSkillsDir, n, 'SKILL.md') : '';
+      return f && existsSync(f) ? { path: `skills/${n}`, content: readFileSync(f, 'utf8').replace(/^---[\s\S]*?---\s*/, '').trim() } : null;
+    }).filter((x): x is { path: string; content: string } => !!x);
     const prompt = assemblePrompt({
-      agent, rules, task, flowId, handoff: store.readHandoff(flowId, task.id), mode, commands: config.commands,
+      agent, rules, skills, task, flowId, handoff: store.readHandoff(flowId, task.id), mode, commands: config.commands,
       ...(diffStat !== undefined ? { diffStat } : {}),
     });
     const runDir = path.join(worktreesRoot(root), '.runs', runId);
@@ -246,6 +258,7 @@ export class Engine {
         }
       }
     } catch (e) { report(e); }
+    await this.advanceStage(flowId, report);
     // 串行合并：合并名额空闲且队首就绪时处理
     const mq = this.d.store.readMergeQueue();
     if (!mq.merging && mq.queue[0]?.flow === flowId) {
@@ -256,6 +269,38 @@ export class Engine {
       }));
     }
     this.notify();
+  }
+
+  private readonly gating = new Set<string>();
+
+  /** 阶段推进：设计阶段生成任务；本阶段任务全部完成时执行闸门；无需人工的闸门通过后进入下一阶段 */
+  private async advanceStage(flowId: string, report: (e: unknown) => void, force = false): Promise<void> {
+    const deps = { root: this.d.root, store: this.d.store, config: this.d.config };
+    try {
+      const flow = this.d.store.readFlow(flowId);
+      if (flow.stage_status !== 'active' || this.gating.has(flowId)) return;
+      const created = await ensureStageTasks(deps, flowId);
+      if (created.length) { await this.promote(flowId); this.notify(); return; }
+      const stageTasks = this.d.store.listTasks(flowId).filter((t) => t.stage === flow.stage);
+      if (!stageTasks.every((t) => t.status === 'done')) return;
+      if (!force && gateFailedWithoutChange(this.d.store, flowId, flow.stage)) return;
+      await this.d.store.transitionStage(flowId, { to: 'awaiting_gate', trigger: 'submit_gate', actor: 'engine' });
+      this.gating.add(flowId);
+      this.notify();
+      this.track(runStageGate(this.d.root, this.d.store, this.d.config, flowId, this.d.verifyTimeoutMs)
+        .then(async (g) => {
+          this.d.onGate?.(g);
+          if (g.passed && !g.needsHuman) await this.d.store.advanceStage(flowId, 'gate');
+        })
+        .finally(() => this.gating.delete(flowId))
+        .then(() => { this.notify(); return this.pump(flowId); }));
+    } catch (e) { report(e); }
+  }
+
+  /** /flow gate：闸门失败后由用户手动重跑 */
+  async rerunGate(flowId: string): Promise<void> {
+    await this.advanceStage(flowId, this.d.onError ?? (() => {}), true);
+    await this.idle();
   }
 
   private track(p: Promise<unknown>): void {

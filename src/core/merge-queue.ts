@@ -168,13 +168,16 @@ export class MergeQueue {
 
   private async postMergeVerify(flowId: string, t: TaskFile, wt: string, changed: string[]) {
     const cmds = this.config.commands;
+    // 只在任务的 verify 包含时运行（文档类任务不跑 typecheck/test，否则新项目在建好脚手架前永远无法合并）
     const plan: { name: string; shell: string }[] = [];
-    if (cmds['typecheck']) plan.push({ name: 'typecheck', shell: cmds['typecheck'] });
-    const affected = cmds['test_affected'] && this.hooks.affectedFiles ? await this.hooks.affectedFiles(wt, changed) : null;
-    if (affected?.length && cmds['test_affected']) {
-      plan.push({ name: 'test_affected', shell: cmds['test_affected'].replace('{files}', affected.map((f) => `'${f.replace(/'/g, "'\\''")}'`).join(' ')) });
-    } else if (cmds['test']) {
-      plan.push({ name: 'test', shell: cmds['test'] });
+    if (cmds['typecheck'] && t.verify.includes('typecheck')) plan.push({ name: 'typecheck', shell: cmds['typecheck'] });
+    if (t.verify.some((v) => v === 'test' || v === 'test_affected')) {
+      const affected = cmds['test_affected'] && this.hooks.affectedFiles ? await this.hooks.affectedFiles(wt, changed) : null;
+      if (affected?.length && cmds['test_affected']) {
+        plan.push({ name: 'test_affected', shell: cmds['test_affected'].replace('{files}', affected.map((f) => `'${f.replace(/'/g, "'\\''")}'`).join(' ')) });
+      } else if (cmds['test']) {
+        plan.push({ name: 'test', shell: cmds['test'] });
+      }
     }
     const results: { command: string; exit_code: number }[] = [];
     for (const c of plan) {

@@ -79,6 +79,16 @@ export class FlowConfig {
     return this.kinds.get(tool) ?? 'other';
   }
 
+  /** DAG 校验用的目录：角色 scopes、scope 可写范围、命令名、单任务文件上限 */
+  dagCatalog(): { roles: Record<string, { scopes: string[] }>; scopes: Record<string, string[]>; commands: string[]; maxTaskFiles: number } {
+    return {
+      roles: Object.fromEntries(Object.values(this.roles).map((r) => [r.name, { scopes: r.scopes }])),
+      scopes: this.scopeWrites(),
+      commands: Object.keys(this.raw.commands),
+      maxTaskFiles: this.raw.limits.max_task_files,
+    };
+  }
+
   scopeWrites(): Record<string, string[]> {
     return Object.fromEntries(Object.entries(this.raw.scopes).map(([k, v]) => [k, v.writes]));
   }

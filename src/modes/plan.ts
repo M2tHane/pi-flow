@@ -1,0 +1,61 @@
+// 各模式的阶段计划：设计阶段（S0、S1、F0、F1）的任务由程序生成；其余阶段的任务来自 architect 提交并经批准的 DAG。
+import type { TaskInput } from '../core/state-store.ts';
+
+export type FlowMode = 'build' | 'feature';
+
+export const DESIGN_STAGES = new Set(['S0', 'S1', 'F0', 'F1']);
+/** 批准后落地任务提案的阶段 */
+export const PROPOSAL_STAGES = new Set(['S1', 'F1']);
+
+/** 各阶段注入的技能（子进程以 --no-skills 运行，由 prompt-assembler 注入） */
+export const STAGE_SKILLS: Record<string, string[]> = {
+  S0: ['write-prd'],
+  S1: ['design-contract', 'decompose-dag'],
+  F0: ['write-feature-spec'],
+  F1: ['design-contract', 'decompose-dag'],
+};
+
+export function slug(text: string): string {
+  const ascii = text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
+  return ascii || `feature-${Date.now().toString(36)}`;
+}
+
+/** 设计阶段的任务（不含 id，由调用方分配）；非设计阶段返回空数组 */
+export function designTasks(mode: FlowMode, stage: string, description: string): Omit<TaskInput, 'id'>[] {
+  const base = { kind: 'doc' as const, role: 'architect', depends_on: [], verify: [] as string[] };
+  if (mode === 'build' && stage === 'S0') {
+    return [{ ...base, stage, title: '撰写 PRD', scopes: ['docs'], writes: ['docs/PRD.md'], inputs: ['docs/PRD.md'], acceptance: [
+      'docs/PRD.md 包含背景与目标、用户与场景、功能范围、非目标、可验证的验收标准、约束与假设、未决问题',
+      '每条验收标准都能被自动化测试验证',
+      `内容覆盖用户的描述：${description}`,
+      '关键信息不足时用 flow_block 向用户提一个问题（一次只问一个），不要猜测',
+    ] }];
+  }
+  if (mode === 'build' && stage === 'S1') {
+    return [{ ...base, stage, title: '架构、ADR、契约与任务 DAG', scopes: ['docs', 'shared'], writes: ['docs/**', 'src/shared/**'],
+      inputs: ['docs/PRD.md'], acceptance: [
+        'docs/ARCHITECTURE.md 写明模块边界、依赖方向与数据模型',
+        '重大技术选型各写一条 ADR（docs/adr/），给出对比与建议，不替用户拍板',
+        'docs/contracts/ 中有数据模型 schema 与 API 契约（批准后只读）',
+        '经 flow_propose_tasks 提交覆盖 S2 至 S4 的任务 DAG：先 test 后 impl；硬依赖写 reason；软依赖配 integration 任务',
+      ] }];
+  }
+  if (mode === 'feature' && stage === 'F0') {
+    const file = `docs/features/${slug(description)}.md`;
+    return [{ ...base, stage, title: `功能说明：${description}`.slice(0, 120), scopes: ['docs'], writes: ['docs/features/**', 'docs/PRD.md'],
+      inputs: ['docs/PRD.md', 'docs/features/_template.md'], acceptance: [
+        `${file} 包含目标、非目标、可验证的验收标准、受影响模块、是否需要改契约`,
+        'docs/PRD.md 追加该功能的条目并链接到功能说明',
+        '关键信息不足时用 flow_block 向用户提一个问题，不要猜测',
+      ] }];
+  }
+  if (mode === 'feature' && stage === 'F1') {
+    return [{ ...base, stage, title: '影响面分析与本功能的任务 DAG', scopes: ['docs', 'shared'], writes: ['docs/**', 'src/shared/**'],
+      inputs: ['docs/features/', 'docs/ARCHITECTURE.md', 'docs/contracts/'], acceptance: [
+        '用 codegraph 做影响面分析，结果写入功能说明的"受影响模块"',
+        '复用现有架构与契约；需要改契约时先写 ADR',
+        '经 flow_propose_tasks 提交本功能的任务 DAG（S3、S4）：先 test 后 impl；S4 包含新功能的验收测试',
+      ] }];
+  }
+  return [];
+}

@@ -207,7 +207,7 @@ test('合并后验证使用 codegraph 给出的受影响测试；拿不到时退
   const p = await setupProject({
     yaml: withTest('true').replace('test_affected: "true {files}"', 'test_affected: "for f in {files}; do test -f $f; done"'),
     files: { 'tests/a.test.ts': 'ok' },
-    tasks: [mkTask('T-001', { verify: ['typecheck'] }), mkTask('T-002', { verify: ['typecheck'] })],
+    tasks: [mkTask('T-001', { verify: ['typecheck', 'test'] }), mkTask('T-002', { verify: ['typecheck', 'test'] })],
   });
   try {
     const seen: string[][] = [];

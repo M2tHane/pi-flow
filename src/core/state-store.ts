@@ -7,7 +7,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import lockfile from 'proper-lockfile';
 import {
-  validate, type FlowFile, type MergeQueueFile, type RunFile, type SchemaKind, type StageStatus, type StateFile,
+  validate, type FlowFile, type MergeQueueFile, type RunFile, type ProposalFile, type SchemaKind, type StageStatus, type StateFile,
   type TaskFile, type TaskStatus, type FlowEvent,
 } from './schemas.ts';
 import {
@@ -59,6 +59,8 @@ export const taskRel = (flow: string, task: string) => `flows/${flow}/tasks/${ta
 export const handoffRel = (flow: string, task: string) => `flows/${flow}/handoff/${task}.md`;
 export const evidenceRel = (flow: string, task: string) => `flows/${flow}/evidence/${task}`;
 export const runRel = (run: string) => `runs/${run}.json`;
+export const proposalRel = (flow: string) => `flows/${flow}/proposal.json`;
+export const stageEvidenceRel = (flow: string, stage: string) => `flows/${flow}/evidence/stage-${stage}`;
 const MQ_REL = 'merge-queue.json';
 
 export function schemaKindOf(rel: string): SchemaKind | null {
@@ -66,6 +68,7 @@ export function schemaKindOf(rel: string): SchemaKind | null {
   if (/^flows\/[^/]+\/flow\.json$/.test(rel)) return 'flow';
   if (/^flows\/[^/]+\/tasks\/[^/]+\.json$/.test(rel)) return 'task';
   if (/^runs\/[^/]+\.json$/.test(rel)) return 'run';
+  if (/^flows\/[^/]+\/proposal\.json$/.test(rel)) return 'proposal';
   return null;
 }
 
@@ -123,6 +126,7 @@ export class Tx {
   putTask(flow: string, t: TaskFile) { return this.putJson(taskRel(flow, t.id), 'task', t); }
   putMergeQueue(q: MergeQueueFile) { return this.putJson(MQ_REL, 'merge-queue', q); }
   putRun(r: RunFile) { return this.putJson(runRel(r.run_id), 'run', r); }
+  putProposal(flow: string, p: ProposalFile) { return this.putJson(proposalRel(flow), 'proposal', p); }
 
   event(e: StagedEvent): void { this.events.push(e); }
   setActiveFlow(id: string | null): void { this.activeFlow = id; }
@@ -619,6 +623,33 @@ export class StateStore {
         tx.putTask(v.flow, task);
       }
       return { count, terminate, blocked };
+    });
+  }
+
+  readProposal(flow: string): ProposalFile | null {
+    return this.readJsonRel<ProposalFile>(proposalRel(flow));
+  }
+
+  /** 保存（或替换）任务提案；已有提案时基于其版本覆盖 */
+  async saveProposal(flow: string, proposal: Omit<ProposalFile, 'version'>, actor: string): Promise<ProposalFile> {
+    return this.transaction((tx) => {
+      tx.readFlow(flow);
+      const cur = tx.readJson<ProposalFile>(proposalRel(flow));
+      const saved = tx.putProposal(flow, { ...proposal, version: cur?.version ?? 1 });
+      tx.event({ flow, actor, type: 'note', reason: `${cur ? '替换' : '提交'}任务提案：${proposal.tasks.length} 个任务`,
+        data: { stage: proposal.stage, tasks: proposal.tasks.length, critical_path: proposal.report.critical_path_length } });
+      return saved;
+    });
+  }
+
+  async saveStageEvidence(flow: string, stage: string, name: string, content: string, actor: string): Promise<string> {
+    if (!/^[\w.-]+$/.test(name) || name.startsWith('.')) throw new StateError(`evidence 文件名不合法：${name}`);
+    return this.transaction((tx) => {
+      tx.readFlow(flow);
+      const rel = `${stageEvidenceRel(flow, stage)}/${name}`;
+      tx.putText(rel, content);
+      tx.event({ flow, actor, type: 'note', reason: 'stage evidence', evidence: rel, data: { stage } });
+      return rel;
     });
   }
 

@@ -122,6 +122,37 @@
 40. **`/flow doctor --fix` 只做安全清理**：删除未被任何任务引用的 worktree、已结束 run 的提示文件、`git worktree prune`；不修改 `.flow/` 状态。状态问题由 `/flow resume` 或用户处理。
 41. **`flow_wait` 等待的任务已是 done 或 blocked 时立即返回**，避免空等到超时。
 
+42. **设计阶段任务由程序生成**（S0、S1、F0、F1 各一个，角色 architect）：orchestrator 没有写工具，subagent 不能和用户对话。
+    - 用户的描述写进任务的 handoff。
+    - "访谈式，一次只问一个问题"：architect 用 `flow_block` 提一个问题，用户用 `/flow unblock <任务> "<回答>"` 回答，回答写入 handoff 后任务重新派发。
+    - 新增 `/flow reject "<意见>"`：设计阶段的闸门可以打回，打回后生成修订任务。阶段状态机原本就有 human reject。
+43. **任务提案先保存，批准后才落为任务**：`flow_propose_tasks` 写入 `flows/<id>/proposal.json`，批准前可重复提交覆盖。用户批准 S1/F1 闸门时，程序把提案重新编号（接在已有任务之后，依赖一起改写）并创建任务，同时锁定契约。提案报告（任务数、关键路径、并行宽度、硬依赖占比、"硬依赖可能用多了"）在等待批准时显示于 `flow_status`。
+44. **阶段闸门由程序执行**：本阶段任务全部 done 后提交闸门。
+    - S1/F1 必须有提案。
+    - auto 命令在集成分支 HEAD 的临时 worktree 中执行，evidence 存为 `evidence/stage-<阶段>/gate-<命令>.log`。
+    - 通过后：需要人工 → awaiting_human；否则自动进入下一阶段。**最后一个阶段一律需要人工**（随后合入主分支）。
+    - 失败时不自动重跑（避免死循环），直到本阶段有任务状态变化；用户可用 `/flow gate` 手动重跑。
+45. **合并后验证改为"任务 verify 中有的才跑"**：typecheck 只在任务 verify 含 typecheck 时运行；测试只在含 test 或 test_affected 时运行。否则新项目在 S2 建好脚手架之前，文档任务永远无法合并。
+46. **最终合入**：`/flow approve` 批准最后一个阶段时，先把集成分支以 `--no-ff` 合入主分支，成功后才批准。
+    - 主工作区在主分支上：要求 `.flow/` 之外没有未提交改动，直接在主工作区合入；否则在临时 worktree 中合入。
+    - 冲突时中止合并并报告，阶段保持待批准。
+    - 无 UI 时需要 `/flow approve --yes` 确认。
+47. **技能由程序注入**：子进程以 `--no-skills` 运行，按任务阶段注入 SKILL.md 正文（S0 write-prd；S1/F1 design-contract、decompose-dag；F0 write-feature-spec），所有实施角色注入 write-handoff。注入内容排在规则之后，属于稳定前缀。
+48. **流程标题即用户描述**（FlowFile 没有单独的描述字段）。
+
+## M6 设计要点
+
+- 引擎的 `pump` 增加阶段推进：设计阶段生成任务；本阶段任务全部完成时提交闸门；无需人工的闸门通过后进入下一阶段。
+- `/flow-build "<描述>"`、`/flow-build --feature "<描述>"`：
+  1. 未初始化时先执行 `/flow init`；
+  2. 已有进行中的流程时拒绝，并提示 `/flow resume`；
+  3. 建流程与集成分支，进入调度模式，生成并派发设计阶段任务。
+- 验收（`test/e2e/modes.test.ts`）：
+  - build 全流程 S0→S5：S0 打回一次；agent 无法批准；批准前提案不落为任务；互斥任务从未同时在途；最终合入 main。
+  - feature 流程：跳过 S2；S4 闸门执行 test 与 e2e；闸门失败时不能 approve；修复后 `/flow gate` 通过。
+  - 同一时间只允许一个流程。
+- 真实 pi：在空仓库执行 `/flow-build` 一条命令完成初始化、建流程、S0 任务的实施、审查与合入，停在等待批准（`test/e2e/orchestrator-session.test.ts`）。
+
 ## M5 设计要点
 
 - `resume()` 的步骤：

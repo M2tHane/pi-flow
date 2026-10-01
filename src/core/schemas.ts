@@ -220,6 +220,36 @@ export const WorkflowFile = Type.Object({
 }, { additionalProperties: false });
 export type WorkflowFile = Static<typeof WorkflowFile>;
 
+// —— 任务提案：architect 在 S1/F1 经 flow_propose_tasks 提交，人工批准该阶段闸门后才落为任务 ——
+
+export const ProposedTask = Type.Object({
+  id: TaskId,
+  stage: Type.String({ minLength: 1 }),
+  kind: TaskKind,
+  title: Type.String({ minLength: 1, maxLength: 200 }),
+  role: Type.String({ minLength: 1 }),
+  scopes: Type.Array(Type.String()),
+  depends_on: Type.Array(Dependency),
+  inputs: Type.Array(Type.String()),
+  writes: Type.Array(Type.String(), { minItems: 1 }),
+  acceptance: Type.Array(Type.String(), { minItems: 1 }),
+  verify: Type.Array(Type.String()),
+}, { additionalProperties: false });
+export type ProposedTask = Static<typeof ProposedTask>;
+
+export const ProposalFile = Type.Object({
+  stage: Type.String(),
+  run: Type.String(),
+  created_at: IsoTime,
+  tasks: Type.Array(ProposedTask, { minItems: 1 }),
+  report: Type.Object({
+    task_count: Type.Integer(), critical_path: Type.Array(Type.String()), critical_path_length: Type.Integer(),
+    max_width: Type.Integer(), hard_ratio: Type.Number(), warnings: Type.Array(Type.String()),
+  }, { additionalProperties: false }),
+  version: Type.Integer({ minimum: 1 }),
+}, { additionalProperties: false });
+export type ProposalFile = Static<typeof ProposalFile>;
+
 // —— ~/.pi/agent/pi-flow.json：用户通过 /flow-config 设置的角色模型与思考级别 ——
 
 export const RoleSettingsFile = Type.Object({
@@ -241,6 +271,7 @@ export const SCHEMAS = {
   'merge-queue': MergeQueueFile,
   workflow: WorkflowFile,
   'role-settings': RoleSettingsFile,
+  proposal: ProposalFile,
 } as const;
 export type SchemaKind = keyof typeof SCHEMAS;
 

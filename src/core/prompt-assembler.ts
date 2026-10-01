@@ -27,6 +27,8 @@ export function ruleFilesFor(config: FlowConfig, projectRoot: string, scopes: re
 export interface AssembleInput {
   agent: AgentDef;
   rules: RuleFile[];
+  /** 本任务注入的技能（稳定内容，排在规则之后） */
+  skills?: RuleFile[];
   task: TaskFile;
   flowId: string;
   handoff: string;
@@ -46,6 +48,7 @@ export function assemblePrompt(i: AssembleInput): AssembledPrompt {
     i.rules.length
       ? `# 本次生效的规则\n\n${i.rules.map((r) => `## ${r.path}\n\n${r.content}`).join('\n\n')}`
       : '# 本次生效的规则\n\n（无规则文件）',
+    ...(i.skills?.length ? [`# 本任务使用的技能\n\n${i.skills.map((r) => `## ${r.path}\n\n${r.content}`).join('\n\n')}`] : []),
   ].join('\n\n');
 
   const t = i.task;

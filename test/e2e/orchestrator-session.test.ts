@@ -63,3 +63,39 @@ test('调度模式：orchestrator 不能自己写代码，只能 dispatch/wait�
     p.cleanup();
   }
 });
+
+test('真实 pi：在空仓库执行 /flow-build，自动初始化并完成 S0 任务，停在等待人工批准', { skip: !piAvailable && 'pi 不可用', timeout: 300_000 }, async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'pi-flow-build-'));
+  const agentDir = mkdtempSync(path.join(tmpdir(), 'pi-flow-agentdir-'));
+  try {
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir });
+    writeFileSync(path.join(agentDir, 'pi-flow.json'), JSON.stringify({ version: 1, roles: {
+      architect: { model: 'fakellm/arch-prd' }, reviewer: { model: 'fakellm/review-pass' } } }));
+    const provider = path.join(ROOT, 'test/fixtures/fake-llm/provider.ts');
+    const out = await new Promise<{ status: number | null; text: string }>((resolve) => {
+      const c = spawn('pi', ['-p', '--no-session', '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-context-files',
+        '-e', provider, '-e', path.join(ROOT, 'src/pi-adapter/extension.ts'), '/flow-build "做一个待办应用"'], {
+        cwd: dir, stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env, PI_CODING_AGENT_DIR: agentDir, FAKE_LLM_URL: llm.url, FAKE_LLM_SCRIPTS: SCRIPTS, PI_FLOW_EXTRA_EXTENSIONS: provider },
+      });
+      let text = '';
+      c.stdout.on('data', (b) => { text += b; });
+      c.stderr.on('data', (b) => { text += b; });
+      const timer = setTimeout(() => c.kill('SIGKILL'), 240_000);
+      c.on('close', (status) => { clearTimeout(timer); resolve({ status, text }); });
+    });
+    assert.equal(out.status, 0, out.text);
+    assert.match(out.text, /已创建流程 B-001（build）/);
+    const store = new StateStore(dir);
+    const flow = store.readFlow('B-001');
+    assert.equal(flow.stage, 'S0');
+    assert.equal(flow.stage_status, 'awaiting_human', out.text);
+    assert.equal(store.readTask('B-001', 'T-001').status, 'done');
+    assert.match(execFileSync('git', ['show', 'flow/B-001/integration:docs/PRD.md'], { cwd: dir, encoding: 'utf8' }), /待办应用 PRD/);
+    assert.match(out.text, /\/flow approve/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(`${dir}.worktrees`, { recursive: true, force: true });
+    rmSync(agentDir, { recursive: true, force: true });
+  }
+});
