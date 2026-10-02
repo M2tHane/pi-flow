@@ -869,7 +869,7 @@ export class StateStore {
       }
       for (const r of input.rewire) {
         const t = tx.readTask(flow, r.task);
-        if (t.status !== 'pending' && t.status !== 'ready') throw new StateError(`任务 ${r.task} 当前是 ${t.status}，已开始的任务不能修改`);
+        if (t.status !== 'pending' && t.status !== 'ready') throw new StateError(`任务 ${r.task} 当前是 ${t.status}，已开始的任务不能调整依赖`);
         tx.putTask(flow, { ...t, depends_on: structuredClone(r.depends_on) });
       }
       for (const c of input.cancel) {

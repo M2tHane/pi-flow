@@ -8,6 +8,9 @@ export const worktreesRoot = (mainRoot: string) =>
 export const taskBranch = (flow: string, task: string) => `flow/${flow}/${task}`;
 export const worktreePath = (mainRoot: string, flow: string, task: string) => path.join(worktreesRoot(mainRoot), `${flow}-${task}`);
 
+/** 每个 run 的临时目录：在项目与 worktree 之外，agent 可以在其中随意建、删文件做实验；run 结束后删除 */
+export const scratchDir = (mainRoot: string, run: string) => path.join(worktreesRoot(mainRoot), '.scratch', run);
+
 export const headSha = (dir: string, ref = 'HEAD') => git(dir, ['rev-parse', ref]).trim();
 export const branchExists = (root: string, branch: string) => gitOk(root, ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`]);
 

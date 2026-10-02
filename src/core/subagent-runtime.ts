@@ -5,6 +5,7 @@ import type { FlowConfig } from './config.ts';
 import type { StateStore } from './state-store.ts';
 import type { TaskFile } from './schemas.ts';
 import { hashToken } from './state-machine.ts';
+import { scratchDir } from './worktree.ts';
 import { enforceToolCall, type GuardContext, type ToolCall } from './guard.ts';
 import { FlowToolError, SUBAGENT_TOOLS, type RunEnv, type SubagentToolName, type ToolResult } from '../tools/subagent-tools.ts';
 
@@ -43,7 +44,7 @@ export class SubagentRuntime {
       workspaceRoot: t.worktree ?? this.env.root,
       mainRoot: this.env.root,
       contractsLocked: 'S1' in flow.approvals || 'F1' in flow.approvals,
-      ...(role.writes.length ? { writes: t.conflict_files ?? t.writes } : {}),
+      ...(role.writes.length ? { writes: t.conflict_files ?? t.writes, scratchDir: scratchDir(this.env.root, this.env.run) } : {}),
     };
   }
 

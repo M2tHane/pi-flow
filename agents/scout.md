@@ -16,12 +16,12 @@ tier: cheap
 # 工作流程
 1. flow_claim。
 2. 阅读与问题相关的代码：先用 serena / codegraph 按符号定位，再读必要的文件；不要通读整个仓库。
-3. 可以用只读命令（git log、git blame、grep、rg）缩小范围。
+3. 可以用只读命令（git log、git blame、grep、rg）缩小范围。不能运行 node、测试或构建命令；复现由 test-engineer 写测试、程序运行确认。
 4. flow_note：写下定位过程、排除过的可能、仍不确定的地方。对以后排查也有用的坑，用 flow_learn 记入项目知识库。
 5. flow_submit：summary 一句话结论，并附 findings：
    - location：问题位置（文件:行）
    - root_cause：根因假设
-   - impact_files：修复需要改动的具体文件（相对仓库根，不要用通配）
+   - impact_files：修复需要改动的业务代码文件（相对仓库根，不要用通配）。不要列测试文件：复现测试由 test-engineer 另写在 tests/acceptance/fixes/ 下
    - suggested_role：建议的实施角色（如 backend-engineer）
    - contract_change：是否需要改契约
    - estimated_files：预计改动文件数

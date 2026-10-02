@@ -264,6 +264,23 @@
 
     结论：合并本身（squash、rebase、快进）每次不到 1 秒；队列是否成为瓶颈只取决于"合并后验证耗时 × 任务数"与"实施耗时 ÷ 并发数"的大小关系：验证耗时超过 实施耗时 ÷ max_parallel 时队列开始积压。按真实模型冒烟的数据（实施 30 秒到数分钟、默认并发 2），只要合并后验证在半分钟左右以内就不是瓶颈；`test_affected`（codegraph 受影响测试）已在缩短这一项。合并列车（预先验证下一个任务、失败回退）会显著增加合并队列的状态与恢复路径的复杂度，在当前规模下收益不足，暂不实现。项目的测试集变慢（例如合并后验证超过 1 分钟且任务很多）时，先调大 `max_parallel` 不会缓解（瓶颈是串行验证），再考虑实现合并列车；届时可用上面的脚本复测。
 
+82. **真实模型冒烟（2026-10-02）暴露的问题与修订**（高智力角色 architect、reviewer、orchestrator、scout 用 `openai-codex/gpt-6.1-sol`（high），实施角色用 `Workbuddy/glm-5.3-flash`（low），实施角色失败后升级到 gpt-6.1-sol）：
+    - **临时目录**：glm 写测试时会建临时目录做实验（`cd /tmp`、在 worktree 里 `rm -rf .xxx`、`mv`），全部被 guard 拦下并计违规，三次即终止 run。新增每个 run 的临时目录 `<项目>.worktrees/.scratch/<run>/`（项目与 worktree 之外，run 结束后删除），提示中给出绝对路径；实施类角色可以 cd 进去、写入、rm、mv、cp。
+    - **rm、mv、cp、rmdir 不再一律禁止**：作用于临时目录，或本任务 writes 内的文件时放行；worktree 中未被 git 跟踪的文件（之前运行留下的临时文件）可以 rm；其余（writes 之外被跟踪的文件、通配、变量、经 xargs 传参、没有文件参数）仍阻断。
+    - **字面量变量代入**：同一条命令中先 `S=/abs/path` 再用 `$S/x`，guard 代入后校验（glm 常这样写）；含命令替换或未知变量的仍按无法校验阻断。
+    - **只读角色试图运行 node**：scout 与 reviewer 都尝试跑测试被拦（计违规）。提示中写明不能运行 node、测试或构建命令，测试由程序在审查通过后运行；审查提示附上本任务验证输出（evidence）的绝对路径。
+    - **scout 把测试文件列入影响文件**，修复任务因此往旧测试里加了重复用例。scout 提示改为只列业务代码。
+    - **fix 合并的两个提交**中复现测试那个显示为"前置提交"：fix 的修复任务没有依赖，现在按"分支末端等于基线的 test 任务"找到复现测试，用它的编号与标题。
+    - **验收标准不可测导致无休止打回**：architect 把"零第三方依赖"写进验收测试，glm 写了一个扫描源码的分词器，强模型审查连续三轮找出漏洞，任务失败三次转阻塞（第三次已升级为 gpt-6.1-sol，仍未通过）。修订：`decompose-dag` 技能写明约束类要求不写成验收测试；reviewer 提示要求只为不满足验收标准或明确缺陷打回，验收标准本身不合理时用 flow_block 交给用户改计划。
+    - **阻塞的任务无法经计划修订处理**：只能取消 pending/ready 的任务，卡死的 blocked 任务会让阶段永远完不成。`cancel` 转移扩展为 pending/ready/blocked → cancelled（仍只接受用户批准的修订），批准后回收其 worktree；orchestrator 遇到阻塞时提示可以 flow_replan。
+    - **调整依赖不能指向新增任务**：architect 只好把下游任务取消再新增替代任务。`rewire` 的依赖现在可以指向本次新增的 N-xxx，批准时改写为正式编号。
+    - **审查者提问后被打回重新实施**：reviewer 按新提示用 flow_block 提出规则冲突（模板 `rules/backend.md` 要求 shared 错误类型，与架构师的契约冲突；冒烟脚本当时没有应用规则草案），用户回答后任务却回到 ready 重新实施。新增 `blocked_from` 字段与转移 `unblock`（blocked → review，只在审查中阻塞且 worktree 仍在时）：回答后回到审查。
+    - **先行验收测试的范围过宽**：S4 的"package.json 无 dependencies"回归测试被 integration 任务硬依赖，被当成先行测试要求先失败，测试工程师只能 flow_block。先行验收测试改为只看 impl、infra 类任务的硬依赖；integration、doc 等依赖测试只表示先后顺序。
+    - 冒烟结果：经一次计划修订（取消阻塞的 T-004 与两个下游、新增 5 个任务）后流程 S0→S5 完成并合入 main，13 个测试通过；39 次运行，输入 738k / 输出 80k / 缓存读 2.7M，约 59 分钟（含两次因上述问题阻塞后人工处理）。期间 S4 开始时把 main 上应用规则草案的提交同步进集成分支（F）。
+    - 仍会触发违规的习惯：glm 仍偶尔 `cd /tmp`、`sed -i`；`max_violations_per_run` 默认 3，弱模型容易被终止。未改默认值。
+    - 已确认工作正常：PRD 与架构质量（gpt）；先行验收测试先失败的检查；失败后升级模型（第三次实施的 run 标为 escalated、模型为 gpt-6.1-sol）；按风险审查（PRD 审查为 light）；计划修订由 architect 正确起草（取消、新增、依赖）；会话留档与 `summarizeSession` 用于排查；完整性校验通过。
+    - 观察到但未改：审查打回自动提炼的知识候选内容都是具体某次打回的细节（T-004 的三条），作为长期知识价值不高，建议改为默认不提炼或只在用户确认后提炼（待用户决定）。
+
 ## 第二轮优化设计要点
 
 - **A 先行验收测试先失败**（第 69、70 条）。验收：
@@ -379,4 +396,5 @@
 - 2026-10-01（第二轮 A）：`agents/test-engineer.md`、`skills/decompose-dag`、`rules/testing.md` 增加"先行验收测试必须先失败"的说明；test-engineer 与 architect（S1/F1）子进程提示缓存失效一次。新项目 `/flow init` 时复制的 `rules/testing.md` 随之变化，已有项目的 `rules/` 不受影响。
 - 2026-10-01（第二轮 B + C）：`skills/write-handoff`（所有实施角色）、`agents/reviewer.md`、`agents/scout.md` 增加 flow_learn 说明，`agents/interviewer.md`（主会话）增加读知识库的说明；所有子进程角色的工具声明多了 flow_learn。以上都会让提示缓存失效一次。此外项目知识新增条目时，系统提示末尾的知识部分变化，只影响其后的缓存。
 - 2026-10-01（第二轮 G）：新增技能 `skills/revise-plan`（只注入修订任务）；`agents/orchestrator.md`（主会话）增加 flow_replan 说明，orchestrator 的工具多了 flow_replan；architect 的工具声明多了 flow_revise_plan，architect 子进程提示缓存失效一次。
+- 2026-10-02（真实模型冒烟后）：`agents/reviewer.md`、`agents/scout.md`、`skills/decompose-dag`、`skills/revise-plan` 修改；审查与实施提示新增临时目录、evidence 路径两节（在动态部分）。reviewer、scout、architect 子进程提示缓存失效一次。
 - 以后修改 `agents/`、`rules/`、`skills/` 时，在此追加一条。

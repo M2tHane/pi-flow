@@ -189,6 +189,32 @@
         }
       ]
     },
+    "cost": {
+      "anyOf": [
+        {
+          "type": "number",
+          "minimum": 0
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "escalated": {
+      "type": "boolean"
+    },
+    "review_mode": {
+      "anyOf": [
+        {
+          "type": "string",
+          "const": "full"
+        },
+        {
+          "type": "string",
+          "const": "light"
+        }
+      ]
+    },
     "session_dir": {
       "type": "string"
     },

@@ -37,7 +37,7 @@ export function nextStep(store: StateStore, maxParallel: number, activeRunCount 
   if (busy) return { summary, next: '有任务在运行或合并中，调用 flow_wait 等待结果。', tool: 'flow_wait' };
   if (overBudget) return { summary, next: overBudget, tool: 'none' };
   const blocked = stageTasks.filter((t) => t.status === 'blocked');
-  if (blocked.length) return { summary, next: `没有可推进的任务。向用户报告阻塞：${blocked.map((t) => `${t.id}（${(t.blocked_reason ?? '').slice(0, 60)}）`).join('；')}，请其处理后执行 /flow unblock <任务>。`, tool: 'none' };
+  if (blocked.length) return { summary, next: `没有可推进的任务。向用户报告阻塞：${blocked.map((t) => `${t.id}（${(t.blocked_reason ?? '').slice(0, 60)}）`).join('；')}，请其回答问题（/flow answer <任务>）；如果用户认为需要改计划（例如任务拆得不对、验收标准不合理），调用 flow_replan 交给 architect 修订。`, tool: 'none' };
   if (stageTasks.length && stageTasks.every(isSettled)) return { summary, next: '本阶段任务全部完成，等待程序执行阶段闸门；调用 flow_wait。', tool: 'flow_wait' };
   return { summary, next: '当前阶段没有任务。向用户说明并等待指示。', tool: 'none' };
 }

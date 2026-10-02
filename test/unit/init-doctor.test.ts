@@ -110,7 +110,7 @@ test('唯一允许的下一步：dispatch → wait → 报告阻塞；闸门等�
     await p.store.transitionTask(p.flowId, 'T-001', { to: 'blocked', trigger: 'block', actor: 'x', facts: { reason: '需求有歧义' } });
     s = nextStep(p.store, 2);
     assert.equal(s.tool, 'none');
-    assert.match(s.next, /T-001（需求有歧义）.*\/flow unblock/);
+    assert.match(s.next, /T-001（需求有歧义）.*\/flow answer.*flow_replan/);
     assert.match(turnContext(p.store, 2), /^\[pi-flow 状态\][\s\S]*\[唯一允许的下一步\]/);
     await p.store.transitionStage(p.flowId, { to: 'awaiting_gate', trigger: 'submit_gate', actor: 'engine' });
     await p.store.transitionStage(p.flowId, { to: 'awaiting_human', trigger: 'gate_passed', actor: 'engine', needs_human: true });

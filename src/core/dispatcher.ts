@@ -1,7 +1,7 @@
 // 引擎：派发（建 worktree、颁发 token、取得租约、组装提示、拉起子进程）与程序步骤（审查派发、verify、重新派发）。
 // 调度与推进全部由代码决定；LLM 只通过 flow_* 工具提交申请。
 import { randomBytes } from 'node:crypto';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { FlowConfig } from './config.ts';
 import type { StateStore } from './state-store.ts';
@@ -17,7 +17,7 @@ import { heldByRevision } from './revision.ts';
 import { assessRisk, budgetState, diffNumstat, escalationModel, escalationPolicy, resolveModelRef, reviewPolicy } from './cost-control.ts';
 import { carriedTestOf, computeReady, isLeadingTest } from './dag.ts';
 import { selectDispatchable } from './scheduler.ts';
-import { createTaskWorktree, ensureLocalExcludes, worktreesRoot } from './worktree.ts';
+import { createTaskWorktree, ensureLocalExcludes, scratchDir, worktreesRoot } from './worktree.ts';
 import { runVerify } from './verify-runner.ts';
 import { git } from './git.ts';
 import { RUN_ENV_KEYS } from '../tools/subagent-tools.ts';
@@ -236,11 +236,16 @@ export class Engine {
     }).filter((x): x is { path: string; content: string } => !!x);
     const tasks = store.listTasks(flowId);
     const carried = carriedTestOf(task, tasks);
+    // 实施类角色的临时目录（项目与 worktree 之外）：做实验、建临时文件，run 结束后删除
+    const scratch = mode === 'impl' && config.role(role).writes.length ? scratchDir(root, runId) : undefined;
+    if (scratch) mkdirSync(scratch, { recursive: true });
     const prompt = assemblePrompt({
       agent, rules, skills, task, flowId, handoff: store.readHandoff(flowId, task.id), mode, commands: config.commands,
       ...(carried ? { carriedTest: { id: carried.id, title: carried.title, writes: carried.writes } } : {}),
       ...(isLeadingTest(task, tasks) ? { leadingTest: true } : {}),
       knowledge: selectKnowledge(store.readKnowledge(), task).map(formatEntry),
+      ...(scratch ? { scratchDir: scratch } : {}),
+      ...(mode === 'review' ? { evidenceDir: path.join(root, '.flow', 'flows', flowId, 'evidence', task.id) } : {}),
       upstream: task.depends_on.flatMap((d) => {
         const u = tasks.find((x) => x.id === d.task);
         return u ? [{ id: u.id, title: u.title, type: d.type, status: u.status === 'done' ? '已完成' : `未完成：${u.status}`, handoff: store.readHandoff(flowId, u.id) }] : [];
@@ -279,6 +284,7 @@ export class Engine {
   private async onExit(runId: string, r: RunOutcome): Promise<void> {
     const active = this.runs.get(runId);
     this.runs.delete(runId);
+    rmSync(scratchDir(this.d.root, runId), { recursive: true, force: true });
     if (!active) return;
     const { store } = this.d;
     const prev = store.readRun(runId);

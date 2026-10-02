@@ -208,3 +208,16 @@ test('run_interrupted：会话中断不消耗失败预算，保留 worktree；�
   assert.equal(many.to, 'blocked');
   assert.match(many.task.blocked_reason ?? '', /连续中断 5 次/);
 });
+
+test('审查中 flow_block 的任务，用户回答后回到审查；实施中阻塞的仍回到 ready', () => {
+  const inReview = mkTask('T-001', { status: 'review', worktree: '/w', branch: 'b', base_sha: 'abc', lease: lease('r-2', RTOKEN) });
+  const blocked = ok(planTransition(inReview, 'blocked', 'block', facts({ reason: '规则冲突，请确认' }))).task;
+  assert.equal(blocked.blocked_from, 'review');
+  const back = ok(planTransition(blocked, 'review', 'unblock', facts({ actor: 'human' }))).task;
+  assert.equal(back.status, 'review');
+  assert.equal(back.worktree, '/w');
+  assert.equal(back.blocked_from, undefined);
+  bad(planTransition(blocked, 'review', 'unblock', facts({ actor: 'run:r-x' })), /只有用户/);
+  const implBlocked = ok(planTransition(inProgress(), 'blocked', 'block', facts({ reason: '需要决定' }))).task;
+  bad(planTransition(implBlocked, 'review', 'unblock', facts({ actor: 'human' })), /只有在审查中阻塞/);
+});

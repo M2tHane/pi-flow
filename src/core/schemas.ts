@@ -111,6 +111,8 @@ export const TaskFile = Type.Object({
   worktree: Nullable(Type.String()),
   base_sha: Nullable(Type.String()),
   blocked_reason: Nullable(Type.String()),
+  /** 经 flow_block 阻塞时所处的状态：审查中提问的任务，回答后回到审查而不是重新实施 */
+  blocked_from: Type.Optional(TaskStatus),
   last_failure: Nullable(Type.String()),
   /** 计划修订任务（只读 analysis，由 architect 提交修订）：用户提出的修订原因 */
   replan: Type.Optional(Type.String({ minLength: 1 })),
@@ -329,6 +331,13 @@ export type ProposalFile = Static<typeof ProposalFile>;
 
 // —— 执行中的计划修订：architect 经 flow_revise_plan 提交，用户 /flow approve 后由程序增删任务 ——
 
+/** 修订中的依赖：可以指向现有任务（T-xxx）或本次新增的任务（N-xxx），批准时改写为正式编号 */
+export const RevisionDependency = Type.Object({
+  task: Type.String({ pattern: '^[TN]-[0-9]{3,}$' }),
+  type: Type.Union([Type.Literal('hard'), Type.Literal('soft')]),
+  reason: Type.Optional(Type.String()),
+}, { additionalProperties: false });
+
 /** 修订中新增的任务：临时编号 N-001 起；依赖可以指向现有任务（T-xxx）或本次新增的任务（N-xxx） */
 export const RevisionTask = Type.Object({
   id: Type.String({ pattern: '^N-[0-9]{3,}$' }),
@@ -337,11 +346,7 @@ export const RevisionTask = Type.Object({
   title: Type.String({ minLength: 1, maxLength: 200 }),
   role: Type.String({ minLength: 1 }),
   scopes: Type.Array(Type.String()),
-  depends_on: Type.Array(Type.Object({
-    task: Type.String({ pattern: '^[TN]-[0-9]{3,}$' }),
-    type: Type.Union([Type.Literal('hard'), Type.Literal('soft')]),
-    reason: Type.Optional(Type.String()),
-  }, { additionalProperties: false })),
+  depends_on: Type.Array(RevisionDependency),
   inputs: Type.Array(Type.String()),
   writes: Type.Array(Type.String(), { minItems: 1 }),
   acceptance: Type.Array(Type.String(), { minItems: 1 }),
@@ -358,7 +363,7 @@ export const RevisionFile = Type.Object({
   status: Type.Union([Type.Literal('proposed'), Type.Literal('approved'), Type.Literal('rejected')]),
   add: Type.Array(RevisionTask),
   /** 调整未开始任务的依赖（整体替换 depends_on） */
-  rewire: Type.Array(Type.Object({ task: TaskId, depends_on: Type.Array(Dependency) }, { additionalProperties: false })),
+  rewire: Type.Array(Type.Object({ task: TaskId, depends_on: Type.Array(RevisionDependency) }, { additionalProperties: false })),
   cancel: Type.Array(Type.Object({ task: TaskId, reason: Type.String({ minLength: 1 }) }, { additionalProperties: false })),
   summary: Type.String(),
   /** 批准时新增任务的编号映射 N-xxx → T-xxx */

@@ -48,6 +48,10 @@ export interface AssembleInput {
   leadingTest?: boolean;
   /** 适用于本任务的项目知识（已格式化，按编号排序） */
   knowledge?: string[];
+  /** 本任务验证输出（evidence）所在目录（审查时可读） */
+  evidenceDir?: string;
+  /** 本 run 的临时目录（实施类角色） */
+  scratchDir?: string;
   /** 本任务依赖的上游任务（硬依赖与软依赖）及其 handoff */
   upstream?: { id: string; title: string; type: 'hard' | 'soft'; status: string; handoff: string }[];
 }
@@ -108,7 +112,10 @@ export function assemblePrompt(i: AssembleInput): AssembledPrompt {
     parts.push(`## 已在分支中的验收测试\n${ct.id}「${ct.title}」写的验收测试已在本任务的基线中（${ct.writes.join('、')}），实现前它们失败。${i.mode === 'review' ? '它们不在待审查的 diff 中，但会随本任务一并合入；请确认实现确实让这些测试通过。' : '本任务完成后它们必须通过；不得修改这些测试，它们会随本任务一并合入。'}`);
   }
   if (i.mode === 'review') {
-    parts.push(`## 待审查的改动\n基线提交 base_sha：${t.base_sha ?? '（未知）'}\n用 \`git diff ${t.base_sha ?? '<base_sha>'} HEAD\` 查看完整改动。\n\n\`\`\`\n${(i.diffStat ?? '').trim() || '（无）'}\n\`\`\``);
+    parts.push(`## 待审查的改动\n基线提交 base_sha：${t.base_sha ?? '（未知）'}\n用 \`git diff ${t.base_sha ?? '<base_sha>'} HEAD\` 查看完整改动。${i.evidenceDir ? `之前的验证输出（如有）在 \`${i.evidenceDir}\`。` : ''}\n\n\`\`\`\n${(i.diffStat ?? '').trim() || '（无）'}\n\`\`\``);
+  }
+  if (i.mode === 'impl' && i.scratchDir) {
+    parts.push(`## 临时目录\n需要做临时实验（建临时文件、跑一次性脚本）时放在 \`${i.scratchDir}\`：可以 cd 进去，可以建、删、移动文件，本次运行结束后自动删除。不要在 worktree 里建临时文件：worktree 中只能写、删除、移动本任务 writes 内的文件，writes 之外的改动会让提交被拒。`);
   }
   if (i.mode === 'impl' && i.existingWork?.trim()) {
     parts.push(`## 工作区已有的改动\n这些改动是本任务之前的运行留下的（会话中断或被打回前的工作），还没有通过审查。先用 \`git status\` 与 \`git diff ${t.base_sha ?? '<base_sha>'}\` 检查，再决定继续完善还是重写；不要无故丢弃仍然有用的部分。\n\n\`\`\`\n${i.existingWork.trim()}\n\`\`\``);

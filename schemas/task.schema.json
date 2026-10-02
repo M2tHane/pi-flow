@@ -240,6 +240,20 @@
         }
       ]
     },
+    "blocked_from": {
+      "enum": [
+        "pending",
+        "ready",
+        "in_progress",
+        "review",
+        "verifying",
+        "queued_merge",
+        "merging",
+        "done",
+        "blocked",
+        "cancelled"
+      ]
+    },
     "last_failure": {
       "anyOf": [
         {

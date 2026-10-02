@@ -77,16 +77,22 @@ const byIdOrder = (a: { id: string }, b: { id: string }) => a.id.localeCompare(b
 type LeadTask = Pick<TaskFile, 'id' | 'kind' | 'depends_on'>;
 
 /**
- * 先行验收测试：kind=test，且有非 test 任务硬依赖它（测试先于实现写好）。
+ * 实现类任务：它们硬依赖的测试是"先行验收测试"（实现尚不存在，测试必须先失败）。
+ * integration、doc 等任务依赖测试只表示先后顺序（例如对已完成功能的回归测试），不算。
+ */
+const IMPLEMENTING_KINDS: ReadonlySet<string> = new Set(['impl', 'infra']);
+
+/**
+ * 先行验收测试：kind=test，且有实现类任务（impl、infra）硬依赖它（测试先于实现写好）。
  * 它审查通过后必须先失败，确认后不单独合入，由"承载者"从它的分支末端开工并一并合入。
  */
 export function isLeadingTest(t: LeadTask, tasks: readonly LeadTask[]): boolean {
-  return t.kind === 'test' && tasks.some((x) => x.kind !== 'test' && hasHard(x, t.id));
+  return t.kind === 'test' && tasks.some((x) => IMPLEMENTING_KINDS.has(x.kind) && hasHard(x, t.id));
 }
 
 /** 先行测试的承载者：非 test 硬依赖方中，不（传递）依赖其他依赖方的、编号最小的那个 */
 export function carrierOf(test: LeadTask, tasks: readonly LeadTask[]): string | null {
-  const deps = tasks.filter((x) => x.kind !== 'test' && hasHard(x, test.id)).sort(byIdOrder);
+  const deps = tasks.filter((x) => IMPLEMENTING_KINDS.has(x.kind) && hasHard(x, test.id)).sort(byIdOrder);
   const ids = new Set(deps.map((x) => x.id));
   const byId = new Map(tasks.map((x) => [x.id, x]));
   const reaches = (from: string, seen = new Set<string>()): boolean => {

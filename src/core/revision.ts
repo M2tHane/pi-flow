@@ -7,6 +7,7 @@ import type { Dependency, RevisionFile, RevisionTask, TaskFile } from './schemas
 import { normalizeLeadingTests, validateDag } from './dag.ts';
 import { isSettled } from './state-machine.ts';
 import { DESIGN_STAGES } from '../modes/plan.ts';
+import { removeWorktree } from './worktree.ts';
 
 export interface RevisionDeps { root: string; store: StateStore; config: FlowConfig }
 
@@ -18,6 +19,8 @@ export class RevisionError extends Error {
 }
 
 const NOT_STARTED = new Set(['pending', 'ready']);
+/** 可以取消：未开始，或已阻塞（已停止，不会再运行） */
+const CANCELLABLE = new Set(['pending', 'ready', 'blocked']);
 const REPLAN_ROLE = 'architect';
 
 /** 当前未结束的修订：修订任务还没结束，或修订提案待批准 */
@@ -42,7 +45,7 @@ export function planSnapshot(tasks: readonly TaskFile[]): string {
     return `- ${t.id} [${t.stage}/${t.kind}/${t.status}] ${t.title}（${t.role}）writes: ${t.writes.join(', ') || '无'}${deps ? `；依赖 ${deps}` : ''}`;
   });
   const blocked = tasks.filter((t) => t.status === 'blocked').map((t) => `- ${t.id}：${t.blocked_reason ?? ''}`);
-  return [`现有任务（~ 表示软依赖；只有 pending、ready 的任务可以调整依赖或取消）：`, ...rows, ...(blocked.length ? ['', '阻塞的任务：', ...blocked] : [])].join('\n');
+  return [`现有任务（~ 表示软依赖；只有 pending、ready 的任务可以调整依赖；pending、ready、blocked 的任务可以取消）：`, ...rows, ...(blocked.length ? ['', '阻塞的任务：', ...blocked] : [])].join('\n');
 }
 
 /**
@@ -77,7 +80,7 @@ export async function startReplan(d: RevisionDeps, flowId: string, reason: strin
 
 export interface RevisionInput {
   add: RevisionTask[];
-  rewire: { task: string; depends_on: Dependency[] }[];
+  rewire: { task: string; depends_on: RevisionTask['depends_on'] }[];
   cancel: { task: string; reason: string }[];
 }
 
@@ -117,16 +120,16 @@ export function checkRevision(config: FlowConfig, flowStages: readonly string[],
       if (!t) { errors.push(`${kind}的任务 ${id} 不存在`); continue; }
       if (touched.has(id)) errors.push(`${id} 不能同时${touched.get(id)}和${kind}`);
       touched.set(id, kind);
-      if (!NOT_STARTED.has(t.status)) errors.push(`${id} 当前是 ${t.status}：已开始或已完成的任务不能${kind}`);
+      if (!(kind === '取消' ? CANCELLABLE : NOT_STARTED).has(t.status)) errors.push(`${id} 当前是 ${t.status}：${kind === '取消' ? '进行中或已完成的任务不能取消' : '已开始或已完成的任务不能调整依赖'}`);
       if (t.kind === 'merge-fix' || t.replan) errors.push(`${id} 由程序生成，不能${kind}`);
     }
   }
-  for (const r of input.rewire) for (const d of r.depends_on) if (!byId.has(d.task)) errors.push(`${r.task}：依赖的任务 ${d.task} 不存在（调整依赖只能指向现有任务；依赖新增任务请在新增任务一侧表达，或取消后重新新增）`);
+  for (const r of input.rewire) for (const d of r.depends_on) if (!byId.has(d.task) && !newIds.has(d.task)) errors.push(`${r.task}：依赖的任务 ${d.task} 不存在`);
 
   // 合并后的 DAG：用临时编号映射新增任务
   const mapping = revisionMapping(tasks, input.add);
   const cancelled = new Set(input.cancel.map((c) => c.task));
-  const rewired = new Map(input.rewire.map((r) => [r.task, r.depends_on]));
+  const rewired = new Map(input.rewire.map((r) => [r.task, mapDeps(r.depends_on, mapping)]));
   const existing = tasks.filter((t) => t.status !== 'cancelled' && !cancelled.has(t.id) && !t.replan)
     .map((t) => (rewired.has(t.id) ? { ...t, depends_on: structuredClone(rewired.get(t.id)!) } : t));
   const added = input.add.map((t) => ({ ...t, id: mapping[t.id]!, depends_on: mapDeps(t.depends_on, mapping) }));
@@ -158,9 +161,10 @@ export function checkRevision(config: FlowConfig, flowStages: readonly string[],
   const v = validateDag(lead.tasks, config.dagCatalog());
   errors.push(...v.errors.filter((e) => !baseline.includes(e)).map((e) => e.replace(/T-\d{3,}/g, (id) => back[id] ? `${back[id]}` : id)));
 
+  // 保存时依赖仍用临时编号（N-xxx），批准时按当时的任务重新编号
   const revision: RevisionInput = {
     add: finalAdd,
-    rewire: [...finalRewire].map(([task, depends_on]) => ({ task, depends_on })),
+    rewire: [...finalRewire].map(([task, depends_on]) => ({ task, depends_on: depends_on.map((d) => ({ ...d, task: back[d.task] ?? d.task })) })),
     cancel: input.cancel,
   };
   const summary = [
@@ -191,7 +195,13 @@ export async function approveRevision(d: RevisionDeps, flowId: string): Promise<
   if (c.errors.length) throw new RevisionError(`修订已不再适用（批准前任务状态有变化）：\n${c.errors.map((e) => `- ${e}`).join('\n')}\n请 /flow reject "<意见>" 后让架构师重新提交。`);
   const mapping = revisionMapping(tasks, c.revision.add);
   const add: TaskInput[] = c.revision.add.map((t) => ({ ...t, id: mapping[t.id]!, depends_on: mapDeps(t.depends_on, mapping) }));
-  await d.store.applyRevision(flowId, { add, rewire: c.revision.rewire, cancel: c.revision.cancel, mapping });
+  const rewire = c.revision.rewire.map((r) => ({ task: r.task, depends_on: mapDeps(r.depends_on, mapping) }));
+  await d.store.applyRevision(flowId, { add, rewire, cancel: c.revision.cancel, mapping });
+  // 被取消的阻塞任务留下的 worktree 与分支一并回收
+  for (const x of c.revision.cancel) {
+    const t = d.store.readTask(flowId, x.task);
+    if (t.worktree) removeWorktree(d.root, t.worktree, t.branch ?? undefined);
+  }
   return [
     `已批准计划修订：${c.summary}`,
     ...(add.length ? [`新增任务编号：${Object.entries(mapping).map(([a, b]) => `${a}→${b}`).join('，')}`] : []),

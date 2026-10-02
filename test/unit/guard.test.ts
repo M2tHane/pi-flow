@@ -1,4 +1,5 @@
 import { test, before, after } from 'node:test';
+import { execFileSync } from 'node:child_process';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -131,9 +132,12 @@ const IMPL_BLOCKED = [
   "sed -i 's/a/b/' src/server/a.ts",
   "sed -Ei 's/a/b/' src/server/a.ts",
   "perl -pi -e 's/a/b/' src/server/a.ts",
-  'mv src/server/a.ts src/server/b.ts',
   'cp a b',
   'rm -rf src',
+  'rm -rf .scratchtest',
+  'mv src/server/a.ts docs/a.ts',
+  'rm src/server/*.ts',
+  'cd /tmp && ls',
   'git reset --hard HEAD~1',
   'git rebase main',
   'git push --force',
@@ -186,6 +190,21 @@ test('实施角色：正常命令放行', () => {
   }
 });
 
+test('临时目录：实施角色可以 cd、写入、rm、mv；worktree 中只能对 writes 内的文件 rm、mv；只读角色不能进临时目录', () => {
+  const scratch = path.join(base, 'scratch-r1');
+  mkdirSync(scratch, { recursive: true });
+  const c = ctx('backend-engineer', { writes: ['src/server/**'], scratchDir: scratch });
+  for (const cmd of [`cd ${scratch} && mkdir -p a && echo x > a/b.js && node a/b.js`, `rm -rf ${scratch}/a`, `mv ${scratch}/x ${scratch}/y`,
+    `cp src/server/a.ts ${scratch}/a.ts`, 'mv src/server/a.ts src/server/b.ts', 'rm src/server/a.ts', 'rm -f src/server/x.ts']) {
+    allowed(checkToolCall(bash(cmd), c));
+  }
+  allowed(checkToolCall(call('write', { path: path.join(scratch, 'n.js'), content: 'x' }), c));
+  blocked(checkToolCall(bash('rm -rf .scratchtest'), c), 'bash', /临时目录/);
+  blocked(checkToolCall(bash('cd /tmp'), c), 'bash', /临时目录/);
+  const r = ctx('reviewer', { scratchDir: scratch });
+  blocked(checkToolCall(bash(`cd ${scratch}`), r), 'bash');
+});
+
 test('敏感读取对所有角色阻断', () => {
   for (const role of ['backend-engineer', 'reviewer', 'architect', 'scout']) {
     const c = ctx(role, { writes: undefined });
@@ -213,4 +232,31 @@ test('不在白名单的工具被阻断，reason 带角色提示', () => {
   allowed(checkToolCall(call('web_search', { query: 'x' }), ctx('researcher')));
   blocked(checkToolCall(call('bash', { command: 'ls' }), ctx('researcher')), 'tool_whitelist');
   blocked(checkToolCall(call('unknown_tool', {}), ctx('architect')), 'tool_whitelist');
+});
+
+test('worktree 中未被 git 跟踪的临时文件可以删除；被跟踪的 writes 之外的文件不能删', () => {
+  const repo = mkdtempSync(path.join(base, 'repo-'));
+  const g = (...a: string[]) => execFileSync('git', a, { cwd: repo, stdio: 'ignore' });
+  g('init', '-q');
+  mkdirSync(path.join(repo, 'docs'), { recursive: true });
+  writeFileSync(path.join(repo, 'docs/a.md'), 'x');
+  g('add', '.');
+  g('-c', 'user.name=t', '-c', 'user.email=t@x', 'commit', '-q', '-m', 'init');
+  mkdirSync(path.join(repo, '.tmpcheck'), { recursive: true });
+  writeFileSync(path.join(repo, '.tmpcheck/x.js'), 'x');
+  const c = { ...ctx('backend-engineer', { writes: ['src/server/**'] }), cwd: realpathSync(repo), workspaceRoot: realpathSync(repo) };
+  allowed(checkToolCall(bash('rm -rf .tmpcheck'), c));
+  blocked(checkToolCall(bash('rm docs/a.md'), c), 'bash');
+  blocked(checkToolCall(bash('mv .tmpcheck/x.js .tmpcheck/y.js'), c), 'bash');
+});
+
+test('同一命令中字面量赋值的变量会被代入后校验；含命令替换或未知变量的仍阻断', () => {
+  const scratch = path.join(base, 'scratch-r2');
+  mkdirSync(scratch, { recursive: true });
+  const c = ctx('backend-engineer', { writes: ['src/server/**'], scratchDir: scratch });
+  allowed(checkToolCall(bash(`S=${scratch}; mkdir -p $S/a && cp src/server/a.ts $S/a/ && rm -rf "\${S}/a"`), c));
+  blocked(checkToolCall(bash('S=/etc; rm -rf $S/x'), c), 'bash');
+  blocked(checkToolCall(bash('F=.flow; echo x > $F/state.json'), c));
+  blocked(checkToolCall(bash('S=$(pwd); rm -rf $S/x'), c), 'bash');
+  blocked(checkToolCall(bash('rm -rf $UNKNOWN/x'), c), 'bash');
 });

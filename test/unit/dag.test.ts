@@ -156,3 +156,12 @@ test('规范化先行验收测试：其余依赖方改为硬依赖承载者；�
   assert.ok(bad.errors.some((e) => e.startsWith('T-001：先行验收测试必须有 verify')), bad.errors.join('\n'));
   assert.ok(bad.errors.some((e) => e.includes('T-003 同时承载多个先行验收测试（T-001、T-002）')), bad.errors.join('\n'));
 });
+
+test('只有实现类任务（impl、infra）硬依赖的测试才是先行验收测试；integration 依赖回归测试只表示先后', () => {
+  const reg = mkTask('T-001', { kind: 'test', role: 'test-engineer', scopes: ['acceptance'] });
+  const integ = mkTask('T-002', { kind: 'integration', role: 'test-engineer', scopes: ['acceptance'], deps: [hard('T-001')] });
+  assert.equal(isLeadingTest(reg, [reg, integ]), false);
+  const infra = mkTask('T-003', { kind: 'infra', deps: [hard('T-001')] });
+  assert.equal(isLeadingTest(reg, [reg, integ, infra]), true);
+  assert.equal(carrierOf(reg, [reg, integ, infra]), 'T-003');
+});

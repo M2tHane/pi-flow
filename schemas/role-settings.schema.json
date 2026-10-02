@@ -31,6 +31,10 @@
                 "xhigh",
                 "max"
               ]
+            },
+            "escalate_model": {
+              "type": "string",
+              "pattern": "^[^/\\s]+/\\S+$"
             }
           },
           "additionalProperties": false

@@ -304,11 +304,104 @@
                   "type": "string"
                 }
               }
+            },
+            "escalate_model": {
+              "type": "string",
+              "minLength": 1
             }
           },
           "additionalProperties": false
         }
       }
+    },
+    "review": {
+      "type": "object",
+      "properties": {
+        "max_parallel": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "low_risk": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "mode": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "cheap"
+                },
+                {
+                  "type": "string",
+                  "const": "skip"
+                }
+              ]
+            },
+            "model": {
+              "type": "string",
+              "minLength": 1
+            },
+            "max_files": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "max_lines": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "paths": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "exclude": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "escalation": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "after_failures": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "budget": {
+      "type": "object",
+      "properties": {
+        "tokens": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "cost": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "warn_ratio": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1
+        }
+      },
+      "additionalProperties": false
     }
   },
   "additionalProperties": false

@@ -89,7 +89,9 @@ export class MergeQueue {
     const carries = t.kind !== 'merge-fix' && !!base && base !== fork && tree(base) !== tree(fork)
       && gitOk(wt, ['merge-base', '--is-ancestor', fork, base]) && gitOk(wt, ['merge-base', '--is-ancestor', base, 'HEAD']);
     if (carries) {
-      const test = carriedTestOf(t, this.store.listTasks(flowId));
+      const all = this.store.listTasks(flowId);
+      // 承载的先行验收测试；fix 模式的修复任务没有依赖，复现测试就是本流程中分支末端等于基线的 test 任务
+      const test = carriedTestOf(t, all) ?? all.find((x) => x.kind === 'test' && x.branch && gitOk(this.root, ['show-ref', '--verify', '--quiet', `refs/heads/${x.branch}`]) && headSha(this.root, x.branch) === base);
       const carried = commitTree(base, fork, test ? `[${flowId}/${test.id}] ${test.title}` : `[${flowId}/${msgFor}] 前置提交`);
       git(wt, ['reset', '-q', '--soft', commitTree('HEAD', carried, msg)]);
     } else {

@@ -192,7 +192,17 @@ export const TRANSITIONS: readonly Rule[] = [
   {
     from: IN_FLIGHT, to: 'blocked', trigger: 'block',
     check: (_t, f) => reasonRequired(f),
-    effect: (t, f) => { t.blocked_reason = f.reason!; t.lease = null; },
+    effect: (t, f) => { t.blocked_from = t.status; t.blocked_reason = f.reason!; t.lease = null; },
+  },
+  {
+    // 偏离（真实模型冒烟）：审查者在审查中 flow_block 提问，用户回答后回到审查（保留 worktree 与已提交的改动），不重新实施
+    from: ['blocked'], to: 'review', trigger: 'unblock',
+    check: (t, f) => [
+      ...need(f.actor === 'human', '只有用户可以通过 /flow unblock 解除阻塞'),
+      ...need(t.blocked_from === 'review', '只有在审查中阻塞的任务可以回到审查'),
+      ...need(!!t.worktree && !!t.base_sha, '任务的 worktree 已不存在，只能回到 ready 重新实施'),
+    ],
+    effect: (t) => { delete t.blocked_from; t.blocked_reason = null; t.lease = null; t.lease_expirations = 0; },
   },
   {
     // 偏离（fix 模式）：只读探查任务（analysis）提交结论后直接完成，没有 diff、审查与合并
@@ -219,8 +229,8 @@ export const TRANSITIONS: readonly Rule[] = [
     },
   },
   {
-    // 偏离（第二轮 G）：用户批准的计划修订取消未开始的任务；已开始或已完成的任务不能取消
-    from: ['pending', 'ready'], to: 'cancelled', trigger: 'cancel',
+    // 偏离（第二轮 G）：用户批准的计划修订取消未开始或已阻塞（已停止）的任务；进行中或已完成的任务不能取消
+    from: ['pending', 'ready', 'blocked'], to: 'cancelled', trigger: 'cancel',
     check: (_t, f) => [...need(f.actor === 'human', '只有用户批准的计划修订可以取消任务'), ...reasonRequired(f)],
     effect: (t) => { t.lease = null; },
   },
@@ -248,6 +258,7 @@ export const TRANSITIONS: readonly Rule[] = [
     from: ['blocked'], to: 'ready', trigger: 'unblock',
     check: (_t, f) => need(f.actor === 'human', '只有用户可以通过 /flow unblock 解除阻塞'),
     effect: (t, f) => {
+      delete t.blocked_from;
       t.attempts = f.attempts ?? 0;
       t.lease_expirations = 0;
       t.blocked_reason = null;

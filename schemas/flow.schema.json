@@ -104,6 +104,20 @@
       "type": "string",
       "minLength": 1
     },
+    "budget": {
+      "type": "object",
+      "properties": {
+        "tokens": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "cost": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
     "sync": {
       "type": "object",
       "required": [

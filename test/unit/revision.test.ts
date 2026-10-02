@@ -45,3 +45,20 @@ test('修订中的先行验收测试：新增测试被多个任务硬依赖时�
   assert.deepEqual(r2.revision.add.find((t) => t.id === 'N-003')!.depends_on.map((d) => d.task), ['N-002']);
   assert.ok(r2.notes.some((n) => n.startsWith('N-003 的依赖')), r2.notes.join('\n'));
 });
+
+test('修订可以取消已阻塞的任务（依赖它的任务要一并调整），不能取消进行中的任务', () => {
+  const tasks = [mkTask('T-001', { status: 'blocked', blocked_reason: '卡住' }), mkTask('T-002', { deps: [hard('T-001')] }), mkTask('T-003', { status: 'in_progress' })];
+  const ok = checkRevision(config, STAGES, 'S3', tasks, { add: [], rewire: [{ task: 'T-002', depends_on: [] }], cancel: [{ task: 'T-001', reason: '验收标准不合理' }] });
+  assert.deepEqual(ok.errors, []);
+  const dangling = checkRevision(config, STAGES, 'S3', tasks, { add: [], rewire: [], cancel: [{ task: 'T-001', reason: 'x' }] });
+  assert.ok(dangling.errors.some((e) => e.includes('依赖被取消的 T-001')));
+  const running = checkRevision(config, STAGES, 'S3', tasks, { add: [], rewire: [], cancel: [{ task: 'T-003', reason: 'x' }] });
+  assert.ok(running.errors.some((e) => e.includes('进行中或已完成的任务不能取消')), running.errors.join('\n'));
+});
+
+test('调整依赖可以指向本次新增的任务，批准时改写为正式编号', () => {
+  const tasks = [mkTask('T-001', { status: 'done' }), mkTask('T-002', { deps: [hard('T-001')] })];
+  const r = checkRevision(config, STAGES, 'S3', tasks, { add: [nt('N-001')], rewire: [{ task: 'T-002', depends_on: [hard('N-001')] }], cancel: [] });
+  assert.deepEqual(r.errors, []);
+  assert.deepEqual(r.revision.rewire[0]!.depends_on.map((d) => d.task), ['N-001'], '保存时仍是临时编号');
+});

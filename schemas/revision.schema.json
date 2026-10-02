@@ -184,7 +184,7 @@
               "properties": {
                 "task": {
                   "type": "string",
-                  "pattern": "^T-[0-9]{3,}$"
+                  "pattern": "^[TN]-[0-9]{3,}$"
                 },
                 "type": {
                   "anyOf": [

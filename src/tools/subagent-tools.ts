@@ -5,7 +5,7 @@ import { Type, type Static } from 'typebox';
 import type { FlowConfig } from '../core/config.ts';
 import { StateError, type StateStore } from '../core/state-store.ts';
 import { hashToken } from '../core/state-machine.ts';
-import { Dependency, KNOWLEDGE_CATEGORIES, ProposedTask, RevisionTask, type TaskFile } from '../core/schemas.ts';
+import { KNOWLEDGE_CATEGORIES, ProposedTask, RevisionDependency, RevisionTask, type TaskFile } from '../core/schemas.ts';
 import { checkRevision } from '../core/revision.ts';
 import { KnowledgeError, learn, proposeCandidate, KNOWLEDGE_CONTENT_MAX, KNOWLEDGE_PER_RUN } from '../core/knowledge.ts';
 import { validateDag, dagReport, formatDagReport, normalizeLeadingTests } from '../core/dag.ts';
@@ -180,7 +180,7 @@ export const ReviseParams = Type.Object({
   add: Type.Optional(Type.Array(RevisionTask, { maxItems: 50, description: '新增任务：id 用 N-001 起的临时编号，依赖可以指向现有任务 T-xxx 或本次新增的 N-xxx；批准后由程序重新编号' })),
   rewire: Type.Optional(Type.Array(Type.Object({
     task: Type.String({ pattern: '^T-[0-9]{3,}$', description: '未开始（pending/ready）的现有任务' }),
-    depends_on: Type.Array(Dependency, { description: '新的完整依赖列表（整体替换），只能指向现有任务' }),
+    depends_on: Type.Array(RevisionDependency, { description: '新的完整依赖列表（整体替换），可以指向现有任务 T-xxx 或本次新增的 N-xxx' }),
   }), { description: '调整未开始任务的依赖' })),
   cancel: Type.Optional(Type.Array(Type.Object({
     task: Type.String({ pattern: '^T-[0-9]{3,}$', description: '未开始（pending/ready）的现有任务' }),

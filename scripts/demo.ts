@@ -103,7 +103,7 @@ async function realFix(): Promise<void> {
 
     step('/flow-fix（真实模型）');
     const started = Date.now();
-    await pi(dir, ['/flow-fix "add(1, 2) 返回 -1，期望返回 3。src/server/calc/add.mjs 中的 add 函数结果不对。"'], {});
+    await pi(dir, ['/flow-fix --direct "add(1, 2) 返回 -1，期望返回 3。src/server/calc/add.mjs 中的 add 函数结果不对。"'], {});
     const store = new StateStore(dir);
     const fix = store.listFlows().map((id) => store.readFlow(id)).find((f) => f.mode === 'fix')!;
     step('结果');
