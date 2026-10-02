@@ -4,7 +4,7 @@
 - 第二轮优化（`docs/HANDOFF.md`，A–L）已完成，完成情况见该文档第 0 节与 `NOTES.md` 第 69–81 条；新工作开始前先读这两处。
 - 原始需求见 `docs/BUILD_PROMPT.md`（不要修改它）。所有偏离规格的决定、已核实的 Pi API、已验证的版本号都记在 `NOTES.md`；新增偏离时在"偏离记录"中追加编号条目，并在对应里程碑的"设计要点"中补充。
 - M0–M8 已全部完成。之后的每项改动：先给计划，完成后汇报（做了什么、偏离、待确认项），等用户确认再做下一项；用户明确要求连续完成时例外。
-- Pi 的 API 一律先查文档或源码再使用，不凭记忆。Pi 安装在 `$(npm root -g)/@earendil-works/pi-coding-agent`，文档在其 `docs/`，类型在 `dist/**/*.d.ts`。当前以 Pi 0.99.2 为准。
+- Pi 的 API 一律先查文档或源码再使用，不凭记忆。Pi 安装在 `$(npm root -g)/@earendil-works/pi-coding-agent`，文档在其 `docs/`，类型在 `dist/**/*.d.ts`。当前以 Pi 1.0.0 为准（2026-10-02 由 0.99.2 升级，扩展接口类型无变化，见 NOTES 第 86 条）。
 
 ## 结构
 - `src/core/`：业务逻辑，不依赖 Pi。`state-store.ts` 是 `.flow/` 唯一的读写入口；`state-machine.ts` 是转移表（不在表中的转移一律拒绝）；`dispatcher.ts` 是引擎（派发与程序步骤 pump）。

@@ -5,7 +5,7 @@
 | 组件 | 版本 | 来源 / 说明 |
 |---|---|---|
 | Node | 24.18.0 | 本机；package.json 要求 >=22。测试直接用 Node 原生 TS 类型剥离运行（要求 erasable syntax，不用参数属性、enum、namespace） |
-| Pi | `@earendil-works/pi-coding-agent` **0.99.2**（用户已升级，以此为准） | 旧包名 `@mariozechner/pi-coding-agent` 停在 0.73.1 |
+| Pi | `@earendil-works/pi-coding-agent` **1.0.0**（2026-10-02 用户由 0.99.2 升级，以此为准；见第 86 条） | 旧包名 `@mariozechner/pi-coding-agent` 停在 0.73.1 |
 | typebox | 1.3.27（devDependency，与 Pi 0.99.2 内置版本一致） | Pi `docs/packages.md`：typebox 属于 Pi 内置核心包，作为 `peerDependencies: "*"` 声明，不打包 |
 | proper-lockfile | 4.1.2 | 与 Pi 自身依赖同版本；npm 官方包，作者 moxystudio；用途：`.flow/` 跨进程文件锁 |
 | minimatch | 10.2.6 | 与 Pi 自身依赖同版本；isaacs 维护；用途：glob 匹配 |
@@ -14,7 +14,7 @@
 
 依赖选择理由：上述运行时依赖均是 Pi 本身已使用的库，版本对齐，装 pi-flow 不会引入新的供应链来源。测试框架用 Node 内置 `node:test`，不另装。
 
-## M0：Pi API 矩阵（Pi 0.99.2）
+## M0：Pi API 矩阵（Pi 0.99.2 核实；1.0.0 中接口未变）
 
 核实方式：**实测**＝在 playground 中用真实 pi 进程运行（探针在 `playground/probes/`，假模型在 `test/fixtures/fake-llm/`）；**源码**＝读 0.99.2 的 `.d.ts` / 源码或官方文档、示例。
 
@@ -296,6 +296,12 @@
     - 安全：已实测脚本中的每个工具调用都经过 `tool_call` 处理函数，guard 照常拦截与计违规（`test/e2e/pi-subprocess.test.ts` 用真实 pi 验证：审查者在脚本中并行读 diff 与文件成功，脚本里的越权写入被拦并记 1 次违规，集成分支上的文件未被改动）。脚本只能调用本角色已启用的工具，orchestrator 不允许启用。
     - 模板默认给 architect、reviewer、scout 启用（读多、查询多的角色）；实施角色未启用（glm 写脚本容易出错，用户可在 workflow.yaml 自行加上）。三个角色的提示加一句用法建议。
     - 真实模型对比（fix 演示，同一问题，各一次，样本小）：未启用时 298 秒、输入 66.1k（scout 22.1k、reviewer 31.1k）；启用后 226 秒、输入 45.1k（scout 10.8k、reviewer 21.1k），缓存读从 129k 升到 198k（codemode 的工具说明更长，但命中缓存）；scout 与 reviewer 实际都用了 codemode，0 次违规。
+
+86. **升级到 Pi 1.0.0（2026-10-02）**：
+    - 对比 0.99.2 与 1.0.0 的 `dist/**/*.d.ts`：`core/extensions/types.d.ts`、`modes/json-event.d.ts`、`core/session-manager.d.ts` 无变化，只新增界面组件的类型；pi-flow 用到的接口全部不变，代码无需修改。
+    - 与本项目相关的变化：codemode 的提示约少 40%，错误提示会告诉模型怎么改（脚本里探测工具要用 `"name" in tools`，不能用 `typeof tools.name`；本项目没有这种写法）；终端界面默认全屏（`tuiMode: "regular"` 可恢复）；`--provider` 不带 `--model` 改为报错（本项目总是传 `--model provider/id`）。
+    - 验证：升级前在临时目录安装 1.0.0，真实 pi 的端到端测试 7 个全部通过；真实模型 fix 演示两次 249 秒、232 秒（第二次缓存已热：提示 token 总量 209k，0.99.2 开 codemode 时为 243k）。升级后全量测试通过：单元 138、端到端 58，无跳过。
+    - 同日发布的独立包 `@earendil-works/pi-durable`（持久化 agent 运行时：崩溃后从断点继续、任务与子任务、子 agent、工具调用钩子）评估后暂不引入：标注为实验性、API 随时变化；扩展与工具格式与 pi 命令行不同，serena、codegraph、web 插件无法加载；用户的交互依赖 pi 的终端界面。将来可作为 `SubagentLauncher` 的另一种实现，用于中断后从原对话续跑（第 68 条）与运行中插话。
 
 ## 第二轮优化设计要点
 

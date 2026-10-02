@@ -1,4 +1,4 @@
-// pi-flow 用到的 Pi API 的最小类型声明，摘自 @earendil-works/pi-coding-agent 0.99.2 与 pi-ai 的 .d.ts（已核实）。
+// pi-flow 用到的 Pi API 的最小类型声明，摘自 @earendil-works/pi-coding-agent 0.99.2 与 pi-ai 的 .d.ts（已核实；1.0.0 中这些类型未变）。
 // 运行时由 Pi（jiti）提供这些模块；只有 src/pi-adapter/ 可以引用它们。Pi 升级后需对照 NOTES.md 重新核实。
 declare module '@earendil-works/pi-coding-agent' {
   export type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
