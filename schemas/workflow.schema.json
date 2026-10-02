@@ -70,6 +70,10 @@
         "fix_max_files": {
           "type": "integer",
           "minimum": 1
+        },
+        "session_retention_days": {
+          "type": "integer",
+          "minimum": 1
         }
       },
       "additionalProperties": false

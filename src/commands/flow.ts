@@ -17,6 +17,7 @@ import { CHECKLISTS, CONFIRM_COMMAND, MODE_LABEL, activeBrief, cancelBrief, conf
 import { costReport, formatCost } from '../core/cost.ts';
 import { renderStatus } from '../core/status-view.ts';
 import { applyDrafts, formatDrafts, listDrafts, type Draft } from '../core/rules-draft.ts';
+import { findSessionFile, formatRunDetail, summarizeSession } from '../core/session-log.ts';
 import { KnowledgeError, acceptCandidate, formatKnowledgeList, markPromoted, promoteToDraft, retireEntries, searchKnowledge } from '../core/knowledge.ts';
 import { loadConfig } from '../core/config.ts';
 import { git } from '../core/git.ts';
@@ -67,6 +68,7 @@ export const FLOW_USAGE = [
   '  /flow unblock <任务> ["<回答>"] [--attempts N]   解除阻塞（无界面时用它回答）',
   '  /flow gate              闸门失败并修复后，重跑当前阶段闸门',
   '  /flow rules [apply [all|<草案文件>...]]   查看或应用规则与命令草案（docs/rules-draft/，来自架构师或知识提升）',
+  '  /flow run [<run_id>]    某次子进程运行的工具调用摘要与最后的回复（会话留档）；不给 id 时列出最近的运行',
   '  /flow knowledge [...]   项目知识库：列出、搜索、确认候选、废弃、提升为规则草案（/flow knowledge help）',
   '  /flow status --cost     成本统计：按流程、阶段、角色、模型、任务汇总 token 与耗时，返工最多的任务',
   '  /flow abort [--yes]     中止当前修复或流程（集成分支保留，主分支不受影响）',
@@ -118,7 +120,10 @@ export async function runFlowCommand(args: string, env: CommandEnv): Promise<str
       return `${formatInit(r)}\n\n前置条件：\n${formatPreflight(r.preflight)}\n\n下一步：执行 /flow-config 为各角色选择模型，然后 /flow-build 开始。`;
     }
     case 'doctor': {
-      const r = await doctor(env.root, env.store(), { fix: argv.includes('--fix'), preflight: { roleSettings: env.roleSettings(), availableModels: env.availableModels() } });
+      let days: number | undefined;
+      try { days = loadConfig(path.join(env.root, 'workflow.yaml')).limits.session_retention_days; } catch { /* 配置错误由前置条件检查报告 */ }
+      const r = await doctor(env.root, env.store(), { fix: argv.includes('--fix'), preflight: { roleSettings: env.roleSettings(), availableModels: env.availableModels() },
+        ...(days ? { sessionRetentionDays: days } : {}) });
       return formatDoctor(r);
     }
     case 'resume': {
@@ -238,6 +243,8 @@ export async function runFlowCommand(args: string, env: CommandEnv): Promise<str
       if (!chosen.length) throw new Error(`没有匹配的草案。可用：${drafts.map((d) => d.file).join('、') || '无'}`);
       return applyAndReport(env, h, flowId, chosen);
     }
+    case 'run':
+      return runDetail(argv[1], env.store());
     case 'knowledge':
       try {
         return await runKnowledge(argv.slice(1), env);
@@ -454,6 +461,21 @@ async function applyAndReport(env: CommandEnv, h: EngineHandle, flowId: string |
   if (r.commands) Object.assign(h.config.raw.commands, r.commands);
   const promoted = await markPromoted(h.store, drafts.map((d) => d.file));
   return `已应用：${r.applied.join('、')}，并已提交。之后派发的任务使用新的规则${r.commands ? '与命令' : ''}（子进程提示的稳定前缀变化，模型服务的提示缓存会失效一次）。${promoted.length ? `\n知识 ${promoted.join('、')} 已成为规则，不再作为知识注入。` : ''}`;
+}
+
+/** /flow run [<run_id>]：某次运行的工具调用摘要与最后的回复；不给 id 时列出最近的运行 */
+function runDetail(id: string | undefined, store: Store): string {
+  const runs = store.listRuns().sort((a, b) => a.started_at.localeCompare(b.started_at));
+  if (!id) {
+    if (!runs.length) return '还没有任何运行记录。';
+    return `最近的运行（详情：/flow run <run_id>）：\n${runs.slice(-15).map((r) => `- ${r.run_id}　${r.flow ?? '-'}/${r.task ?? '-'}　${r.role}　${r.outcome ?? (r.ended_at ? '无结果' : '运行中')}　${r.started_at.slice(0, 16).replace('T', ' ')}`).join('\n')}`;
+  }
+  const r = runs.find((x) => x.run_id === id || x.run_id.startsWith(id));
+  if (!r) return `没有找到 run ${id}。最近的运行：/flow run`;
+  const file = r.session_file && existsSync(r.session_file) ? r.session_file : r.session_dir ? findSessionFile(r.session_dir) : null;
+  let summary = null;
+  try { summary = file ? summarizeSession(file) : null; } catch { /* 无法解析时只给路径 */ }
+  return formatRunDetail(r, summary, file);
 }
 
 const KNOWLEDGE_USAGE = [

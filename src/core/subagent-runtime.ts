@@ -4,6 +4,7 @@ import { Value } from 'typebox/value';
 import type { FlowConfig } from './config.ts';
 import type { StateStore } from './state-store.ts';
 import type { TaskFile } from './schemas.ts';
+import { hashToken } from './state-machine.ts';
 import { enforceToolCall, type GuardContext, type ToolCall } from './guard.ts';
 import { FlowToolError, SUBAGENT_TOOLS, type RunEnv, type SubagentToolName, type ToolResult } from '../tools/subagent-tools.ts';
 
@@ -46,7 +47,29 @@ export class SubagentRuntime {
     };
   }
 
+  /**
+   * 心跳续租：租约剩余不足一半时延长到"现在 + lease_minutes"。持续调用工具的长任务不会被租约看守误杀；
+   * 长时间没有任何工具调用的 run 仍按时过期。续租失败（租约已收回或过期）不影响本次判定，由 flow_* 工具报错。
+   */
+  async heartbeat(): Promise<boolean> {
+    let t: TaskFile;
+    try { t = this.task(); } catch { return false; }
+    const l = t.lease;
+    if (!l || l.run_id !== this.env.run) return false;
+    const now = (this.now?.() ?? new Date()).getTime();
+    const span = this.config.limits.lease_minutes * 60_000;
+    const left = Date.parse(l.expires_at) - now;
+    if (left <= 0 || left >= span / 2) return false;
+    try {
+      await this.store.renewLease(this.env.flow, this.env.task, this.env.run, hashToken(this.env.token), new Date(now + span).toISOString(), `run:${this.env.run}`);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async gate(call: ToolCall, cwd: string): Promise<GateResult> {
+    await this.heartbeat();
     const r = await enforceToolCall(call, this.guardContext(cwd), this.store, { flow: this.env.flow, task: this.env.task, run: this.env.run });
     return r.allow ? { block: false } : { block: true, reason: r.reason, terminate: r.terminate };
   }

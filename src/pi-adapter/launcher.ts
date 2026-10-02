@@ -1,4 +1,4 @@
-// 用 pi 命令行实现 SubagentLauncher：pi --mode json -p --no-session ...（已在 Pi 0.99.2 实测）。
+// 用 pi 命令行实现 SubagentLauncher：pi --mode json -p --session-dir <留档目录> ...（已在 Pi 0.99.2 实测）。
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import type { SubagentHandle, SubagentLauncher, SubagentSpec, RunOutcome } from '../core/launcher.ts';
@@ -18,7 +18,7 @@ export function piInvocation(): { command: string; prefix: string[] } {
 }
 
 export function buildPiArgs(spec: SubagentSpec): string[] {
-  const args = ['--mode', 'json', '-p', '--no-session', '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-context-files'];
+  const args = ['--mode', 'json', '-p', ...(spec.sessionDir ? ['--session-dir', spec.sessionDir] : ['--no-session']), '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-context-files'];
   for (const e of spec.extensions) args.push('-e', e);
   if (spec.model) args.push('--model', spec.model);
   if (spec.thinking) args.push('--thinking', spec.thinking);

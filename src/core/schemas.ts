@@ -160,6 +160,9 @@ export const RunFile = Type.Object({
   violations: Type.Integer({ minimum: 0 }),
   /** 子进程 pid（进程组 id）；用于恢复时清理残留进程 */
   pid: Type.Optional(Nullable(Type.Integer({ minimum: 1 }))),
+  /** 子进程会话留档目录（<项目>.worktrees/.sessions/<run>/）与结束后找到的会话文件 */
+  session_dir: Type.Optional(Type.String()),
+  session_file: Type.Optional(Nullable(Type.String())),
   version: Type.Integer({ minimum: 1 }),
 }, { additionalProperties: false });
 export type RunFile = Static<typeof RunFile>;
@@ -217,6 +220,8 @@ export const WorkflowFile = Type.Object({
     max_violations_per_run: PosInt,
     max_task_files: PosInt,
     fix_max_files: PosInt,
+    /** 子进程会话留档的保留天数（/flow doctor --fix 清理），默认 14 */
+    session_retention_days: Type.Optional(PosInt),
   }, { additionalProperties: false }),
   models: Type.Record(Type.String(), Type.String({ minLength: 1 })),
   modes: Type.Object({ build: Type.Optional(ModeDef), feature: Type.Optional(ModeDef) }, { additionalProperties: false }),

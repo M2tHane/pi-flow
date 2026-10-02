@@ -3,8 +3,10 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
+import { existsSync } from 'node:fs';
 import { Engine } from '../../src/core/dispatcher.ts';
 import { PiLauncher, buildPiArgs } from '../../src/pi-adapter/launcher.ts';
+import { summarizeSession } from '../../src/core/session-log.ts';
 import { startFakeLlm, type FakeLlm } from '../fixtures/fake-llm/server.ts';
 import { setupProject } from '../helpers/project.ts';
 import { mkTask } from '../helpers/tasks.ts';
@@ -28,6 +30,9 @@ test('buildPiArgs：关闭扩展发现、guard 扩展最后、工具白名单、
   assert.deepEqual(args.slice(0, 8), ['--mode', 'json', '-p', '--no-session', '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-context-files']);
   assert.equal(args[args.lastIndexOf('-e') + 1], '/sub.ts');
   assert.deepEqual(args.slice(-2), ['--', '--不是参数']);
+  const kept = buildPiArgs({ cwd: '/w', model: null, thinking: null, tools: [], extensions: [], appendSystemPromptFiles: [], prompt: 'x', env: {}, sessionDir: '/s/r-1' });
+  assert.deepEqual(kept.slice(0, 5), ['--mode', 'json', '-p', '--session-dir', '/s/r-1']);
+  assert.ok(!kept.includes('--no-session'));
   assert.ok(args.includes('--tools') && args[args.indexOf('--tools') + 1] === 'read,flow_claim');
 });
 
@@ -64,6 +69,14 @@ test('真实 pi 子进程：实施 → 审查 → verify → 合并；越权被�
     assert.equal(impl.tokens.output, 10 * 5 + 30);
     assert.equal(impl.tokens.cache_read, 600);
     assert.ok(impl.tokens.input! > 0 && rev.tokens.input! > 0);
+    // 会话留档：每个 run 的会话文件在 <项目>.worktrees/.sessions/<run>/ 下，可摘要出工具调用与最后的回复
+    for (const r of [impl, rev]) {
+      assert.ok(r.session_file && r.session_file.startsWith(r.session_dir!), JSON.stringify(r));
+      assert.ok(existsSync(r.session_file));
+    }
+    const s = summarizeSession(impl.session_file!);
+    assert.deepEqual(s.toolCalls.map((c) => c.name).filter((n) => n.startsWith('flow_')), ['flow_claim', 'flow_note', 'flow_submit']);
+    assert.ok(s.toolCalls.some((c) => c.error), '被 guard 拦下的写入应显示为失败的工具调用');
     assert.deepEqual((await p.store.verifyIntegrity()).errors, []);
   } finally { p.cleanup(); }
 });

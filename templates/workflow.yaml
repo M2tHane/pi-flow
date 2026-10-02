@@ -15,6 +15,7 @@ limits:
   max_violations_per_run: 3
   max_task_files: 12
   fix_max_files: 5              # 超过则建议升级为 feature
+  session_retention_days: 14    # 子进程会话留档保留天数，/flow doctor --fix 清理
 models:                         # 档位到具体模型的映射，由用户填写
   strong: "<provider/model>"
   medium: "<provider/model>"

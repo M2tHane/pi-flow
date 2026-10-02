@@ -31,7 +31,7 @@
 | 动态启用工具 | `pi.setActiveTools(names)` 在 `session_start` 中调用即生效；请求里声明的工具随之收窄 | 实测 |
 | 追加系统提示 | `before_agent_start` 中修改 `event.systemPromptOptions.appendSystemPrompt`，每轮请求都带上 | 实测 |
 | 会话与每轮钩子 | `session_start`、`before_agent_start`、`turn_start/turn_end`、`agent_settled`、`session_shutdown` 等 | 源码；实测（session_start、before_agent_start、turn_end） |
-| 子进程 | `pi --mode json -p --no-session --no-extensions --no-skills --no-prompt-templates --no-context-files -e <ext>... --model provider/id --thinking <level> --tools a,b --append-system-prompt <file> "<prompt>"`；**stdin 必须关闭**（否则 -p 等待输入）；工作目录 = spawn 的 cwd；环境变量直接继承到工具执行 | 实测；官方 subagent 示例同此用法 |
+| 子进程 | `pi --mode json -p --session-dir <留档目录>（原为 --no-session，见第 74 条） --no-extensions --no-skills --no-prompt-templates --no-context-files -e <ext>... --model provider/id --thinking <level> --tools a,b --append-system-prompt <file> "<prompt>"`；**stdin 必须关闭**（否则 -p 等待输入）；工作目录 = spawn 的 cwd；环境变量直接继承到工具执行 | 实测；官方 subagent 示例同此用法 |
 | token 用量 | 每条 assistant `message_end.message.usage = {input, output, cacheRead, cacheWrite, reasoning, totalTokens, cost}`；`input` 不含缓存命中；同时给出 `provider`、`model`、`thinkingLevel`、`stopReason`、`errorMessage` | 实测（假模型；真实模型 Workbuddy/glm-5.3-flash：单轮 input 523/output 3；含工具调用的 3 轮合计 input 1736、output 67、cacheRead 768，缓存命中可计入） |
 | 模型与思考级别 | 思考级别 `off/minimal/low/medium/high/xhigh/max`；`getSupportedThinkingLevels(model)`（pi-ai）给出每个模型支持的级别，例如 Workbuddy/glm-5.3-flash 只支持 `low/high/xhigh` | 实测 |
 | 用户配置目录 | `getAgentDir()` = `~/.pi/agent`（`PI_CODING_AGENT_DIR` 可覆盖）；官方 preset 示例把全局配置放在这里，项目配置放在 `<cwd>/.pi/` | 实测；源码 |
@@ -209,6 +209,13 @@
     - 展示：`/flow status --detail` 列出最近 5 条；访谈者提示中说明可读 `.flow/knowledge.json`。
     - 已知局限：每个 run 的条数检查在事务外读取，同一 run 并发提交时可能多出一条；知识与规则是否矛盾无法由程序判断，靠"以规则为准"的声明和用户废弃。
 
+73. **租约心跳续租（第二轮 D）**：子进程每次工具调用经过 guard 前（`SubagentRuntime.heartbeat`），若租约剩余不足 `lease_minutes` 的一半，经 `StateStore.renewLease` 把到期时间延长到"现在 + lease_minutes"。续租在事务内校验 run 与 token 哈希、租约未过期、任务处于 in_progress/review，只延长不缩短，记一条 `note` 事件"续租"。一个 45 分钟的租约最多每 22.5 分钟产生一次状态提交。长时间没有任何工具调用（例如模型长时间思考或卡住）的 run 仍按时被租约看守终止。续租失败不影响本次工具调用的判定。
+74. **子进程会话留档（第二轮 E）**：子进程不再以 `--no-session` 运行，改为 `--session-dir <项目>.worktrees/.sessions/<run>/`（Pi 0.99.2 `pi --help` 与 docs/sessions.md 核实；真实 pi 子进程测试已验证会话文件写入该目录）。
+    - run 记录新增 `session_dir`（派发时）与 `session_file`（结束时在目录内递归找最新的 `.jsonl`）。
+    - `/flow run [<run_id>]`：列出最近的运行，或显示一次运行的基本信息、工具调用摘要（参数截断，出错的工具结果标 ✗）与最后一条 assistant 文本，按 Pi 的会话格式（docs/session-format.md）解析，无法解析的行跳过。
+    - `/flow doctor --fix` 按 `limits.session_retention_days`（新增可选配置，默认 14）清理：已结束且结束时间早于保留期的 run；没有 run 记录、修改时间早于保留期的目录。运行中的不清理。不加 `--fix` 时只提醒。
+    - 会话文件含提示、模型回复、工具参数与输出，可能包含代码与命令输出；它在项目目录之外，不进 git。续跑原对话（第 68 条）本轮不做。
+
 ## 第二轮优化设计要点
 
 - **A 先行验收测试先失败**（第 69、70 条）。验收：
@@ -218,6 +225,7 @@
 - **B + C 上游经验与项目级知识库**（第 71、72 条）。验收：
   - `test/e2e/knowledge.test.ts`：agent 提交的知识出现在后续同 scope 任务的系统提示中，其他 scope 的不出现；下游提示含上游 handoff；重复与非法 scope 被拒；agent 写 `.flow/knowledge.json` 被拦；审查打回生成候选，确认前不注入；废弃；提升为规则草案并应用；跨流程保留；篡改知识库被完整性校验发现。
   - `test/unit/knowledge.test.ts`：校验、去重、选择与上限、提示位置、上游长度限制、提升目标。
+- **D + E 租约续期与会话留档**（第 73、74 条）。验收（`test/e2e/lease-session.test.ts`）：持续调用工具时剩余不足一半才续租、超过最初 45 分钟不被杀、停止调用后按时过期、伪造 token 不能续租；run 记录会话目录，`/flow run` 显示工具调用与失败、最后的回复；doctor 按保留期提醒与清理。`test/e2e/pi-subprocess.test.ts` 用真实 pi 验证会话文件写入留档目录并能摘要出 flow_* 调用与被 guard 拦下的调用。
 
 ## M8 设计要点
 

@@ -8,10 +8,11 @@ import { processAlive } from './resume.ts';
 import { preflight, formatPreflight, type PreflightDeps } from './preflight.ts';
 import { readEngineLock } from './engine-lock.ts';
 import { IN_FLIGHT } from './state-machine.ts';
+import { cleanupSessions, DEFAULT_SESSION_RETENTION_DAYS } from './session-log.ts';
 
 export interface DoctorReport { errors: string[]; warnings: string[]; fixed: string[]; preflight: string }
 
-export async function doctor(root: string, store: StateStore, opts: { fix?: boolean; preflight?: Omit<PreflightDeps, 'root'>; now?: () => Date } = {}): Promise<DoctorReport> {
+export async function doctor(root: string, store: StateStore, opts: { fix?: boolean; preflight?: Omit<PreflightDeps, 'root'>; now?: () => Date; sessionRetentionDays?: number } = {}): Promise<DoctorReport> {
   const errors: string[] = [];
   const warnings: string[] = [];
   const fixed: string[] = [];
@@ -92,6 +93,13 @@ export async function doctor(root: string, store: StateStore, opts: { fix?: bool
         warnings.push(`${stale.length} 个已结束 run 的提示文件可清理（/flow doctor --fix）`);
       }
     }
+  }
+  // 超过保留期的子进程会话留档
+  const days = opts.sessionRetentionDays ?? DEFAULT_SESSION_RETENTION_DAYS;
+  const expired = cleanupSessions(root, store.listRuns(), days, new Date(now), !opts.fix);
+  if (expired.length) {
+    if (opts.fix) fixed.push(`清理 ${expired.length} 个超过 ${days} 天的会话留档`);
+    else warnings.push(`${expired.length} 个会话留档超过 ${days} 天，可清理（/flow doctor --fix）`);
   }
   if (opts.fix) git(root, ['worktree', 'prune']);
 

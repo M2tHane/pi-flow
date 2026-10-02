@@ -597,6 +597,24 @@ export class StateStore {
     });
   }
 
+  /**
+   * 续租（心跳）：校验 run 与 token 后把租约到期时间延长到 expiresAt。租约已被收回、已过期或 token 不符时拒绝；
+   * 只延长不缩短。由子进程在工具调用时按需调用（剩余不足一半时），避免每次调用都产生状态提交。
+   */
+  async renewLease(flow: string, id: string, runId: string, tokenHash: string, expiresAt: string, actor: string): Promise<TaskFile> {
+    return this.transaction((tx) => {
+      const t = tx.readTask(flow, id);
+      const l = t.lease;
+      if (!l || l.run_id !== runId || l.token_hash !== tokenHash) throw new StateError(`任务 ${id} 的租约不属于 run ${runId}，不能续租`);
+      if (this.now().getTime() >= Date.parse(l.expires_at)) throw new StateError(`任务 ${id} 的租约已过期，不能续租`);
+      if (t.status !== 'in_progress' && t.status !== 'review') throw new StateError(`任务 ${id} 当前是 ${t.status}，不能续租`);
+      if (Date.parse(expiresAt) <= Date.parse(l.expires_at)) return t;
+      const next = tx.putTask(flow, { ...t, lease: { ...l, expires_at: expiresAt } });
+      tx.event({ flow, task: id, actor, type: 'note', reason: '续租', data: { run: runId, from: l.expires_at, to: expiresAt } });
+      return next;
+    });
+  }
+
   async appendHandoff(flow: string, task: string, text: string, actor: string): Promise<void> {
     await this.transaction((tx) => {
       tx.readTask(flow, task);
@@ -628,7 +646,7 @@ export class StateStore {
   }
 
   /** 更新 run 记录（结束时间、token、模型、结果）。 */
-  async updateRun(id: string, patch: Partial<Pick<RunFile, 'ended_at' | 'tokens' | 'model' | 'outcome' | 'pid'>>, actor: string, reason?: string): Promise<RunFile> {
+  async updateRun(id: string, patch: Partial<Pick<RunFile, 'ended_at' | 'tokens' | 'model' | 'outcome' | 'pid' | 'session_file'>>, actor: string, reason?: string): Promise<RunFile> {
     return this.transaction((tx) => {
       const run = tx.readJson<RunFile>(runRel(id));
       if (!run) throw new StateError(`run ${id} 不存在`);

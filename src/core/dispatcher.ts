@@ -12,6 +12,7 @@ import { resolveRoleModel } from './role-settings.ts';
 import { loadAgent } from './agents.ts';
 import { assemblePrompt, ruleFilesFor } from './prompt-assembler.ts';
 import { formatEntry, selectKnowledge } from './knowledge.ts';
+import { findSessionFile, sessionDirOf } from './session-log.ts';
 import { carriedTestOf, computeReady, isLeadingTest } from './dag.ts';
 import { selectDispatchable } from './scheduler.ts';
 import { createTaskWorktree, ensureLocalExcludes, worktreesRoot } from './worktree.ts';
@@ -134,14 +135,17 @@ export class Engine {
       throw new DispatchError(`任务 ${taskId} 当前是 ${task.status}${task.lease ? `（run ${task.lease.run_id} 运行中）` : ''}，不能派发`);
     }
 
+    const sessionDir = sessionDirOf(root, runId);
+    mkdirSync(sessionDir, { recursive: true });
     await store.createRun({
       run_id: runId, flow: flowId, task: taskId, role, model, started_at: this.now().toISOString(), ended_at: null,
       tokens: { input: null, output: null, cache_read: null, cache_write: null }, outcome: null, token_hash: lease.token_hash, violations: 0,
+      session_dir: sessionDir,
     });
 
     let handle: SubagentHandle;
     try {
-      handle = this.d.launcher.launch(this.buildSpec(flowId, task, role, runId, token, model, thinking));
+      handle = this.d.launcher.launch({ ...this.buildSpec(flowId, task, role, runId, token, model, thinking), sessionDir });
     } catch (e) {
       await this.failRun(flowId, taskId, runId, `子进程启动失败：${(e as Error).message}`);
       throw new DispatchError(`子进程启动失败：${(e as Error).message}`);
@@ -234,6 +238,7 @@ export class Engine {
     const outcome = prev.outcome ?? (leaseHeld ? 'failed' : null);
     await store.updateRun(runId, {
       ended_at: this.now().toISOString(), tokens: r.tokens, model: r.model ?? prev.model, ...(outcome ? { outcome } : {}),
+      ...(prev.session_dir ? { session_file: findSessionFile(prev.session_dir) } : {}),
     }, 'dispatcher', 'run 结束');
     if (leaseHeld) {
       const why = r.error ?? (r.exitCode ? `退出码 ${r.exitCode}${r.stderrTail ? `：${r.stderrTail.slice(-300)}` : ''}` : '未提交就结束');

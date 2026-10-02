@@ -3,7 +3,7 @@ import path from 'node:path';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
-import { Engine } from '../../src/core/dispatcher.ts';
+import { Engine, type EngineDeps } from '../../src/core/dispatcher.ts';
 import type { MergeHooks, MergeResult } from '../../src/core/merge-queue.ts';
 import type { RoleSettingsFile } from '../../src/core/schemas.ts';
 import { FakeLauncher, type FakeAgent } from '../fixtures/fake-subagent/launcher.ts';
@@ -15,14 +15,14 @@ export const ALL_FAKE: RoleSettingsFile = { version: 1, roles: Object.fromEntrie
 
 export type RoleScript = (role: string, nth: number, a: FakeAgent) => Promise<void>;
 
-export function makeEngine(p: Project, scripts: RoleScript, settings = ALL_FAKE, mergeHooks?: MergeHooks) {
+export function makeEngine(p: Project, scripts: RoleScript, settings = ALL_FAKE, mergeHooks?: MergeHooks, extra: Partial<EngineDeps> = {}) {
   const launcher = new FakeLauncher(p.store, p.config, (spec, nth) => (a) => scripts(spec.env['PI_FLOW_ROLE']!, nth, a));
   const errors: unknown[] = [];
   const merges: MergeResult[] = [];
   const engine = new Engine({
     root: p.dir, store: p.store, config: p.config, roleSettings: () => settings, launcher,
     packageAgentsDir: AGENTS, subagentExtension: '/dev/null/subagent.ts',
-    onError: (e) => errors.push(e), onMerge: (r) => merges.push(r), ...(mergeHooks ? { mergeHooks } : {}),
+    onError: (e) => errors.push(e), onMerge: (r) => merges.push(r), ...(mergeHooks ? { mergeHooks } : {}), ...extra,
   });
   return { engine, launcher, errors, merges };
 }

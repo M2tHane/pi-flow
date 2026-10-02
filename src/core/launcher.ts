@@ -23,6 +23,8 @@ export interface SubagentSpec {
   prompt: string;
   /** run token 等，只经环境变量传递 */
   env: Record<string, string>;
+  /** 会话留档目录（--session-dir）；不给时以 --no-session 运行 */
+  sessionDir?: string;
 }
 
 export interface SubagentHandle {
@@ -32,7 +34,7 @@ export interface SubagentHandle {
   kill(): void;
 }
 
-/** 子进程启动（pi --mode json -p --no-session ...，stdin 必须关闭，否则 -p 会等待输入） */
+/** 子进程启动（pi --mode json -p --session-dir <留档目录> ...，stdin 必须关闭，否则 -p 会等待输入） */
 export interface SubagentLauncher {
   launch(spec: SubagentSpec): SubagentHandle;
 }

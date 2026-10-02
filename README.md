@@ -105,11 +105,12 @@ pi install /path/to/pi-flow
 | `/flow unblock <任务> ["<回答>"] [--attempts N]` | 解除阻塞，任务回到 ready（没有交互界面时用它回答） |
 | `/flow gate` | 闸门失败并修复后重跑闸门 |
 | `/flow rules [apply [all\|<草案文件>...]]` | 查看或应用规则与命令草案（`docs/rules-draft/`，来自架构师或知识提升）；由程序写入 `rules/` 与 `workflow.yaml` 并提交 |
+| `/flow run [<run_id>]` | 某次子进程运行的工具调用摘要（含被拦下的调用）与最后的回复；不给 id 时列出最近的运行。会话文件保存在 `<项目>.worktrees/.sessions/<run>/` |
 | `/flow knowledge [<搜索词>] [--all]` | 列出、搜索项目知识；`accept <K-编号> ["<改写>"]` 确认候选，`retire <K-编号>...` 废弃，`promote <K-编号>... [--rule <规则名>]` 提升为规则草案 |
 | `/flow abort [--yes]` | 中止当前修复或流程（集成分支保留，主分支不受影响） |
 | `/flow resume` | 会话丢失后恢复，并进入调度模式 |
 | `/flow off` | 退出调度模式，恢复原来的模型与工具（流程状态不变） |
-| `/flow doctor [--fix]` | 状态完整性与前置条件检查；`--fix` 清理残留 worktree 与提示文件 |
+| `/flow doctor [--fix]` | 状态完整性与前置条件检查；`--fix` 清理残留 worktree、提示文件与超过保留期（`limits.session_retention_days`，默认 14 天）的会话留档 |
 | `/flow init` | 初始化项目骨架（可重复执行，只补缺，不覆盖） |
 
 平时只需要看 `/flow status`：
