@@ -154,6 +154,10 @@ B-001「做一个待办应用」
 - 程序校验合并后的任务图（角色、范围、无环、先行验收测试规则），再在"需要你处理"中列出修订内容。修订待批准期间本阶段闸门不运行。
 - 你执行 `/flow approve` 后，程序在一个事务里新增任务（重新编号）、改依赖、取消任务；正在进行的任务不受影响。`/flow reject "<意见>"` 让 architect 按意见重做。
 
+### codemode（Pi 0.99 内置）
+
+architect、reviewer、scout 默认启用 Pi 的 codemode：模型可以写一段脚本并行调用 read、serena、codegraph 等工具，在脚本里过滤后只把需要的结果带回，减少来回轮次和上下文。脚本里的每个工具调用都照常经过 pi-flow 的安全检查。需要给其他角色启用时，在 `workflow.yaml` 该角色的 `tools` 中加上 `codemode`。
+
 ### 项目知识库
 
 项目在多次流程中积累的经验（约定、踩过的坑、做出的决策、环境与外部依赖的注意事项）保存在 `.flow/knowledge.json`，跨流程保留，build、feature、fix 都会用到。

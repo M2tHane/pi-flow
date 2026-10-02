@@ -7,6 +7,10 @@ import { existsSync } from 'node:fs';
 import { Engine } from '../../src/core/dispatcher.ts';
 import { PiLauncher, buildPiArgs } from '../../src/pi-adapter/launcher.ts';
 import { summarizeSession } from '../../src/core/session-log.ts';
+import { pluginExtensionsFor } from '../../src/pi-adapter/plugins.ts';
+import { readFileSync } from 'node:fs';
+import { parseConfig } from '../../src/core/config.ts';
+import { PROJECT_YAML } from '../helpers/project.ts';
 import { startFakeLlm, type FakeLlm } from '../fixtures/fake-llm/server.ts';
 import { setupProject } from '../helpers/project.ts';
 import { mkTask } from '../helpers/tasks.ts';
@@ -81,5 +85,39 @@ test('真实 pi 子进程：实施 → 审查 → verify → 合并；越权被�
     assert.deepEqual(s.toolCalls.map((c) => c.name).filter((n) => n.startsWith('flow_')), ['flow_claim', 'flow_note', 'flow_submit']);
     assert.ok(s.toolCalls.some((c) => c.error), '被 guard 拦下的写入应显示为失败的工具调用');
     assert.deepEqual((await p.store.verifyIntegrity()).errors, []);
+  } finally { p.cleanup(); }
+});
+
+test('codemode：审查者在脚本中并行调用工具；脚本内的越权调用同样被 guard 拦下并计违规', { skip: !piAvailable && 'pi 不可用', timeout: 240_000 }, async () => {
+  const yaml = PROJECT_YAML.replace(/(  reviewer:\s+\{[^}]*tools: \[)/, '$1codemode, ');
+  assert.match(yaml, /reviewer:[^\n]*codemode/);
+  const p = await setupProject({ yaml, tasks: [mkTask('T-001', { verify: ['typecheck', 'test'] })] });
+  try {
+    const config = parseConfig(yaml);
+    const logFile = '/tmp/pi-flow-e2e-llm.log';
+    const before = existsSync(logFile) ? readFileSync(logFile, 'utf8').length : 0;
+    const errors: unknown[] = [];
+    const engine = new Engine({
+      root: p.dir, store: p.store, config, launcher: new PiLauncher(),
+      roleSettings: () => ({ version: 1, roles: { 'backend-engineer': { model: 'fakellm/impl-happy' }, reviewer: { model: 'fakellm/review-codemode' } } }),
+      packageAgentsDir: path.join(ROOT, 'agents'),
+      subagentExtension: path.join(ROOT, 'src/pi-adapter/subagent.ts'),
+      extraExtensions: (role) => [path.join(ROOT, 'test/fixtures/fake-llm/provider.ts'), ...pluginExtensionsFor(config, role, []).paths],
+      onError: (e) => errors.push(e),
+    });
+    await engine.next(p.flowId);
+    await engine.idle();
+    assert.deepEqual(errors, []);
+    const t = p.store.readTask(p.flowId, 'T-001');
+    assert.equal(t.status, 'done', `${t.status} ${t.last_failure ?? ''}`);
+    assert.equal(p.git('show', `flow/${p.flowId}/integration:src/server/t-001/a.ts`), 'export const a = 1;', '脚本中的写入被拦下');
+    const v = p.store.readEvents().filter((e) => e.type === 'violation' && e.data?.['role'] === 'reviewer');
+    assert.equal(v.length, 1);
+    assert.equal(v[0]!.data?.['tool'], 'bash');
+    const reqs = readFileSync(logFile, 'utf8').slice(before).trim().split('\n').map((l) => JSON.parse(l)).filter((r) => r.model === 'review-codemode');
+    assert.ok(reqs[0].tools.includes('codemode'), JSON.stringify(reqs[0].tools));
+    const result = JSON.stringify(reqs[1].last);
+    assert.match(result, /Script failed/);
+    assert.match(result, /DIFF:.*a\.ts.*FILE:export const a = 1;/);
   } finally { p.cleanup(); }
 });

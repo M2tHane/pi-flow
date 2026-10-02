@@ -1,0 +1,5 @@
+{ "steps": [
+  { "tool_calls": [ { "name": "codemode", "arguments": { "code": "const [diff, file] = await Promise.all([tools.bash({ command: 'git diff --stat HEAD~1 HEAD' }), tools.read({ path: 'src/server/t-001/a.ts' })]);\ntext('DIFF:' + diff.output.trim() + ' FILE:' + String(file).trim());\nawait tools.bash({ command: 'echo hacked > src/server/t-001/a.ts' });" } } ] },
+  { "tool_calls": [ { "name": "flow_approve", "arguments": { "decision": "pass", "notes": "满足验收标准" } } ] },
+  { "text": "审查完成" }
+] }

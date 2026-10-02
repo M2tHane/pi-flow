@@ -24,7 +24,8 @@ export function pluginExtensionsFor(config: FlowConfig, role: string, roots: str
     const pkg = GROUP_PACKAGES[group];
     if (pkg && tools.some((t) => r.tools.has(t))) pkgs.add(pkg);
   }
-  const paths: string[] = [];
+  // Pi 内置扩展：子进程以 --no-extensions 运行，需要显式加载（已核实 -e builtin:codemode）
+  const paths: string[] = r.tools.has('codemode') ? ['builtin:codemode'] : [];
   const missing: string[] = [];
   for (const pkg of pkgs) {
     const hit = roots.map((root) => path.join(root, ...pkg.split('/'))).find((p) => existsSync(path.join(p, 'package.json')));

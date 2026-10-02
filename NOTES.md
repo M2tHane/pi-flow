@@ -36,6 +36,7 @@
 | 模型与思考级别 | 思考级别 `off/minimal/low/medium/high/xhigh/max`；`getSupportedThinkingLevels(model)`（pi-ai）给出每个模型支持的级别，例如 Workbuddy/glm-5.3-flash 只支持 `low/high/xhigh` | 实测 |
 | 用户配置目录 | `getAgentDir()` = `~/.pi/agent`（`PI_CODING_AGENT_DIR` 可覆盖）；官方 preset 示例把全局配置放在这里，项目配置放在 `<cwd>/.pi/` | 实测；源码 |
 | 内置工具参数 | `read{path}`、`write{path,content}`、`edit{path,edits[]}`、`bash{command}`、`grep{pattern,path?,glob?}`、`find{pattern,path?}`、`ls{path?}`；另有 `powershell` | 源码 |
+| codemode（0.99 内置） | `-e builtin:codemode` 在 `--no-extensions` 下显式加载；`--tools` 中列出 `codemode` 即启用；脚本里的 `tools.<名称>()` 只能调用已启用的工具，且每个调用都经过 `tool_call` 处理函数（guard 拦截、计违规），被拦时脚本以 `Script failed` 结束；`bash` 在脚本中返回 `{ output, exit_code, … }` | 实测（docs/cli.md、extensions.md；假模型探针与端到端测试） |
 | 路径解析 | Unicode 空格归一、去掉 `@` 前缀、展开 `~`、`file://`；guard 按同样规则解析 | 源码 |
 
 ### 第三方插件（只下载 tarball 读源码，未安装、未执行）
@@ -290,6 +291,12 @@
 
 84. **新增技能 `write-rules`**（S1、F1 注入给 architect）：规则草案的写法从 `design-contract` 中独立出来并展开——替换与新增的区别、F1 只改相关条目、覆盖清单（技术栈、目录分层、数据访问、错误处理、命名、数据模型、接口、测试、明确禁止）、每条可检查、关键条目给正确与错误写法对照、按重要性排列、文件末尾附审查清单、自检。参考了用户提供的外部项目规则的结构。草案应用时的行数上限 60 → 120（技能要求不超过 100 行，留出余量给代码对照）。
 
+85. **启用 Pi 的 codemode（0.99）**：codemode 让模型写一段 JavaScript，在沙箱里并行调用其他工具并在脚本中过滤结果，适合配合 serena、codegraph 做多次查询。
+    - 子进程以 `--no-extensions` 运行，内置扩展默认不加载；角色工具含 `codemode` 时由 `pluginExtensionsFor` 加入 `-e builtin:codemode`（在 guard 之前）。`config.ts` 把 `codemode` 登记为编排类工具（kind=other），它本身不读写文件。
+    - 安全：已实测脚本中的每个工具调用都经过 `tool_call` 处理函数，guard 照常拦截与计违规（`test/e2e/pi-subprocess.test.ts` 用真实 pi 验证：审查者在脚本中并行读 diff 与文件成功，脚本里的越权写入被拦并记 1 次违规，集成分支上的文件未被改动）。脚本只能调用本角色已启用的工具，orchestrator 不允许启用。
+    - 模板默认给 architect、reviewer、scout 启用（读多、查询多的角色）；实施角色未启用（glm 写脚本容易出错，用户可在 workflow.yaml 自行加上）。三个角色的提示加一句用法建议。
+    - 真实模型对比（fix 演示，同一问题，各一次，样本小）：未启用时 298 秒、输入 66.1k（scout 22.1k、reviewer 31.1k）；启用后 226 秒、输入 45.1k（scout 10.8k、reviewer 21.1k），缓存读从 129k 升到 198k（codemode 的工具说明更长，但命中缓存）；scout 与 reviewer 实际都用了 codemode，0 次违规。
+
 ## 第二轮优化设计要点
 
 - **A 先行验收测试先失败**（第 69、70 条）。验收：
@@ -408,4 +415,5 @@
 - 2026-10-02（真实模型冒烟后）：`agents/reviewer.md`、`agents/scout.md`、`skills/decompose-dag`、`skills/revise-plan` 修改；审查与实施提示新增临时目录、evidence 路径两节（在动态部分）。reviewer、scout、architect 子进程提示缓存失效一次。
 - 2026-10-02（默认规则更新）：`rules/` 全部重写并新增 `rules/docs.md`，`skills/design-contract` 修改。只影响之后 `/flow init` 的新项目（已有项目的 rules/ 不变）；architect 子进程提示缓存失效一次。
 - 2026-10-02（write-rules）：新增技能 `skills/write-rules`，`skills/design-contract` 与 `agents/architect.md` 修改；architect 子进程提示缓存失效一次。
+- 2026-10-02（codemode）：`agents/architect.md`、`agents/reviewer.md`、`agents/scout.md` 增加 codemode 用法；三个角色的工具声明多了 codemode，提示缓存失效一次。
 - 以后修改 `agents/`、`rules/`、`skills/` 时，在此追加一条。

@@ -9,6 +9,11 @@ export const FLOW_TOOLS = [
   'flow_status', 'flow_dispatch', 'flow_wait', 'flow_claim', 'flow_note', 'flow_submit',
   'flow_approve', 'flow_propose_tasks', 'flow_block', 'flow_learn', 'flow_revise_plan', 'flow_replan',
 ] as const;
+/**
+ * Pi 内置的编排工具（0.99 起）：codemode 在沙箱中运行模型写的 JavaScript，脚本通过 tools.<名称>() 调用本角色已启用的其他工具。
+ * 已实测：脚本中的每个工具调用都经过 tool_call 处理函数（guard 照常拦截与计违规）。它自己不直接读写文件。
+ */
+export const ORCHESTRATING_TOOLS = ['codemode'] as const;
 /** 虚拟工具：实际启用 Pi 的 bash，由 guard 施加只读白名单 */
 export const BASH_READONLY = 'bash_readonly';
 
@@ -152,6 +157,7 @@ export function parseConfig(source: string): FlowConfig {
   for (const t of BUILTIN_READ_TOOLS) kinds.set(t, 'read');
   for (const t of BUILTIN_WRITE_TOOLS) kinds.set(t, 'write');
   for (const t of FLOW_TOOLS) kinds.set(t, 'flow');
+  for (const t of ORCHESTRATING_TOOLS) kinds.set(t, 'other');
   kinds.set('bash', 'bash');
   for (const [group, tools] of Object.entries(wf.tool_groups)) {
     for (const t of tools) {

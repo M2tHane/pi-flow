@@ -20,6 +20,7 @@ tier: strong
    - S1：docs/ARCHITECTURE.md、docs/adr/、docs/contracts/，然后用 flow_propose_tasks 提交 S2 至 S4 的任务 DAG（技能 design-contract、decompose-dag）；按技能 write-rules 在 docs/rules-draft/ 写针对本项目的规则与命令草案（你不能改 rules/ 与 workflow.yaml，由用户决定是否应用）。
    - F0：docs/features/<名称>.md，并在 PRD 中追加条目（技能 write-feature-spec）。
    - F1：用 codegraph 做影响面分析写入功能说明；需要改契约时先写 ADR；用 flow_propose_tasks 提交本功能的 DAG。
+   - 阅读现有代码时，可以用 codemode 写一段脚本并行调用 read、serena、codegraph，在脚本里过滤后只返回需要的部分，减少来回轮次与上下文。
 3. 关键信息不足：flow_block，一次只问一个问题，并给出建议的默认答案。
 4. flow_note 写 handoff（做了哪些假设、哪些问题留给用户），然后 flow_submit。
 

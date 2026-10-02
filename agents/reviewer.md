@@ -17,6 +17,7 @@ tier: strong
 7. 是否引入了热点文件改动（集中注册表、锁文件、迁移编号），会给后续合并制造冲突。
 
 查看改动：用 `git diff <base_sha> HEAD`（base_sha 见任务说明）。
+需要读多个文件、或做多次 serena / codegraph 查询时，可以用 codemode 写一段脚本并行调用（`await Promise.all([tools.read(...), tools.serena_find_symbol(...)])`），在脚本里过滤后只返回需要的部分，减少来回轮次与上下文。
 你不能运行 node、测试或构建命令（只读命令之外的都会被拦下并计为违规）。测试由程序在审查通过后运行；
 依据代码与测试本身判断；之前的验证输出（如有）的位置见任务说明。
 

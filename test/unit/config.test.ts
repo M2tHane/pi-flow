@@ -39,7 +39,7 @@ test('工具组展开；bash_readonly 映射为 bash 并标记只读', () => {
   assert.ok(rv.tools.has('bash'));
   assert.ok(!rv.tools.has('bash_readonly'));
   const rt = c.activeTools('reviewer');
-  assert.deepEqual(rt.slice(0, 2), ['read', 'bash']);
+  assert.deepEqual(rt.slice(0, 3), ['codemode', 'read', 'bash']);
   assert.ok(rt.includes('serena_find_symbol') && rt.includes('codegraph_impact') && rt.includes('flow_approve') && rt.includes('flow_block'));
   assert.ok(!rt.some((t) => c.toolKind(t) === 'write'), '只读角色不应启用写工具');
   assert.ok(!c.toolKind('serena_rename_symbol') || c.toolKind('serena_rename_symbol') === 'other');
@@ -77,9 +77,9 @@ test('角色的 writes 不能手写为与 scopes 不一致', () => {
 
 test('越权配置被拒：orchestrator 有写工具、无 writes 的角色有写工具、非 reviewer 有审批工具', () => {
   assert.match(errorsOf(TEST_YAML.replace('tools: [read, flow_status', 'tools: [read, bash, flow_status')).join(), /orchestrator.*bash/);
-  assert.match(errorsOf(TEST_YAML.replace('tools: [read, bash_readonly, "@serena_read", "@codegraph", flow_approve]',
-    'tools: [read, bash_readonly, "@serena_read", "@serena_edit", "@codegraph", flow_approve]')).join(), /reviewer.*serena_replace_symbol_body/);
+  assert.match(errorsOf(TEST_YAML.replace('tools: [codemode, read, bash_readonly, "@serena_read", "@codegraph", flow_approve]',
+    'tools: [codemode, read, bash_readonly, "@serena_read", "@serena_edit", "@codegraph", flow_approve]')).join(), /reviewer.*serena_replace_symbol_body/);
   assert.match(errorsOf(TEST_YAML.replace('flow_claim, flow_note, flow_submit] }\n  test-engineer', 'flow_claim, flow_note, flow_submit, flow_approve] }\n  test-engineer')).join(), /flow_approve.*reviewer/);
-  assert.match(errorsOf(TEST_YAML.replace('tools: [read, bash_readonly, "@serena_read", "@codegraph", flow_approve]',
-    'tools: [read, bash, bash_readonly, "@serena_read", "@codegraph", flow_approve]')).join(), /bash_readonly/);
+  assert.match(errorsOf(TEST_YAML.replace('tools: [codemode, read, bash_readonly, "@serena_read", "@codegraph", flow_approve]',
+    'tools: [codemode, read, bash, bash_readonly, "@serena_read", "@codegraph", flow_approve]')).join(), /bash_readonly/);
 });

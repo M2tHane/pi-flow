@@ -70,7 +70,7 @@ tool_groups:                    # 已核实：pi-serena 0.9.20、pi-codegraph 0.
   web:         [web_search, fetch_content, get_search_content, source_check]
 roles:
   orchestrator:      { model: medium, tools: [read, flow_status, flow_dispatch, flow_wait], read_paths: ["docs/**", ".flow/**"], writes: [] }
-  architect:         { model: strong, scopes: [docs, shared], tools: [read, write, edit, "@serena_read", "@codegraph", flow_propose_tasks, flow_note, flow_submit] }
+  architect:         { model: strong, scopes: [docs, shared], tools: [codemode, read, write, edit, "@serena_read", "@codegraph", flow_propose_tasks, flow_note, flow_submit] }
   researcher:        { model: cheap,  scopes: [research], tools: [read, write, "@web", flow_note, flow_submit] }
   db-engineer:       { model: medium, scopes: [database], tools: [read, write, edit, bash, "@serena_read", "@serena_edit", flow_claim, flow_note, flow_submit], env: { PI_SERENA_STRICT: "1" } }
   backend-engineer:  { model: medium, scopes: [backend],  tools: [read, write, edit, bash, "@serena_read", "@serena_edit", flow_claim, flow_note, flow_submit], env: { PI_SERENA_STRICT: "1" } }
@@ -78,5 +78,5 @@ roles:
   ui-designer:       { model: medium, scopes: [ui],       tools: [read, write, edit, flow_claim, flow_note, flow_submit] }
   infra-engineer:    { model: medium, scopes: [infra],    tools: [read, write, edit, bash, flow_claim, flow_note, flow_submit] }
   test-engineer:     { model: medium, scopes: [acceptance], tools: [read, write, edit, bash, "@serena_read", "@codegraph", flow_claim, flow_note, flow_submit] }
-  reviewer:          { model: strong, scopes: [], tools: [read, bash_readonly, "@serena_read", "@codegraph", flow_approve], writes: [] }
-  scout:             { model: cheap,  scopes: [], tools: [read, bash_readonly, "@serena_read", "@codegraph", flow_note, flow_submit], writes: [] }
+  reviewer:          { model: strong, scopes: [], tools: [codemode, read, bash_readonly, "@serena_read", "@codegraph", flow_approve], writes: [] }
+  scout:             { model: cheap,  scopes: [], tools: [codemode, read, bash_readonly, "@serena_read", "@codegraph", flow_note, flow_submit], writes: [] }
