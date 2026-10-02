@@ -341,6 +341,14 @@
     - `dagReport`（`flow_propose_tasks` 返回的报告）：新增 `serialHeads`，按阶段分组、只看本阶段内的硬依赖分层，开头连续 2 层（`SERIAL_HEAD_LAYERS`）宽度为 1 时提醒合并底座或改软依赖；任务少于 4 个的阶段不检查。关键路径占比的提醒阈值 0.6 → 0.5（`CRITICAL_PATH_RATIO`）。只是提醒，不拒绝提案。
     - 验收：`test/unit/dag.test.ts`。真实效果待额度恢复后用相同描述从零复跑中型项目，对比总耗时与并行度。
 
+92. **先验证再审查（第三轮后续 1）**：
+    - 状态顺序不变（review → verifying），在 review 状态内加一步程序验证：`reviewStep` 派审查前先 `runPrecheck`（`verify-runner.ts`），跑任务的 verify（要求先失败的测试只跑测试类命令，并要求失败），evidence 存为 `precheck-a<尝试次数>-<命令>.log`。
+    - 失败：新增触发 `precheck_fail`（review → in_progress，failure，只允许 actor=verify-runner、无审查 run、有失败结果、已存 evidence），与 verify_fail 一样计一次失败、带上原因重新派发。返工统计计入"验证失败"，状态视图显示"审查前验证失败"。
+    - 通过：记一条 note 事件 `data.precheck = { head, attempts, results }`（head 为 worktree 的 HEAD，有未提交改动时加 `+dirty` 且不复用）。审查通过进入 verifying 后，`runVerify` 发现同一 attempts、同一 HEAD 的验证结果就直接 verify_pass（或 repro_confirmed），不重跑。审查者没有写权限，审查期间代码不会变；审查被打回、重新提交后 attempts 变化，重新验证。
+    - 没有 verify 命令的任务、低风险免审查（review_skip）的任务不做审查前验证。`review.verify_first: false` 关闭（默认开启）。
+    - 审查提示与 `agents/reviewer.md` 改为"默认配置下派审查前已验证通过，输出见 precheck-*.log"（缓存提醒见下）。
+    - 验收：`test/e2e/single-task.test.ts`（审查前验证失败不派审查、带原因重派；通过后审查后的 verify 沿用、evidence 只有 precheck；关闭后照旧）；`test/e2e/modes.test.ts`（"必然通过"的先行验收测试在审查前被退回）。
+
 ## 第三轮优化设计要点
 
 - **A 模型暂停**（第 88 条）。验收见该条。
@@ -458,6 +466,7 @@
 
 ## 缓存提醒
 
+- 2026-10-02（第三轮后续 1）：`agents/reviewer.md` 改为"派审查前已验证"；reviewer 子进程提示缓存失效一次。
 - 2026-10-02（第三轮 D）：`skills/decompose-dag` 增加"尽早并行"；architect 在 S1/F1 与计划修订时的子进程提示缓存失效一次。
 - 2026-10-02（第三轮 B、C）：`agents/reviewer.md` 增加多轮审查的说明、tier 改为 medium；reviewer 子进程的提示缓存失效一次。审查默认改用中等模型后，缓存按新模型重新建立。
 

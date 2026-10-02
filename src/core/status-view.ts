@@ -80,7 +80,7 @@ export function phasesOf(config: FlowConfig, flow: FlowFile): Phase[] {
 }
 
 const FAILURE_KIND: Record<string, string> = {
-  review_reject: '审查打回', verify_fail: '验证失败', merge_verify_fail: '合并后验证失败', run_failed: '运行中断', lease_expired: '租约过期',
+  review_reject: '审查打回', verify_fail: '验证失败', precheck_fail: '审查前验证失败', merge_verify_fail: '合并后验证失败', run_failed: '运行中断', lease_expired: '租约过期',
 };
 
 /** 任务最近一次失败的类型（来自事件日志） */

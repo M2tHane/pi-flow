@@ -6,7 +6,7 @@ import path from 'node:path';
 import { Engine, DispatchError } from '../../src/core/dispatcher.ts';
 import type { RoleSettingsFile } from '../../src/core/schemas.ts';
 import { FakeLauncher, type FakeAgent, type Script } from '../fixtures/fake-subagent/launcher.ts';
-import { setupProject, type Project } from '../helpers/project.ts';
+import { setupProject, PROJECT_YAML, type Project } from '../helpers/project.ts';
 import { mkTask } from '../helpers/tasks.ts';
 
 const AGENTS = path.join(import.meta.dirname, '../../agents');
@@ -66,7 +66,9 @@ test('一个任务从 ready 走到 queued_merge 并自动合入；run 记录写�
       assert.equal(r.token_hash.length, 64);
     }
     const ev = readdirSync(path.join(p.dir, '.flow/flows', p.flowId, 'evidence/T-001'));
-    assert.deepEqual(ev.sort(), ['merge-a0-test.log', 'merge-a0-typecheck.log', 'verify-a0-test.log', 'verify-a0-typecheck.log']);
+    // 审查前已验证同一份代码，审查后的 verify 沿用结果，不再重跑（第三轮 1）
+    assert.deepEqual(ev.sort(), ['merge-a0-test.log', 'merge-a0-typecheck.log', 'precheck-a0-test.log', 'precheck-a0-typecheck.log']);
+    assert.ok(p.store.readEvents().some((e) => e.trigger === 'verify_pass' && e.evidence === 'precheck-a0'));
     assert.match(p.store.readHandoff(p.flowId, 'T-001'), /提交说明：实现 a[\s\S]*审查通过/);
     // 主工作区没有被实施角色改动
     assert.ok(!existsSync(path.join(p.dir, 'src/server/t-001/a.ts')));
@@ -126,12 +128,13 @@ test('diff 越界被拒；还原后再提交通过', async () => {
   } finally { p.cleanup(); }
 });
 
-test('verify 失败回到 in_progress，程序自动重新派发，带上失败原因', async () => {
+test('审查前验证失败：不派审查，回到 in_progress 重新派发并带上失败原因', async () => {
   const p = await setupProject({ tasks: [task1()] });
   try {
     const prompts: string[] = [];
+    let reviews = 0;
     const { engine } = makeEngine(p, async (role, nth, a) => {
-      if (role === 'reviewer') return approve(a);
+      if (role === 'reviewer') { reviews++; return approve(a); }
       prompts.push(a.spec.prompt);
       await implGood(a, nth === 1 ? 'FAIL' : 'ok');
     });
@@ -141,9 +144,23 @@ test('verify 失败回到 in_progress，程序自动重新派发，带上失败�
     assert.equal(t.status, 'done');
     assert.equal(t.attempts, 1);
     assert.equal(prompts.length, 2);
-    assert.match(prompts[1]!, /上次未通过的原因[\s\S]*test 退出码 1/);
-    const transitions = p.store.readEvents().filter((e) => e.type === 'transition' && e.task === 'T-001').map((e) => `${e.from}->${e.to}`);
-    assert.ok(transitions.includes('verifying->in_progress'));
+    assert.match(prompts[1]!, /上次未通过的原因[\s\S]*审查前验证失败：test 退出码 1/);
+    assert.equal(reviews, 1, '失败的那次提交没有派审查');
+    const transitions = p.store.readEvents().filter((e) => e.type === 'transition' && e.task === 'T-001').map((e) => `${e.trigger}:${e.from}->${e.to}`);
+    assert.ok(transitions.includes('precheck_fail:review->in_progress'));
+  } finally { p.cleanup(); }
+});
+
+test('review.verify_first: false 时照旧：审查通过后才跑 verify，失败回到 in_progress', async () => {
+  const p = await setupProject({ yaml: PROJECT_YAML.replace('verify_first: true ', 'verify_first: false'), tasks: [task1()] });
+  try {
+    const { engine } = makeEngine(p, async (role, nth, a) => (role === 'reviewer' ? approve(a) : implGood(a, nth === 1 ? 'FAIL' : 'ok')));
+    await engine.next(p.flowId);
+    await engine.idle();
+    assert.equal(p.store.readTask(p.flowId, 'T-001').status, 'done');
+    const transitions = p.store.readEvents().filter((e) => e.type === 'transition' && e.task === 'T-001').map((e) => `${e.trigger}:${e.from}->${e.to}`);
+    assert.ok(transitions.includes('verify_fail:verifying->in_progress'));
+    assert.ok(!transitions.some((x) => x.startsWith('precheck_fail')));
   } finally { p.cleanup(); }
 });
 

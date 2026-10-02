@@ -8,7 +8,7 @@ import { isProtected, matchesAny } from './paths.ts';
 export type Trigger =
   | 'schedule' | 'dispatch' | 'submit' | 'review_pass' | 'review_reject'
   | 'verify_pass' | 'verify_fail' | 'merge_start' | 'merge_done' | 'merge_verify_fail'
-  | 'merge_blocked' | 'merge_requeue' | 'block' | 'unblock' | 'lease_expired' | 'run_failed' | 'run_interrupted' | 'run_paused' | 'report' | 'repro_confirmed' | 'cancel' | 'review_skip';
+  | 'merge_blocked' | 'merge_requeue' | 'block' | 'unblock' | 'lease_expired' | 'run_failed' | 'run_interrupted' | 'run_paused' | 'precheck_fail' | 'report' | 'repro_confirmed' | 'cancel' | 'review_skip';
 
 /** 同一任务连续会话中断达到此次数转 blocked，防止无限重来 */
 export const MAX_INTERRUPTIONS = 5;
@@ -154,6 +154,16 @@ export const TRANSITIONS: readonly Rule[] = [
       }
       return [...errs, ...need(f.evidence_saved, 'evidence 未保存')];
     },
+  },
+  {
+    // 偏离（第三轮 1）：派审查前程序先跑 verify，失败直接退回实施，不花审查的钱
+    from: ['review'], to: 'in_progress', trigger: 'precheck_fail', failure: true,
+    check: (t, f) => [
+      ...need(f.actor === 'verify-runner', '只有程序可以执行审查前验证'),
+      ...need(!t.lease, '审查已在进行'),
+      ...need((f.verify_results ?? []).some((r) => r.exit_code !== 0), 'verify 结果中没有失败的命令'),
+      ...need(f.evidence_saved, 'evidence 未保存'),
+    ],
   },
   {
     from: ['verifying'], to: 'in_progress', trigger: 'verify_fail', failure: true,

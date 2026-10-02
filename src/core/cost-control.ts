@@ -27,6 +27,8 @@ export interface ReviewPolicy {
   highRisk: { enabled: boolean; model: string | undefined; maxLines: number; paths: string[] };
   /** 审查轮次上限（可选）：到达时提示审查者只剩建议类问题就通过 */
   maxRounds: number | undefined;
+  /** 派审查前先跑 verify */
+  verifyFirst: boolean;
 }
 
 export const DEFAULT_HIGH_RISK_MAX_LINES = 400;
@@ -40,6 +42,7 @@ export function reviewPolicy(config: FlowConfig): ReviewPolicy {
     maxParallel: r.max_parallel ?? config.limits.max_parallel,
     highRisk: { enabled: h.enabled ?? true, model: h.model, maxLines: h.max_lines ?? DEFAULT_HIGH_RISK_MAX_LINES, paths: h.paths ?? [] },
     maxRounds: r.max_rounds,
+    verifyFirst: r.verify_first ?? true,
     lowRisk: {
       enabled: l.enabled ?? true, mode: l.mode ?? 'cheap', model: l.model ?? 'cheap',
       maxFiles: l.max_files ?? 3, maxLines: l.max_lines ?? 100,

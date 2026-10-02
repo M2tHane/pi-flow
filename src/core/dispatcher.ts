@@ -18,7 +18,7 @@ import { assessRisk, budgetState, diffNumstat, escalationModel, escalationPolicy
 import { carriedTestOf, computeReady, isLeadingTest } from './dag.ts';
 import { selectDispatchable } from './scheduler.ts';
 import { createTaskWorktree, ensureLocalExcludes, scratchDir, worktreesRoot } from './worktree.ts';
-import { runVerify } from './verify-runner.ts';
+import { precheckOf, runPrecheck, runVerify } from './verify-runner.ts';
 import { git } from './git.ts';
 import { RUN_ENV_KEYS } from '../tools/subagent-tools.ts';
 import { MergeQueue, type MergeHooks, type MergeResult, type SyncResult } from './merge-queue.ts';
@@ -212,6 +212,15 @@ export class Engine {
       this.track(this.pump(flowId)); // 下一轮 pump 执行 verify（不能在本轮内等待，pump 是串行的）
       return;
     }
+    // 派审查前先跑 verify（第三轮 1）：失败直接退回实施；通过后再派审查
+    if (policy.verifyFirst && t.verify.length && !precheckOf(this.d.store, flowId, t)) {
+      if (this.verifying.has(t.id)) return;
+      this.verifying.add(t.id);
+      this.track(runPrecheck(this.d.store, this.d.config, flowId, t, this.d.verifyTimeoutMs, { expectFail: this.expectFail(flowId, t) })
+        .finally(() => this.verifying.delete(t.id))
+        .then(() => { this.notify(); return this.pump(flowId); }));
+      return;
+    }
     const reviewing = [...this.runs.values()].filter((r) => r.role === REVIEWER_ROLE).length;
     if (reviewing >= policy.maxParallel) return; // 审查并发已满：有审查结束时 pump 会再来
     if (this.pausedFor(flowId, t)) return; // 审查模型暂停中：恢复后 pump 会再来
@@ -251,6 +260,11 @@ export class Engine {
     } catch {
       return null;
     }
+  }
+
+  /** 测试必须先失败：fix 的复现测试，build/feature 的先行验收测试 */
+  private expectFail(flowId: string, t: TaskFile): boolean {
+    return t.kind === 'test' && (this.d.store.readFlow(flowId).mode === 'fix' || isLeadingTest(t, this.d.store.listTasks(flowId)));
   }
 
   private modelFor(role: string): { model: string; thinking: ThinkingLevel | null } {
@@ -394,9 +408,7 @@ export class Engine {
           if (!this.pausedFor(flowId, t)) await this.dispatch(flowId, t.id);
         } else if (t.status === 'verifying' && !this.verifying.has(t.id)) {
           this.verifying.add(t.id);
-          // 测试必须先失败：fix 的复现测试，build/feature 的先行验收测试
-          const expectFail = t.kind === 'test' && (this.d.store.readFlow(flowId).mode === 'fix' || isLeadingTest(t, this.d.store.listTasks(flowId)));
-          this.track(runVerify(this.d.store, this.d.config, flowId, t, this.d.verifyTimeoutMs, { expectFail })
+          this.track(runVerify(this.d.store, this.d.config, flowId, t, this.d.verifyTimeoutMs, { expectFail: this.expectFail(flowId, t) })
             .finally(() => this.verifying.delete(t.id))
             .then(() => { this.notify(); return this.pump(flowId); }));
         }

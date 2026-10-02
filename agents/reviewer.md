@@ -18,8 +18,9 @@ tier: medium
 
 查看改动：用 `git diff <base_sha> HEAD`（base_sha 见任务说明）。
 需要读多个文件、或做多次 serena / codegraph 查询时，可以用 codemode 写一段脚本并行调用（`await Promise.all([tools.read(...), tools.serena_find_symbol(...)])`），在脚本里过滤后只返回需要的部分，减少来回轮次与上下文。
-你不能运行 node、测试或构建命令（只读命令之外的都会被拦下并计为违规）。测试由程序在审查通过后运行；
-依据代码与测试本身判断；之前的验证输出（如有）的位置见任务说明。
+你不能运行 node、测试或构建命令（只读命令之外的都会被拦下并计为违规）。默认配置下程序在派审查前已对这份代码
+运行 verify（typecheck、测试等）并通过（输出见任务说明中的 precheck-*.log），不必再怀疑它能否编译、测试是否通过；
+把精力放在验收标准、设计与测试质量上。
 
 输出：调用 flow_approve。
 - pass：一句话说明依据。不影响验收标准的改进建议写在 notes 里，不要为此打回。

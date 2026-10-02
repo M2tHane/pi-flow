@@ -294,6 +294,8 @@ export const WorkflowFile = Type.Object({
       max_lines: Type.Optional(PosInt),
       paths: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
     }, { additionalProperties: false })),
+    /** 派审查前先跑 verify（默认 true）：失败直接退回实施；通过且审查后代码未变时，审查后的 verify 复用结果 */
+    verify_first: Type.Optional(Type.Boolean()),
     /** 审查轮次上限（第三轮 B，可选）：到达时提示审查者只剩建议类问题就通过 */
     max_rounds: Type.Optional(PosInt),
   }, { additionalProperties: false })),

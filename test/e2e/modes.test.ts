@@ -131,7 +131,7 @@ test('build 模式全流程：闸门逐个人工批准，agent 不能批准；�
     // 先行验收测试：第一次"必然通过"被打回，第二次确认失败后不单独合入，由实现任务一并带入
     const accept = tasks.find((t) => t.title === '待办验收测试')!;
     const acceptEv = p.store.readEvents().filter((e) => e.task === accept.id && e.type === 'transition');
-    const bounced = acceptEv.find((e) => e.trigger === 'verify_fail');
+    const bounced = acceptEv.find((e) => e.trigger === 'precheck_fail'); // 审查前验证就发现测试没有失败（第三轮 1）
     assert.match(bounced?.reason ?? '', /验收测试没有失败/);
     assert.ok(acceptEv.some((e) => e.trigger === 'repro_confirmed'));
     assert.ok(!acceptEv.some((e) => e.trigger === 'merge_done'), '验收测试不单独合入');

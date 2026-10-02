@@ -138,15 +138,15 @@ export function assemblePrompt(i: AssembleInput): AssembledPrompt {
   ];
   if (i.leadingTest) {
     parts.push(i.mode === 'review'
-      ? '## 先行验收测试\n这是先于实现写好的验收测试。审查通过后程序会运行 verify 并要求它失败；请重点检查断言是否真正覆盖验收标准，有没有用跳过、条件判断或捕获异常让测试在没有实现时通过。'
-      : '## 先行验收测试\n实现还不存在，本任务的测试此时应当失败。审查通过后程序会运行 verify 并**要求失败**，通过的测试会被打回。不要用跳过、条件判断或捕获异常让测试在没有实现时通过；自检时确认测试因"实现缺失"而失败，而不是因为测试本身写错。');
+      ? '## 先行验收测试\n这是先于实现写好的验收测试。程序会运行 verify 并要求它失败（默认在派审查前已确认）；请重点检查断言是否真正覆盖验收标准，有没有用跳过、条件判断或捕获异常让测试在没有实现时通过。'
+      : '## 先行验收测试\n实现还不存在，本任务的测试此时应当失败。提交后程序会运行 verify 并**要求失败**，通过的测试会被打回。不要用跳过、条件判断或捕获异常让测试在没有实现时通过；自检时确认测试因"实现缺失"而失败，而不是因为测试本身写错。');
   }
   if (i.carriedTest) {
     const ct = i.carriedTest;
     parts.push(`## 已在分支中的验收测试\n${ct.id}「${ct.title}」写的验收测试已在本任务的基线中（${ct.writes.join('、')}），实现前它们失败。${i.mode === 'review' ? '它们不在待审查的 diff 中，但会随本任务一并合入；请确认实现确实让这些测试通过。' : '本任务完成后它们必须通过；不得修改这些测试，它们会随本任务一并合入。'}`);
   }
   if (i.mode === 'review') {
-    parts.push(`## 待审查的改动\n基线提交 base_sha：${t.base_sha ?? '（未知）'}\n用 \`git diff ${t.base_sha ?? '<base_sha>'} HEAD\` 查看完整改动。${i.evidenceDir ? `之前的验证输出（如有）在 \`${i.evidenceDir}\`。` : ''}\n\n\`\`\`\n${(i.diffStat ?? '').trim() || '（无）'}\n\`\`\``);
+    parts.push(`## 待审查的改动\n基线提交 base_sha：${t.base_sha ?? '（未知）'}\n用 \`git diff ${t.base_sha ?? '<base_sha>'} HEAD\` 查看完整改动。${i.evidenceDir ? `verify 输出在 \`${i.evidenceDir}\`（precheck-*.log 是派审查前对这份代码的验证）。` : ''}\n\n\`\`\`\n${(i.diffStat ?? '').trim() || '（无）'}\n\`\`\``);
   }
   if (i.mode === 'impl' && i.scratchDir) {
     parts.push(`## 临时目录\n需要做临时实验（建临时文件、跑一次性脚本）时放在 \`${i.scratchDir}\`：可以 cd 进去，可以建、删、移动文件，本次运行结束后自动删除。不要在 worktree 里建临时文件：worktree 中只能写、删除、移动本任务 writes 内的文件，writes 之外的改动会让提交被拒。`);
