@@ -216,6 +216,10 @@
         {
           "type": "string",
           "const": "light"
+        },
+        {
+          "type": "string",
+          "const": "strong"
         }
       ]
     },

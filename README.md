@@ -169,7 +169,12 @@ B-001「做一个待办应用」
 
 ### 成本控制
 
-- **按风险审查**：只改文档或测试、改动不超过 3 个文件和 100 行、不涉及契约与 shared 的任务算低风险，用便宜模型审查（`workflow.yaml` 的 `review.low_risk.model`，取不到时用原来的审查模型）；设 `mode: skip` 则只做程序检查、不派审查。先行验收测试、解决合并冲突、之前失败过的任务一律完整审查。同时进行的审查数受 `review.max_parallel` 限制。
+- **按风险审查（三档）**：
+  - 低风险：只改文档或测试、改动不超过 3 个文件和 100 行、不涉及契约与 shared，用便宜模型审查（`review.low_risk.model`，取不到时用原来的审查模型）；设 `mode: skip` 则只做程序检查、不派审查。之前失败过的任务不算低风险。
+  - 普通：用 reviewer 自己的模型。模板中 reviewer 默认是**中等档**（以前是强档）。
+  - 高风险：解决合并冲突、先行验收测试、改动契约或 shared、改动 `review.high_risk.paths` 中的路径、改动超过 400 行（`review.high_risk.max_lines`），用强模型审查。强模型取 `/flow-config escalate reviewer <模型>` > `review.high_risk.model` > reviewer 档位的上一档。
+  - 用 `/flow-config` 为 reviewer 显式指定过模型的（例如设成强模型），普通审查就用那个模型；想省成本时把 reviewer 改成中等模型，再用 `/flow-config escalate reviewer <强模型>` 指定高风险审查用的模型。run 记录的 `review_mode` 是 light、full（普通）、strong。同时进行的审查数受 `review.max_parallel` 限制。
+- **多轮审查只核对上次的问题**：任务被审查打回后，下一轮审查的提示附上上次打回的问题清单和之后的改动（`git diff <上次审查的提交> HEAD`），要求审查者先逐条核对，只为"上次的问题没解决"或"新改动引入的明确缺陷"打回，新的改进建议写在通过时的备注里。可选的 `review.max_rounds` 设轮次上限：到达后只剩建议类问题就通过。
 - **失败后升级模型**：同一任务失败 2 次后（`escalation.after_failures`），下一次实施换成升级模型：`/flow-config escalate <角色> <模型>` 或菜单"设置失败后升级用的模型" > `roles.<角色>.escalate_model` > 上一档（cheap → medium → strong）。run 记录标明升级。
 - **模型额度用完、限流时暂停，不判失败**：子进程因模型额度用完（usage limit、insufficient_quota 等）或暂时不可用（限流、过载、5xx、本地服务没启动）而结束时，任务不计失败、不会被推向阻塞，而是暂停这个模型：用它的实施、审查、升级都先不派发，用其他模型的照常进行。"需要你处理"里会列出被暂停的模型、原因、受影响的角色与任务。恢复方式：错误信息里带恢复时间（如 Codex 的 "Try again in ~120 min"）时到点自动恢复；限流、过载从 5 分钟起自动重试，再失败时间隔加倍（最多 60 分钟）；额度用完又没给时间的等你 `/flow models resume <模型>`；也可以用 `/flow-config` 给受影响的角色换模型，换后立即继续。
 - **预算**：`workflow.yaml` 的 `budget`（tokens 计输入 + 输出、cost 计金额）或 `/flow budget` 为单个流程设置。用到 `warn_ratio`（默认 80%）时在"需要你处理"中提醒，超出后暂停派发新任务（返工与审查照常），提高预算后继续。`/flow status --cost` 显示用量。

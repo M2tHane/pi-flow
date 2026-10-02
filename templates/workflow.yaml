@@ -28,6 +28,11 @@ review:                         # 按风险审查（可选，以下为默认值�
     max_files: 3
     max_lines: 100
     paths: ["docs/**", "**/*.md", "tests/**", "**/*.test.*", "**/*.spec.*"]
+  high_risk:                    # 高风险任务用强模型审查：合并冲突、先行验收测试、契约与 shared、下列路径、改动超过 max_lines
+    model: strong               # 档位名或 provider/model；/flow-config escalate reviewer <模型> 优先
+    max_lines: 400
+    paths: []
+  # max_rounds: 3               # 审查轮次上限（可选）：到达时只剩建议类问题就通过，建议记入 handoff
 escalation:                     # 同一任务失败 after_failures 次后，下一次实施换成升级模型
   after_failures: 2             # 升级模型：/flow-config escalate > roles.<角色>.escalate_model > 上一档（cheap→medium→strong）
 # budget:                       # 每个流程的预算（可选；也可以用 /flow budget 为单个流程设置）
@@ -78,5 +83,5 @@ roles:
   ui-designer:       { model: medium, scopes: [ui],       tools: [read, write, edit, flow_claim, flow_note, flow_submit] }
   infra-engineer:    { model: medium, scopes: [infra],    tools: [read, write, edit, bash, flow_claim, flow_note, flow_submit] }
   test-engineer:     { model: medium, scopes: [acceptance], tools: [read, write, edit, bash, "@serena_read", "@codegraph", flow_claim, flow_note, flow_submit] }
-  reviewer:          { model: strong, scopes: [], tools: [codemode, read, bash_readonly, "@serena_read", "@codegraph", flow_approve], writes: [] }
+  reviewer:          { model: medium, scopes: [], tools: [codemode, read, bash_readonly, "@serena_read", "@codegraph", flow_approve], writes: [] }
   scout:             { model: cheap,  scopes: [], tools: [codemode, read, bash_readonly, "@serena_read", "@codegraph", flow_note, flow_submit], writes: [] }

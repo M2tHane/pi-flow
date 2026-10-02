@@ -19,15 +19,15 @@ const env = (p: Project, engine: ReturnType<typeof makeEngine>['engine']): Comma
   engine: () => ({ store: p.store, engine, config: p.config }), store: () => p.store,
   roleSettings: () => SETTINGS, availableModels: () => [], activateOrchestrator: () => {}, waitForIdle: true,
 });
-async function implement(a: FakeAgent, file: string) {
+async function implement(a: FakeAgent, file: string, content = 'x\n') {
   assert.ok((await a.call('flow_claim')).ok);
-  assert.ok((await a.call('write', { path: file, content: 'x\n' })).ok, file);
+  assert.ok((await a.call('write', { path: file, content })).ok, file);
   await a.call('flow_note', { text: '完成' });
   const r = await a.call('flow_submit', { summary: file });
   assert.ok(r.ok, r.text);
 }
 
-test('按风险审查：文档任务用便宜模型审查，代码任务用强模型；skip 模式下低风险免审查；审查并发受限', async () => {
+test('按风险审查：文档任务用便宜模型审查，普通代码任务用审查者的中等模型，大改动用强模型；skip 模式下低风险免审查；审查并发受限', async () => {
   const p = await setupProject({ yaml: MODELS(PROJECT_YAML).replace('  max_parallel: 2               # 同时进行的审查数', '  max_parallel: 1               # 同时进行的审查数'), tasks: [
     mkTask('T-001', { kind: 'doc', role: 'architect', scopes: ['docs'], writes: ['docs/guide/**'], verify: [] }),
     mkTask('T-002', { verify: [] }),
@@ -45,7 +45,7 @@ test('按风险审查：文档任务用便宜模型审查，代码任务用强�
         return;
       }
       const t = p.store.readTask(p.flowId, a.env.task);
-      return implement(a, t.id === 'T-001' ? 'docs/guide/intro.md' : `src/server/${t.id.toLowerCase()}/a.ts`);
+      return implement(a, t.id === 'T-001' ? 'docs/guide/intro.md' : `src/server/${t.id.toLowerCase()}/a.ts`, t.id === 'T-003' ? 'x\n'.repeat(450) : 'x\n');
     }, SETTINGS);
     await engine.next(p.flowId);
     await engine.idle();
@@ -57,8 +57,10 @@ test('按风险审查：文档任务用便宜模型审查，代码任务用强�
     const byTask = Object.fromEntries(reviews.map((r) => [r.task, r]));
     assert.equal(byTask['T-001']!.model, 'f/cheap');
     assert.equal(byTask['T-001']!.review_mode, 'light');
-    assert.equal(byTask['T-002']!.model, 'f/strong');
+    assert.equal(byTask['T-002']!.model, 'f/medium', '模板中 reviewer 默认是中等档');
     assert.equal(byTask['T-002']!.review_mode, 'full');
+    assert.equal(byTask['T-003']!.model, 'f/strong', '改动超过 400 行算高风险');
+    assert.equal(byTask['T-003']!.review_mode, 'strong');
     assert.equal(maxReviewing, 1, '审查并发不超过 review.max_parallel');
     assert.equal(launcher.launched.filter((s) => s.env['PI_FLOW_ROLE'] === 'reviewer' && s.env['PI_FLOW_TASK'] === 'T-001')[0]!.model, 'f/cheap');
   } finally { p.cleanup(); }
@@ -86,7 +88,7 @@ test('失败后升级模型：第 2 次失败后的派发使用升级模型并�
   const p = await setupProject({ yaml: MODELS(PROJECT_YAML), tasks: [mkTask('T-001', { verify: [] }),
     mkTask('T-002', { verify: [], writes: ['src/server/t-002/**'], deps: [{ task: 'T-001', type: 'hard', reason: '需要 T-001' }] })] });
   try {
-    const { engine, errors } = makeEngine(p, async (role, nth, a) => {
+    const { engine, errors, launcher } = makeEngine(p, async (role, nth, a) => {
       if (role === 'reviewer') {
         if (a.env.task === 'T-001' && nth <= 2) {
           assert.ok((await a.call('flow_approve', { decision: 'reject', issues: [{ location: 'a.ts:1', problem: '不对', expected: '改对' }] })).ok);
@@ -104,6 +106,13 @@ test('失败后升级模型：第 2 次失败后的派发使用升级模型并�
     assert.deepEqual(impl.map((r) => [r.model, !!r.escalated]), [['f/medium', false], ['f/medium', false], ['f/strong', true]]);
     assert.equal(p.store.readTask(p.flowId, 'T-001').status, 'done');
     assert.deepEqual(p.store.readKnowledge().entries, [], '默认不把审查打回提炼为知识候选');
+    // 第三轮 B：第二轮起审查提示附上上次打回的问题与之后的改动，要求只核对上次的问题
+    const reviews = launcher.launched.filter((s) => s.env['PI_FLOW_ROLE'] === 'reviewer' && s.env['PI_FLOW_TASK'] === 'T-001').map((s) => s.prompt);
+    assert.equal(reviews.length, 3);
+    assert.doesNotMatch(reviews[0]!, /轮审查/);
+    assert.match(reviews[1]!, /## 第 2 轮审查：先核对上次打回的问题[\s\S]*a\.ts:1：不对；期望：改对[\s\S]*git diff [0-9a-f]{40} HEAD[\s\S]*只为两类问题打回/);
+    assert.match(reviews[2]!, /## 第 3 轮审查/);
+    assert.doesNotMatch(reviews[2]!, /审查轮次上限/, '默认不设上限');
 
     // 超预算：不再派发新任务；提示用户；orchestrator 只能报告
     assert.deepEqual(await engine.next(p.flowId), []);

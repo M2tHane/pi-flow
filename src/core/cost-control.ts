@@ -1,4 +1,4 @@
-// 成本控制（第二轮 H、I）：按风险选择审查方式；失败后升级模型；流程预算。全部由程序按 workflow.yaml 判定。
+// 成本控制（第二轮 H、I；第三轮 C）：按风险选择审查方式与审查模型；失败后升级模型；流程预算。全部由程序按 workflow.yaml 判定。
 import type { FlowConfig } from './config.ts';
 import type { StateStore } from './state-store.ts';
 import type { FlowFile, RoleSettingsFile, TaskFile } from './schemas.ts';
@@ -23,14 +23,23 @@ export const DEFAULT_LOW_RISK_PATHS = ['docs/**', '**/*.md', 'tests/**', '**/*.t
 export interface ReviewPolicy {
   maxParallel: number;
   lowRisk: { enabled: boolean; mode: 'cheap' | 'skip'; model: string | undefined; maxFiles: number; maxLines: number; paths: string[]; exclude: string[] };
+  /** 高风险任务用强模型审查（第三轮 C）；model 未填时：/flow-config escalate reviewer > roles.reviewer.escalate_model > reviewer 档位的上一档 */
+  highRisk: { enabled: boolean; model: string | undefined; maxLines: number; paths: string[] };
+  /** 审查轮次上限（可选）：到达时提示审查者只剩建议类问题就通过 */
+  maxRounds: number | undefined;
 }
+
+export const DEFAULT_HIGH_RISK_MAX_LINES = 400;
 
 /** 默认值偏保守：只有文档、测试类文件，3 个文件、100 行以内才算低风险 */
 export function reviewPolicy(config: FlowConfig): ReviewPolicy {
   const r = config.raw.review ?? {};
   const l = r.low_risk ?? {};
+  const h = r.high_risk ?? {};
   return {
     maxParallel: r.max_parallel ?? config.limits.max_parallel,
+    highRisk: { enabled: h.enabled ?? true, model: h.model, maxLines: h.max_lines ?? DEFAULT_HIGH_RISK_MAX_LINES, paths: h.paths ?? [] },
+    maxRounds: r.max_rounds,
     lowRisk: {
       enabled: l.enabled ?? true, mode: l.mode ?? 'cheap', model: l.model ?? 'cheap',
       maxFiles: l.max_files ?? 3, maxLines: l.max_lines ?? 100,
@@ -50,11 +59,17 @@ export function diffNumstat(t: TaskFile): FileChange[] {
   });
 }
 
-export interface RiskAssessment { low: boolean; reasons: string[] }
+export interface RiskAssessment {
+  /** 满足全部低风险条件；reasons 是不算低风险的原因 */
+  low: boolean; reasons: string[];
+  /** 高风险（用强模型审查）；highReasons 是判为高风险的原因 */
+  high: boolean; highReasons: string[];
+}
 
-/** 风险判定：满足全部低风险条件才算低风险；返回高风险的原因 */
+/** 风险分三档：低风险（便宜模型或免审查）、普通（审查者自己的模型）、高风险（强模型） */
 export function assessRisk(config: FlowConfig, t: TaskFile, tasks: readonly TaskFile[], changes: readonly FileChange[]): RiskAssessment {
-  const p = reviewPolicy(config).lowRisk;
+  const policy = reviewPolicy(config);
+  const p = policy.lowRisk;
   const reasons: string[] = [];
   if (!p.enabled) reasons.push('未启用低风险审查');
   if (t.kind === 'merge-fix') reasons.push('解决合并冲突');
@@ -69,7 +84,27 @@ export function assessRisk(config: FlowConfig, t: TaskFile, tasks: readonly Task
   if (risky.length) reasons.push(`涉及契约、shared 或排除路径：${risky.map((c) => c.path).join('、')}`);
   const outside = changes.filter((c) => !matchesAny(c.path, p.paths));
   if (outside.length) reasons.push(`改动不只是文档或测试：${outside.slice(0, 3).map((c) => c.path).join('、')}${outside.length > 3 ? ' 等' : ''}`);
-  return { low: reasons.length === 0, reasons };
+  // 高风险：合并冲突、先行验收测试、契约与 shared（及配置的路径）、大改动
+  const h = policy.highRisk;
+  const highReasons: string[] = [];
+  if (h.enabled) {
+    if (t.kind === 'merge-fix') highReasons.push('解决合并冲突');
+    if (isLeadingTest(t, tasks)) highReasons.push('先行验收测试');
+    const core = changes.filter((c) => matchesAny(c.path, [CONTRACTS_PATH, ...shared, ...h.paths]));
+    if (core.length) highReasons.push(`涉及契约、shared 或高风险路径：${core.slice(0, 3).map((c) => c.path).join('、')}${core.length > 3 ? ' 等' : ''}`);
+    if (lines > h.maxLines) highReasons.push(`改动 ${lines} 行，超过 ${h.maxLines}`);
+  }
+  return { low: reasons.length === 0, reasons, high: highReasons.length > 0, highReasons };
+}
+
+/**
+ * 高风险审查用的模型：/flow-config escalate reviewer > review.high_risk.model > roles.reviewer.escalate_model > reviewer 档位的上一档。
+ * 取不到时返回 null（用审查者原来的模型）。
+ */
+export function strongReviewModel(config: FlowConfig, settings: RoleSettingsFile, role: string, current: string): string | null {
+  const m = settings.roles[role]?.escalate_model ?? resolveModelRef(config, reviewPolicy(config).highRisk.model);
+  if (m) return m;
+  return escalationModel(config, settings, role, current) ?? null;
 }
 
 // —— I：失败后升级模型 ——

@@ -71,6 +71,26 @@ test('审查提示包含 base_sha 与验收标准', () => {
   assert.match(p.user, /src\/a\.ts \| 3/);
 });
 
+test('第二轮起的审查：附上次打回的问题与之后的改动，只核对上次的问题；到轮次上限时允许只剩建议就通过', () => {
+  const agent = { name: 'reviewer', tier: 'medium', thinking: null, description: '', prompt: 'R' };
+  const task = mkTask('T-001', { base_sha: 'abc123', last_failure: '1. a.ts:3：缺少校验；期望：加校验' });
+  const base = { agent, rules: [], task, flowId: 'B-001', handoff: '', commands: config.commands };
+  const first = assemblePrompt({ ...base, mode: 'review' });
+  assert.match(first.user, /上次未通过的原因/);
+  assert.doesNotMatch(first.user, /轮审查/);
+  const pr = { round: 2, issues: task.last_failure!, head: 'def456', sinceDiff: ' src/a.ts | 2 +-' };
+  const second = assemblePrompt({ ...base, mode: 'review', previousReview: pr });
+  assert.match(second.user, /## 第 2 轮审查：先核对上次打回的问题\n\n上次审查打回的问题：\n1\. a\.ts:3：缺少校验/);
+  assert.match(second.user, /git diff def456 HEAD[\s\S]*src\/a\.ts \| 2/);
+  assert.match(second.user, /逐条核对[\s\S]*只为两类问题打回[\s\S]*不要提出新的改进建议[\s\S]*flow_block/);
+  assert.doesNotMatch(second.user, /上次未通过的原因/, '不重复列出');
+  assert.doesNotMatch(second.user, /轮次上限/);
+  assert.match(assemblePrompt({ ...base, mode: 'review', previousReview: { ...pr, round: 3, maxRounds: 3 } }).user, /已到审查轮次上限（3 轮）/);
+  const impl = assemblePrompt({ ...base, agent: { ...agent, name: 'backend-engineer' }, mode: 'impl', previousReview: pr });
+  assert.doesNotMatch(impl.user, /轮审查/, '实施提示不受影响');
+  assert.match(impl.user, /上次未通过的原因/);
+});
+
 test('重新派发时提示工作区已有的改动，位于任务说明之后、handoff 之前', () => {
   const agent = { name: 'backend-engineer', tier: 'medium', thinking: null, description: '', prompt: 'R' };
   const p = assemblePrompt({ agent, rules: [], task: mkTask('T-001', { base_sha: 'abc123' }), flowId: 'B-001', handoff: 'HANDOFF', mode: 'impl',

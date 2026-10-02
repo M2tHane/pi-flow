@@ -10,6 +10,7 @@ import { checkRevision } from '../core/revision.ts';
 import { KnowledgeError, learn, proposeCandidate, KNOWLEDGE_CONTENT_MAX, KNOWLEDGE_PER_RUN } from '../core/knowledge.ts';
 import { validateDag, dagReport, formatDagReport, normalizeLeadingTests } from '../core/dag.ts';
 import { changedFiles, snapshot } from '../core/worktree.ts';
+import { git } from '../core/git.ts';
 
 export const NOTE_LIMIT = 4000;
 
@@ -202,6 +203,10 @@ export async function flowRevisePlan(ctx: ToolContext, p: Static<typeof RevisePa
   return { text: `修订已保存（用户批准后生效，批准前可重新提交覆盖）：\n${c.summary}${c.notes.length ? `\n程序调整：\n${c.notes.map((n) => `- ${n}`).join('\n')}` : ''}\n接下来 flow_note 写明理由，然后 flow_submit。` };
 }
 
+function headOf(worktree: string): string | null {
+  try { return git(worktree, ['rev-parse', 'HEAD']).trim(); } catch { return null; }
+}
+
 export async function flowApprove(ctx: ToolContext, p: Static<typeof ApproveParams>): Promise<ToolResult> {
   const t = checkRun(ctx);
   if (t.status !== 'review') throw new FlowToolError(`任务当前是 ${t.status}，不在审查阶段。`);
@@ -213,7 +218,10 @@ export async function flowApprove(ctx: ToolContext, p: Static<typeof ApprovePara
     }
     const reason = issues.map((i, n) => `${n + 1}. ${i.location}：${i.problem}；期望：${i.expected}`).join('\n');
     try {
-      await ctx.store.transitionTask(ctx.env.flow, t.id, { to: 'in_progress', trigger: 'review_reject', actor: actor(ctx), facts: { token: ctx.env.token, reason } });
+      // 记下被审查的提交：下一轮审查据此只看之后的改动（第三轮 B）
+      const head = t.worktree ? headOf(t.worktree) : null;
+      await ctx.store.transitionTask(ctx.env.flow, t.id, { to: 'in_progress', trigger: 'review_reject', actor: actor(ctx), facts: { token: ctx.env.token, reason },
+        ...(head ? { data: { reviewed_head: head } } : {}) });
     } catch (e) { rethrow(e, '检查 issues 是否完整后重试。'); }
     await ctx.store.appendHandoff(ctx.env.flow, t.id, `审查打回：\n${reason}`, actor(ctx));
     // 程序提炼为知识候选，用户确认后才生效

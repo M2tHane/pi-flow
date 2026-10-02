@@ -5,16 +5,16 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { FlowConfig } from './config.ts';
 import type { StateStore } from './state-store.ts';
-import type { RoleSettingsFile, TaskFile, ThinkingLevel } from './schemas.ts';
+import type { RoleSettingsFile, RunFile, TaskFile, ThinkingLevel } from './schemas.ts';
 import type { RunOutcome, SubagentHandle, SubagentLauncher, SubagentSpec } from './launcher.ts';
 import { hashToken, isSettled } from './state-machine.ts';
 import { resolveRoleModel } from './role-settings.ts';
 import { loadAgent } from './agents.ts';
-import { assemblePrompt, ruleFilesFor } from './prompt-assembler.ts';
+import { assemblePrompt, ruleFilesFor, type PreviousReview } from './prompt-assembler.ts';
 import { formatEntry, selectKnowledge } from './knowledge.ts';
 import { findSessionFile, sessionDirOf } from './session-log.ts';
 import { heldByRevision } from './revision.ts';
-import { assessRisk, budgetState, diffNumstat, escalationModel, escalationPolicy, resolveModelRef, reviewPolicy } from './cost-control.ts';
+import { assessRisk, budgetState, diffNumstat, escalationModel, escalationPolicy, resolveModelRef, reviewPolicy, strongReviewModel } from './cost-control.ts';
 import { carriedTestOf, computeReady, isLeadingTest } from './dag.ts';
 import { selectDispatchable } from './scheduler.ts';
 import { createTaskWorktree, ensureLocalExcludes, scratchDir, worktreesRoot } from './worktree.ts';
@@ -69,7 +69,27 @@ export interface Dispatched { run_id: string; task: string; role: string; model:
 interface ActiveRun { flow: string; task: string; role: string; handle: SubagentHandle }
 
 /** 一次派发会用的角色与模型（审查分级、失败升级之后） */
-interface ModelPlan { role: string; model: string; thinking: ThinkingLevel | null; reviewMode?: 'full' | 'light'; escalated: boolean }
+type ReviewMode = NonNullable<RunFile['review_mode']>;
+interface ModelPlan { role: string; model: string; thinking: ThinkingLevel | null; reviewMode?: ReviewMode; escalated: boolean }
+
+/**
+ * 上一次审查打回的问题（第三轮 B）：最近一次审查结论是打回时返回，供下一轮审查先逐条核对。
+ * round 是本轮的轮次（连续打回次数 + 1）；sinceDiff 是上次被审查的提交到 HEAD 的 diff --stat。
+ */
+export function previousReviewOf(store: StateStore, flowId: string, task: TaskFile, maxRounds?: number): PreviousReview | null {
+  const evs = store.readEvents().filter((e) => e.flow === flowId && e.task === task.id && e.type === 'transition'
+    && (e.trigger === 'review_reject' || e.trigger === 'review_pass' || e.trigger === 'review_skip'));
+  const last = evs.at(-1);
+  if (last?.trigger !== 'review_reject') return null;
+  let rejects = 0;
+  for (let i = evs.length - 1; i >= 0 && evs[i]!.trigger === 'review_reject'; i--) rejects++;
+  const head = typeof last.data?.['reviewed_head'] === 'string' ? last.data['reviewed_head'] : null;
+  let sinceDiff: string | undefined;
+  if (head && task.worktree) {
+    try { sinceDiff = git(task.worktree, ['diff', '--stat', head, 'HEAD']).trim() || '（上次审查之后没有新的改动）'; } catch { /* 提交已不存在（worktree 重建） */ }
+  }
+  return { round: rejects + 1, issues: last.reason ?? '', ...(head ? { head } : {}), ...(sinceDiff ? { sinceDiff } : {}), ...(maxRounds ? { maxRounds } : {}) };
+}
 
 export class Engine {
   private readonly d: EngineDeps;
@@ -203,13 +223,14 @@ export class Engine {
     const role = task.status === 'review' ? REVIEWER_ROLE : task.role;
     const base = this.modelFor(role);
     let model = base.model;
-    // 按风险审查（H）：低风险任务用便宜模型审查（取不到便宜模型时用原来的审查模型）
-    let reviewMode: 'full' | 'light' | undefined;
+    // 按风险审查（H、第三轮 C）：低风险用便宜模型，高风险用强模型，其余用审查者自己的模型（取不到时都退回审查者的模型）
+    let reviewMode: ReviewMode | undefined;
     if (role === REVIEWER_ROLE) {
-      const low = assessRisk(this.d.config, task, this.d.store.listTasks(flowId), diffNumstat(task)).low;
+      const risk = assessRisk(this.d.config, task, this.d.store.listTasks(flowId), diffNumstat(task));
       const policy = reviewPolicy(this.d.config).lowRisk;
-      reviewMode = low && policy.mode === 'cheap' ? 'light' : 'full';
+      reviewMode = risk.low && policy.mode === 'cheap' ? 'light' : risk.high ? 'strong' : 'full';
       if (reviewMode === 'light') model = resolveModelRef(this.d.config, policy.model) ?? model;
+      if (reviewMode === 'strong') model = strongReviewModel(this.d.config, this.d.roleSettings(), role, model) ?? model;
     }
     // 失败后升级模型（I）：同一任务失败达到次数后，实施换成升级模型
     let escalated = false;
@@ -246,6 +267,7 @@ export class Engine {
     const mode = role === REVIEWER_ROLE ? 'review' : 'impl';
     const diffStat = mode === 'review' && task.worktree && task.base_sha
       ? git(task.worktree, ['diff', '--stat', task.base_sha, 'HEAD']) : undefined;
+    const previousReview = mode === 'review' ? previousReviewOf(store, flowId, task, reviewPolicy(config).maxRounds) : null;
     // 重新派发时告诉实施者 worktree 里已有的改动（含未提交的），避免重做或覆盖
     let existingWork: string | undefined;
     if (mode === 'impl' && task.worktree && task.base_sha) {
@@ -275,6 +297,7 @@ export class Engine {
         return u ? [{ id: u.id, title: u.title, type: d.type, status: u.status === 'done' ? '已完成' : `未完成：${u.status}`, handoff: store.readHandoff(flowId, u.id) }] : [];
       }),
       ...(diffStat !== undefined ? { diffStat } : {}),
+      ...(previousReview ? { previousReview } : {}),
       ...(existingWork ? { existingWork } : {}),
     });
     const runDir = path.join(worktreesRoot(root), '.runs', runId);

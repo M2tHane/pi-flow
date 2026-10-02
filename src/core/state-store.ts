@@ -151,6 +151,8 @@ export interface TransitionRequest {
   facts?: Partial<Facts>;
   patch?: TaskPatch;
   evidence?: string;
+  /** 附加到事件的数据（例如审查打回时被审查的提交） */
+  data?: Record<string, unknown>;
 }
 
 export interface CreateFlowInput {
@@ -535,6 +537,7 @@ export class StateStore {
         trigger: req.trigger,
         ...(facts.reason || plan.task.blocked_reason ? { reason: facts.reason ?? plan.task.blocked_reason! } : {}),
         ...(req.evidence ? { evidence: req.evidence } : {}),
+        ...(req.data ? { data: req.data } : {}),
       });
       return saved;
     });

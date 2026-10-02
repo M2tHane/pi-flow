@@ -141,7 +141,7 @@ limits:`));
   console.log(`\n工具调用（顶层，按角色）：`);
   for (const [role, c] of calls) console.log(`  ${role}：${c.runs} 次运行，${c.calls} 次工具调用，其中失败 ${c.errors} 次`);
   const runs = store.listRuns().filter((x) => x.flow === flowId);
-  console.log(`升级模型的运行 ${runs.filter((r) => r.escalated).length} 次；低风险审查 ${runs.filter((r) => r.review_mode === 'light').length} 次；被终止 ${runs.filter((r) => r.outcome === 'killed').length} 次`);
+  console.log(`升级模型的运行 ${runs.filter((r) => r.escalated).length} 次；低风险审查 ${runs.filter((r) => r.review_mode === 'light').length} 次；强模型审查 ${runs.filter((r) => r.review_mode === 'strong').length} 次；被终止 ${runs.filter((r) => r.outcome === 'killed').length} 次`);
   console.log(`完整性校验：${(await store.verifyIntegrity()).ok ? '通过' : '失败'}`);
 } finally {
   if (!args.has('--keep')) { rmSync(dir, { recursive: true, force: true }); rmSync(`${dir}.worktrees`, { recursive: true, force: true }); }

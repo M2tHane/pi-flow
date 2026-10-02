@@ -243,6 +243,7 @@ export function parseConfig(source: string): FlowConfig {
   };
   for (const [name, def] of Object.entries(wf.roles)) modelRef(def.escalate_model, ['roles', name, 'escalate_model']);
   modelRef(wf.review?.low_risk?.model, ['review', 'low_risk', 'model']);
+  modelRef(wf.review?.high_risk?.model, ['review', 'high_risk', 'model']);
 
   if (errors.length) throw new ConfigError(errors);
   return new FlowConfig(wf, roles, kinds, warnings);

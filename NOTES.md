@@ -321,9 +321,26 @@
     - 提示："需要你处理"、主动通知（出现与恢复）、`flow_status`、orchestrator 每轮的"下一步"（只剩等暂停模型的任务时让它向用户说明并等待，不调用 flow_dispatch）。`scripts/real-build.ts` 在有暂停且两轮没有进展时停下，提示恢复后用 `--dir` 接着跑。
     - 验收：`test/e2e/model-pause.test.ts`（额度用完：attempts 不变、不转阻塞、模型不再派发、其他模型的任务完成、提示与 orchestrator 下一步、`/flow models resume` 后完成；限流：5 分钟后自动恢复、再失败退避加倍、成功后清除记录）；`test/e2e/pi-subprocess.test.ts` 用真实 pi 与假模型的 429 insufficient_quota 验证错误能被识别；`test/unit/model-pause.test.ts`、`state-machine.test.ts`。假模型 `test/fixtures/fake-llm/server.ts` 的步骤支持 `error: { status, message, code }`。
 
+89. **第二轮起的审查只核对上次的问题（第三轮 B）**：
+    - 审查打回时在 `review_reject` 事件的 data 中记下被审查的提交 `reviewed_head`（`TransitionRequest` 新增 `data`，原样写入事件）。
+    - 派发审查时 `previousReviewOf` 查事件：该任务最近一次审查结论（review_reject、review_pass、review_skip）是打回时，取其原因（问题清单）、连续打回次数（本轮轮次 = 次数 + 1）、`git diff --stat <reviewed_head> HEAD`；审查提示以"第 N 轮审查：先核对上次打回的问题"一节代替"上次未通过的原因"，要求逐条写明是否已解决，只为没解决的问题或新改动引入的明确缺陷打回，新建议写进 pass 的 notes，验收标准有问题时 flow_block。审查通过后 verify 失败再回来的审查不算多轮（最近结论是 pass），按普通审查。
+    - 可选 `review.max_rounds`（无默认）：到达时提示中加一条"只剩建议类问题就通过，建议写进 notes"。只改提示，不由程序强制通过：程序判断不了问题是不是"建议类"。
+    - `agents/reviewer.md` 增加两行多轮审查说明（缓存提醒见下）。
+    - 验收：`test/unit/prompt-assembler.test.ts`（提示内容与位置、轮次上限、实施提示不受影响）；`test/e2e/cost-control.test.ts`（被打回两次的任务，第 2、3 轮审查提示含上次的问题、上次审查的提交与"只核对"的要求）。真实效果待额度恢复后复跑返工多的任务对比。
+
+90. **审查默认用中等模型，高风险用强模型（第三轮 C）**：
+    - 模板 `templates/workflow.yaml` 中 reviewer 的档位 strong → medium（`agents/reviewer.md` 的 tier 同步）。已有项目的 `workflow.yaml` 与用户 `/flow-config` 的设置不受影响。
+    - `assessRisk` 增加高风险判定（`high`、`highReasons`）：merge-fix、先行验收测试、改动契约或 shared、`review.high_risk.paths`、改动超过 `review.high_risk.max_lines`（默认 400 行）。`review.high_risk.enabled: false` 可关闭。审查分三档：light（低风险，便宜模型）、full（普通，审查者自己的模型；沿用旧值，不改名，旧 run 记录仍然有效）、strong（高风险）。
+    - 高风险审查的模型 `strongReviewModel`：`/flow-config escalate reviewer`（reviewer 不做失败升级，这个设置复用为"高风险审查用的模型"，菜单与说明已改）> `review.high_risk.model` > `roles.reviewer.escalate_model` > reviewer 档位的上一档；取不到时用审查者的模型。
+    - 偏离交接文档：没有做"阶段闸门前的最后审查用强模型"。阶段的最终检查是程序执行的闸门命令，不是某一次审查；用"本阶段最后一个任务"来判断太随意。
+    - 用户现有的 `~/.pi/agent/pi-flow.json` 把 reviewer 显式设为 gpt-6.1-sol，普通审查仍会用它；要省成本需要用 `/flow-config` 把 reviewer 改成中等模型，再 `/flow-config escalate reviewer openai-codex/gpt-6.1-sol` 指定高风险审查用的模型。
+    - 验收：`test/unit/cost-control.test.ts`（高风险各条件、可配置路径与行数、关闭、模型优先级、配置校验）；`test/e2e/cost-control.test.ts`（文档任务 light 用便宜模型、普通代码任务 full 用中等模型、450 行改动 strong 用强模型）。
+
 ## 第三轮优化设计要点
 
 - **A 模型暂停**（第 88 条）。验收见该条。
+- **B 多轮审查只核对上次的问题**（第 89 条）。
+- **C 审查模型分级**（第 90 条）。
 
 ## 第二轮优化设计要点
 
@@ -434,6 +451,8 @@
 - **glob 关系判断**（`paths.ts`）：`globWithin` 保守（不确定判"不在内"），`globsOverlap` 保守（不确定判"重叠"）。
 
 ## 缓存提醒
+
+- 2026-10-02（第三轮 B、C）：`agents/reviewer.md` 增加多轮审查的说明、tier 改为 medium；reviewer 子进程的提示缓存失效一次。审查默认改用中等模型后，缓存按新模型重新建立。
 
 - 2026-10-01（M8）：角色提示（scout、researcher、architect）变更，新增技能注入；升级后首次派发时提示缓存失效一次。
 - 2026-10-01：新增 `agents/interviewer.md`（只用于主会话）；`agents/architect.md` 与 `skills/design-contract` 增加规则草案说明，architect 子进程的提示缓存失效一次。

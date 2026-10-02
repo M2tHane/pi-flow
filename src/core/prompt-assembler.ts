@@ -28,6 +28,20 @@ export function ruleFilesFor(config: FlowConfig, projectRoot: string, scopes: re
   return { rules, missing };
 }
 
+/** 上一轮审查打回的问题（第三轮 B） */
+export interface PreviousReview {
+  /** 本轮是第几轮审查（≥ 2） */
+  round: number;
+  /** 上次打回的问题清单 */
+  issues: string;
+  /** 上次被审查的提交 */
+  head?: string;
+  /** 上次审查之后的改动（diff --stat） */
+  sinceDiff?: string;
+  /** 审查轮次上限（review.max_rounds） */
+  maxRounds?: number;
+}
+
 export interface AssembleInput {
   agent: AgentDef;
   rules: RuleFile[];
@@ -52,6 +66,8 @@ export interface AssembleInput {
   evidenceDir?: string;
   /** 本 run 的临时目录（实施类角色） */
   scratchDir?: string;
+  /** 审查模式：上一轮审查打回的问题；有时本轮只核对这些问题 */
+  previousReview?: PreviousReview;
   /** 本任务依赖的上游任务（硬依赖与软依赖）及其 handoff */
   upstream?: { id: string; title: string; type: 'hard' | 'soft'; status: string; handoff: string }[];
 }
@@ -81,6 +97,24 @@ export function upstreamSection(ups: NonNullable<AssembleInput['upstream']>): st
 export interface AssembledPrompt { system: string; user: string }
 
 const list = (xs: readonly string[], empty = '（无）') => (xs.length ? xs.map((x) => `- ${x}`).join('\n') : empty);
+
+/** 第二轮起的审查：先逐条核对上次的问题，只为没解决的问题或新改动引入的明确缺陷打回 */
+export function previousReviewSection(pr: PreviousReview): string {
+  const last = pr.maxRounds !== undefined && pr.round >= pr.maxRounds;
+  return [
+    `## 第 ${pr.round} 轮审查：先核对上次打回的问题`,
+    `上次审查打回的问题：\n${pr.issues.trim() || '（无记录）'}`,
+    ...(pr.head ? [`上次审查的提交：${pr.head}。之后的改动用 \`git diff ${pr.head} HEAD\` 查看：\n\n\`\`\`\n${(pr.sinceDiff ?? '（无法取得）').trim()}\n\`\`\``] : []),
+    [
+      '本轮要求：',
+      '1. 先逐条核对上面的问题是否已解决，在结论中逐条写明"已解决"或"未解决（原因）"。',
+      '2. 只为两类问题打回：上次的问题没有解决；本轮新改动引入的明确缺陷（不满足验收标准或明确的错误）。',
+      '3. 不要提出新的改进建议，也不要挑上次已审过、本轮没有改动的代码；这些写在 pass 的 notes 里。',
+      '4. 验收标准本身无法满足时，用 flow_block 交给用户，不要再提高要求。',
+      ...(last ? [`5. 已到审查轮次上限（${pr.maxRounds} 轮）：上次的问题已基本解决、只剩建议类问题时通过，把剩余建议写进 notes。`] : []),
+    ].join('\n'),
+  ].join('\n\n');
+}
 
 export function assemblePrompt(i: AssembleInput): AssembledPrompt {
   const system = [
@@ -126,7 +160,9 @@ export function assemblePrompt(i: AssembleInput): AssembledPrompt {
     const h = i.handoff.trim();
     parts.push(`## handoff 笔记${h.length > HANDOFF_TAIL ? '（仅保留最近部分）' : ''}\n${h.slice(-HANDOFF_TAIL)}`);
   }
-  if (t.last_failure) parts.push(`## 上次未通过的原因（请先处理）\n${t.last_failure}`);
+  const pr = i.mode === 'review' ? i.previousReview : undefined;
+  if (pr) parts.push(previousReviewSection(pr));
+  else if (t.last_failure) parts.push(`## 上次未通过的原因（请先处理）\n${t.last_failure}`);
   parts.push(i.mode === 'review'
     ? '开始：审查上述改动，最后调用 flow_approve 给出结论。'
     : '开始：先调用 flow_claim，然后按工作流程完成任务，最后 flow_note 写 handoff 并 flow_submit。');

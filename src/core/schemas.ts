@@ -187,8 +187,8 @@ export const RunFile = Type.Object({
   cost: Type.Optional(Nullable(Type.Number({ minimum: 0 }))),
   /** 失败后升级模型派发的 run */
   escalated: Type.Optional(Type.Boolean()),
-  /** 审查 run 的方式：full 完整审查，light 低风险便宜审查 */
-  review_mode: Type.Optional(Type.Union([Type.Literal('full'), Type.Literal('light')])),
+  /** 审查 run 的方式：light 低风险便宜审查，full 普通审查（审查者自己的模型），strong 高风险强模型审查 */
+  review_mode: Type.Optional(Type.Union([Type.Literal('full'), Type.Literal('light'), Type.Literal('strong')])),
   /** 子进程会话留档目录（<项目>.worktrees/.sessions/<run>/）与结束后找到的会话文件 */
   session_dir: Type.Optional(Type.String()),
   session_file: Type.Optional(Nullable(Type.String())),
@@ -286,6 +286,16 @@ export const WorkflowFile = Type.Object({
       /** 改动涉及这些路径一律高风险（契约与 shared scope 总是高风险） */
       exclude: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
     }, { additionalProperties: false })),
+    /** 高风险任务用强模型审查（第三轮 C）：合并冲突、先行验收测试、契约与 shared、paths 中的路径、改动超过 max_lines */
+    high_risk: Type.Optional(Type.Object({
+      enabled: Type.Optional(Type.Boolean()),
+      /** 档位名或 provider/model；不填时用 /flow-config escalate reviewer、roles.reviewer.escalate_model 或上一档 */
+      model: Type.Optional(Type.String({ minLength: 1 })),
+      max_lines: Type.Optional(PosInt),
+      paths: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
+    }, { additionalProperties: false })),
+    /** 审查轮次上限（第三轮 B，可选）：到达时提示审查者只剩建议类问题就通过 */
+    max_rounds: Type.Optional(PosInt),
   }, { additionalProperties: false })),
   /** 失败后升级模型（第二轮 I）：同一任务失败 after_failures 次后，下一次派发换成升级模型 */
   escalation: Type.Optional(Type.Object({

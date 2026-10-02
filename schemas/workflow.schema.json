@@ -367,6 +367,34 @@
             }
           },
           "additionalProperties": false
+        },
+        "high_risk": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "model": {
+              "type": "string",
+              "minLength": 1
+            },
+            "max_lines": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "paths": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "max_rounds": {
+          "type": "integer",
+          "minimum": 1
         }
       },
       "additionalProperties": false
