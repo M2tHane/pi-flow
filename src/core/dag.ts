@@ -279,11 +279,52 @@ export interface DagReport {
 }
 
 /** 第 11 节第 7 条：任务数、关键路径长度（只计硬依赖）、最大并行宽度、硬依赖占比；关键路径过长时提示 */
-export function dagReport(tasks: readonly StatTask[], warnings: string[] = []): DagReport {
+/** 关键路径占任务数的比例超过它时提醒（第三轮 D：0.6 → 0.5） */
+export const CRITICAL_PATH_RATIO = 0.5;
+/** 同一阶段开头连续这么多层都只有一个任务时提醒 */
+export const SERIAL_HEAD_LAYERS = 2;
+
+/**
+ * 每个阶段开头只能串行的任务链：按本阶段内的硬依赖分层，从第一层起连续宽度为 1 的层。
+ * 任务少于 4 个的阶段不检查（本来就没多少可并行的）。
+ */
+export function serialHeads(tasks: readonly (StatTask & { stage?: string })[]): { stage: string | undefined; chain: string[]; total: number }[] {
+  const out: { stage: string | undefined; chain: string[]; total: number }[] = [];
+  for (const stage of [...new Set(tasks.map((t) => t.stage))]) {
+    const group = tasks.filter((t) => t.stage === stage);
+    if (group.length < 4) continue;
+    const ids = new Set(group.map((t) => t.id));
+    const local = group.map((t) => ({ id: t.id, depends_on: t.depends_on.filter((d) => ids.has(d.task)) }));
+    const byId = new Map(local.map((t) => [t.id, t]));
+    const depth = new Map<string, number>();
+    const go = (id: string): number => {
+      const hit = depth.get(id);
+      if (hit !== undefined) return hit;
+      depth.set(id, 1); // 防环（调用前已校验无环）
+      const v = 1 + Math.max(0, ...(byId.get(id)?.depends_on ?? []).filter((d) => d.type === 'hard').map((d) => go(d.task)));
+      depth.set(id, v);
+      return v;
+    };
+    for (const t of local) go(t.id);
+    const chain: string[] = [];
+    for (let level = 1; ; level++) {
+      const at = local.filter((t) => depth.get(t.id) === level);
+      if (at.length !== 1) break;
+      chain.push(at[0]!.id);
+    }
+    if (chain.length >= SERIAL_HEAD_LAYERS) out.push({ stage, chain, total: group.length });
+  }
+  return out;
+}
+
+export function dagReport(tasks: readonly (StatTask & { stage?: string })[], warnings: string[] = []): DagReport {
   const s = dagStats(tasks);
   const w = [...warnings];
-  if (s.taskCount >= 4 && s.criticalPathLength / s.taskCount > 0.6) {
+  if (s.taskCount >= 4 && s.criticalPathLength / s.taskCount > CRITICAL_PATH_RATIO) {
     w.push(`关键路径 ${s.criticalPathLength} / 任务数 ${s.taskCount}：硬依赖可能用多了。能对着契约或 mock 先做的，改为软依赖并配 integration 任务。`);
+  }
+  for (const h of serialHeads(tasks)) {
+    w.push(`${h.stage ? `阶段 ${h.stage} ` : ''}开头 ${h.chain.length} 层只能串行（${h.chain.join(' → ')}），这段时间只有一个任务在跑：把底座任务合并成一个，或让后续切片对着契约开发（软依赖 + integration），尽早并行。`);
   }
   return {
     task_count: s.taskCount, critical_path: s.criticalPath, critical_path_length: s.criticalPathLength,

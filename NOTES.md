@@ -336,11 +336,17 @@
     - 用户现有的 `~/.pi/agent/pi-flow.json` 把 reviewer 显式设为 gpt-6.1-sol，普通审查仍会用它；要省成本需要用 `/flow-config` 把 reviewer 改成中等模型，再 `/flow-config escalate reviewer openai-codex/gpt-6.1-sol` 指定高风险审查用的模型。
     - 验收：`test/unit/cost-control.test.ts`（高风险各条件、可配置路径与行数、关闭、模型优先级、配置校验）；`test/e2e/cost-control.test.ts`（文档任务 light 用便宜模型、普通代码任务 full 用中等模型、450 行改动 strong 用强模型）。
 
+91. **拆任务时尽早并行（第三轮 D）**：
+    - `skills/decompose-dag/SKILL.md` 新增"尽早并行"一节：底座合并为一个 infra 任务（必要时加一个基础实现），不为底座拆"先行验收测试 → 实现"两层；切片之间默认软依赖 + integration；附记账服务的正反例。"先 test 后 impl"限定为功能切片。
+    - `dagReport`（`flow_propose_tasks` 返回的报告）：新增 `serialHeads`，按阶段分组、只看本阶段内的硬依赖分层，开头连续 2 层（`SERIAL_HEAD_LAYERS`）宽度为 1 时提醒合并底座或改软依赖；任务少于 4 个的阶段不检查。关键路径占比的提醒阈值 0.6 → 0.5（`CRITICAL_PATH_RATIO`）。只是提醒，不拒绝提案。
+    - 验收：`test/unit/dag.test.ts`。真实效果待额度恢复后用相同描述从零复跑中型项目，对比总耗时与并行度。
+
 ## 第三轮优化设计要点
 
 - **A 模型暂停**（第 88 条）。验收见该条。
 - **B 多轮审查只核对上次的问题**（第 89 条）。
 - **C 审查模型分级**（第 90 条）。
+- **D 拆任务时尽早并行**（第 91 条）。
 
 ## 第二轮优化设计要点
 
@@ -452,6 +458,7 @@
 
 ## 缓存提醒
 
+- 2026-10-02（第三轮 D）：`skills/decompose-dag` 增加"尽早并行"；architect 在 S1/F1 与计划修订时的子进程提示缓存失效一次。
 - 2026-10-02（第三轮 B、C）：`agents/reviewer.md` 增加多轮审查的说明、tier 改为 medium；reviewer 子进程的提示缓存失效一次。审查默认改用中等模型后，缓存按新模型重新建立。
 
 - 2026-10-01（M8）：角色提示（scout、researcher、architect）变更，新增技能注入；升级后首次派发时提示缓存失效一次。

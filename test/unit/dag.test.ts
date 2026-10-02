@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { validateDag, computeReady, dagStats, mutexPairs, conflictsWith, remainingPath, type DagCatalog,
-  isLeadingTest, carrierOf, carriedTestOf, normalizeLeadingTests } from '../../src/core/dag.ts';
+  isLeadingTest, carrierOf, carriedTestOf, normalizeLeadingTests, dagReport, serialHeads } from '../../src/core/dag.ts';
 import { mkTask, hard, soft } from '../helpers/tasks.ts';
 
 const catalog: DagCatalog = {
@@ -117,6 +117,34 @@ test('关键路径、宽度、硬依赖占比', () => {
   const rp = remainingPath(tasks);
   assert.equal(rp.get('T-001'), 3);
   assert.equal(rp.get('T-004'), 1);
+});
+
+test('DAG 报告：同一阶段开头连续两层只能串行时提醒；关键路径占比超过一半时提醒', () => {
+  // S3：T-001（底座验收测试）→ T-002（底座实现）→ T-003、T-004、T-005 三条切片
+  const serial = [
+    mkTask('T-001'), mkTask('T-002', { deps: [hard('T-001')] }),
+    mkTask('T-003', { deps: [hard('T-002')] }), mkTask('T-004', { deps: [hard('T-002')] }), mkTask('T-005', { deps: [hard('T-002')] }),
+  ];
+  assert.deepEqual(serialHeads(serial), [{ stage: 'S3', chain: ['T-001', 'T-002'], total: 5 }]);
+  assert.ok(dagReport(serial).warnings.some((w) => /阶段 S3 开头 2 层只能串行（T-001 → T-002）/.test(w)));
+  // 底座合并成一个任务、切片对着契约开发：开头就能并行
+  const wide = [
+    mkTask('T-001'), mkTask('T-002', { deps: [soft('T-001')] }), mkTask('T-003', { deps: [soft('T-001')] }),
+    mkTask('T-004', { deps: [hard('T-001'), hard('T-002'), hard('T-003')] }),
+  ];
+  assert.deepEqual(serialHeads(wide), []);
+  assert.deepEqual(dagReport(wide).warnings, []);
+  // 其他阶段的前驱不算本阶段的层；任务少于 4 个的阶段不检查
+  const staged = [
+    mkTask('T-001', { stage: 'S2' }),
+    ...['T-002', 'T-003', 'T-004', 'T-005'].map((id) => mkTask(id, { deps: [hard('T-001')] })),
+  ];
+  assert.deepEqual(serialHeads(staged), []);
+  // 关键路径 3 / 任务数 5 = 0.6 > 0.5
+  const longPath = [
+    mkTask('T-001'), mkTask('T-002'), mkTask('T-003', { deps: [hard('T-001')] }), mkTask('T-004', { deps: [hard('T-003')] }), mkTask('T-005'),
+  ];
+  assert.ok(dagReport(longPath).warnings.some((w) => /关键路径 3 \/ 任务数 5/.test(w)));
 });
 
 test('互斥由 writes 重叠自动推导', () => {

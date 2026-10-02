@@ -89,7 +89,7 @@ pi install -l /path/to/pi-flow     # 只装到当前项目（写入 .pi/settings
 | 阶段 | 内容 | 闸门 |
 |---|---|---|
 | S0 需求 | architect 依据访谈摘要写 `docs/PRD.md`。仍有疑问时任务转为阻塞并提一个问题，你用 `/flow answer` 回答 | **你批准**（或 `/flow reject "<意见>"` 打回修订） |
-| S1 架构 | architect 写 ARCHITECTURE、ADR、契约，提交任务 DAG（显示任务数、关键路径、并行宽度、硬依赖占比），并针对选定的技术栈写规则与命令草案 | **你批准** + typecheck。批准后契约变为只读，任务正式创建；草案由你选择是否应用到 `rules/` 与 `workflow.yaml` |
+| S1 架构 | architect 写 ARCHITECTURE、ADR、契约，提交任务 DAG（显示任务数、关键路径、并行宽度、硬依赖占比；开头几层只能串行或关键路径过长时提醒 architect 调整，让任务尽早并行），并针对选定的技术栈写规则与命令草案 | **你批准** + typecheck。批准后契约变为只读，任务正式创建；草案由你选择是否应用到 `rules/` 与 `workflow.yaml` |
 | S2 基础设施 | 脚手架、依赖、迁移框架 | install、typecheck、lint |
 | S3 切片 | 先验收测试后实现；软依赖并行，integration 任务联调 | 全部任务完成 + test |
 | S4 集成 | 端到端测试 | e2e |
