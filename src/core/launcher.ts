@@ -25,6 +25,8 @@ export interface SubagentSpec {
   env: Record<string, string>;
   /** 会话留档目录（--session-dir）；不给时以 --no-session 运行 */
   sessionDir?: string;
+  /** 从这个会话文件复制出新会话继续（--fork，需同时给 sessionDir）：返工时接着上一次的对话 */
+  forkFrom?: string;
 }
 
 export interface SubagentHandle {

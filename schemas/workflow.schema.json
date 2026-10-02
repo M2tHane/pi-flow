@@ -74,6 +74,9 @@
         "session_retention_days": {
           "type": "integer",
           "minimum": 1
+        },
+        "continue_session": {
+          "type": "boolean"
         }
       },
       "additionalProperties": false
@@ -391,6 +394,9 @@
             }
           },
           "additionalProperties": false
+        },
+        "verify_first": {
+          "type": "boolean"
         },
         "max_rounds": {
           "type": "integer",

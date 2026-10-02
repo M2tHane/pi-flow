@@ -1,0 +1,12 @@
+{ "steps": [
+  { "tool_calls": [ { "name": "flow_claim", "arguments": {} } ] },
+  { "tool_calls": [ { "name": "write", "arguments": { "path": "src/server/t-001/a.ts", "content": "export const a = 'FAIL';\n" } } ] },
+  { "tool_calls": [ { "name": "flow_note", "arguments": { "text": "第一次实现" } } ] },
+  { "tool_calls": [ { "name": "flow_submit", "arguments": { "summary": "实现 a.ts" } } ] },
+  { "text": "已提交" },
+  { "tool_calls": [ { "name": "flow_claim", "arguments": {} } ] },
+  { "tool_calls": [ { "name": "write", "arguments": { "path": "src/server/t-001/a.ts", "content": "export const a = 1;\n" } } ] },
+  { "tool_calls": [ { "name": "flow_note", "arguments": { "text": "修正：去掉 FAIL" } } ] },
+  { "tool_calls": [ { "name": "flow_submit", "arguments": { "summary": "修正 a.ts" } } ] },
+  { "text": "已修正并提交" }
+] }

@@ -66,6 +66,8 @@ export interface AssembleInput {
   evidenceDir?: string;
   /** 本 run 的临时目录（实施类角色） */
   scratchDir?: string;
+  /** 实施模式：接着上一次运行（run）的对话继续，只给简短的续做说明 */
+  continuation?: { run: string };
   /** 审查模式：上一轮审查打回的问题；有时本轮只核对这些问题 */
   previousReview?: PreviousReview;
   /** 本任务依赖的上游任务（硬依赖与软依赖）及其 handoff */
@@ -113,6 +115,18 @@ export function previousReviewSection(pr: PreviousReview): string {
       '4. 验收标准本身无法满足时，用 flow_block 交给用户，不要再提高要求。',
       ...(last ? [`5. 已到审查轮次上限（${pr.maxRounds} 轮）：上次的问题已基本解决、只剩建议类问题时通过，把剩余建议写进 notes。`] : []),
     ].join('\n'),
+  ].join('\n\n');
+}
+
+/** 返工时接着上一次的对话：任务说明、上游与 handoff 都已在对话里，只说明这次为什么回来、新的临时目录与开始方式 */
+export function continuationPrompt(i: AssembleInput): string {
+  const t = i.task;
+  return [
+    `# 继续任务 ${i.flowId}/${t.id}：${t.title}`,
+    `这是同一任务的新一次运行，接着上面的对话继续（上次运行 ${i.continuation!.run}）。工作区保留着你上次提交的代码。`,
+    `## 上次提交后没有通过的原因（请先处理）\n${t.last_failure ?? '（无记录）'}`,
+    ...(i.scratchDir ? [`## 临时目录\n本次运行的临时目录换成了 \`${i.scratchDir}\`（上次的已删除）。`] : []),
+    '开始：本次运行的身份已更换，先调用 flow_claim；按上面的原因修改，然后 flow_note 写 handoff 并 flow_submit。',
   ].join('\n\n');
 }
 
@@ -166,5 +180,6 @@ export function assemblePrompt(i: AssembleInput): AssembledPrompt {
   parts.push(i.mode === 'review'
     ? '开始：审查上述改动，最后调用 flow_approve 给出结论。'
     : '开始：先调用 flow_claim，然后按工作流程完成任务，最后 flow_note 写 handoff 并 flow_submit。');
+  if (i.mode === 'impl' && i.continuation) return { system, user: continuationPrompt(i) };
   return { system, user: parts.join('\n\n') };
 }

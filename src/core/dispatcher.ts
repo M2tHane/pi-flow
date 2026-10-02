@@ -1,7 +1,7 @@
 // 引擎：派发（建 worktree、颁发 token、取得租约、组装提示、拉起子进程）与程序步骤（审查派发、verify、重新派发）。
 // 调度与推进全部由代码决定；LLM 只通过 flow_* 工具提交申请。
 import { randomBytes } from 'node:crypto';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { FlowConfig } from './config.ts';
 import type { StateStore } from './state-store.ts';
@@ -31,6 +31,8 @@ import { activePause, classifyUnavailable, clearPause, describePause, pauseActiv
 import type { ModelPause } from './schemas.ts';
 
 export const REVIEWER_ROLE = 'reviewer';
+/** 会话文件超过这个大小就不再接着（上下文太长，每轮重发的成本超过重新读代码） */
+export const MAX_FORK_BYTES = 1_500_000;
 
 export class DispatchError extends Error {
   constructor(message: string) {
@@ -149,6 +151,7 @@ export class Engine {
       expires_at: new Date(this.now().getTime() + this.d.config.limits.lease_minutes * 60_000).toISOString(),
     };
 
+    let fork: { run_id: string; session_file: string } | null = null;
     if (task.status === 'ready' && task.kind !== 'merge-fix' && flow.sync?.status === 'conflict') {
       throw new DispatchError(`同步 ${this.d.config.raw.main_branch} 到集成分支时冲突，需要你先处理（${flow.sync.reason ?? ''}），处理后执行 /flow sync`);
     }
@@ -172,6 +175,8 @@ export class Engine {
       });
     } else if ((task.status === 'in_progress' || task.status === 'review') && !task.lease) {
       if (!task.worktree) throw new DispatchError(`任务 ${taskId} 没有 worktree，无法继续`);
+      // 返工：接着同一角色上一次提交时的对话继续（第三轮后续 2）
+      if (task.status === 'in_progress') fork = this.forkSource(flowId, task, role, model);
       task = await store.acquireLease(flowId, taskId, lease, 'dispatcher');
     } else {
       throw new DispatchError(`任务 ${taskId} 当前是 ${task.status}${task.lease ? `（run ${task.lease.run_id} 运行中）` : ''}，不能派发`);
@@ -180,6 +185,7 @@ export class Engine {
     const sessionDir = sessionDirOf(root, runId);
     mkdirSync(sessionDir, { recursive: true });
     await store.createRun({
+      ...(fork ? { forked_from: fork.run_id } : {}),
       run_id: runId, flow: flowId, task: taskId, role, model, started_at: this.now().toISOString(), ended_at: null,
       tokens: { input: null, output: null, cache_read: null, cache_write: null }, outcome: null, token_hash: lease.token_hash, violations: 0,
       session_dir: sessionDir, ...(escalated ? { escalated: true } : {}), ...(reviewMode ? { review_mode: reviewMode } : {}),
@@ -187,7 +193,7 @@ export class Engine {
 
     let handle: SubagentHandle;
     try {
-      handle = this.d.launcher.launch({ ...this.buildSpec(flowId, task, role, runId, token, model, thinking), sessionDir });
+      handle = this.d.launcher.launch({ ...this.buildSpec(flowId, task, role, runId, token, model, thinking, fork), sessionDir, ...(fork ? { forkFrom: fork.session_file } : {}) });
     } catch (e) {
       await this.failRun(flowId, taskId, runId, `子进程启动失败：${(e as Error).message}`);
       throw new DispatchError(`子进程启动失败：${(e as Error).message}`);
@@ -273,7 +279,22 @@ export class Engine {
     return { model: r.model, thinking: r.thinking };
   }
 
-  private buildSpec(flowId: string, task: TaskFile, role: string, runId: string, token: string, model: string, thinking: ThinkingLevel | null): SubagentSpec {
+  /**
+   * 返工时可以接着的上一次对话：同一任务、同一角色、同一模型最近一次正常提交的 run，会话文件还在且不太大。
+   * 换了模型（例如失败升级）、关闭 limits.continue_session、或任务重新开工（ready）时从头开始。
+   */
+  private forkSource(flowId: string, task: TaskFile, role: string, model: string): { run_id: string; session_file: string } | null {
+    if (role === REVIEWER_ROLE || this.d.config.limits.continue_session === false) return null;
+    const prev = this.d.store.listRuns().filter((r) => r.flow === flowId && r.task === task.id && r.role === role && r.ended_at)
+      .sort((a, b) => a.started_at.localeCompare(b.started_at)).at(-1);
+    if (!prev || prev.outcome !== 'submitted' || prev.model !== model || !prev.session_file) return null;
+    try {
+      if (statSync(prev.session_file).size > MAX_FORK_BYTES) return null;
+    } catch { return null; }
+    return { run_id: prev.run_id, session_file: prev.session_file };
+  }
+
+  private buildSpec(flowId: string, task: TaskFile, role: string, runId: string, token: string, model: string, thinking: ThinkingLevel | null, fork: { run_id: string } | null = null): SubagentSpec {
     const { root, config, store } = this.d;
     const agent = loadAgent(role, root, this.d.packageAgentsDir);
     // 审查者使用被审任务的 scope 规则
@@ -312,6 +333,7 @@ export class Engine {
       }),
       ...(diffStat !== undefined ? { diffStat } : {}),
       ...(previousReview ? { previousReview } : {}),
+      ...(fork && mode === 'impl' ? { continuation: { run: fork.run_id } } : {}),
       ...(existingWork ? { existingWork } : {}),
     });
     const runDir = path.join(worktreesRoot(root), '.runs', runId);

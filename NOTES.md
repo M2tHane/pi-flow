@@ -349,6 +349,13 @@
     - 审查提示与 `agents/reviewer.md` 改为"默认配置下派审查前已验证通过，输出见 precheck-*.log"（缓存提醒见下）。
     - 验收：`test/e2e/single-task.test.ts`（审查前验证失败不派审查、带原因重派；通过后审查后的 verify 沿用、evidence 只有 precheck；关闭后照旧）；`test/e2e/modes.test.ts`（"必然通过"的先行验收测试在审查前被退回）。
 
+93. **返工接着上一次的对话（第三轮后续 2）**：
+    - Pi 已核实（docs/cli.md 与实测 1.0.0）：`--session-dir <新目录> --fork <上次的会话文件>` 把上次的对话复制成新会话继续，原会话文件不变；系统提示按这次的 `--append-system-prompt` 重建（实测换成另一个文件后新请求里是新内容）；请求中带着上次的全部消息。
+    - 条件（`Engine.forkSource`）：任务在 in_progress 且无租约（返工重新派发），角色不是 reviewer，同一任务、同一角色最近一次已结束的 run 正常提交（outcome submitted）、模型相同、会话文件存在且不超过 `MAX_FORK_BYTES`（1.5 MB）。失败升级换模型、任务回到 ready（unblock、租约过期重建 worktree）、上一次崩溃或额度暂停时从头开始。`limits.continue_session: false` 关闭。
+    - 提示：系统提示照常组装（稳定前缀不变，能命中缓存）；用户消息换成 `continuationPrompt`：任务名、"接着上面的对话继续"、上次未通过的原因、新的临时目录、"先 flow_claim"。任务说明、上游、handoff 不再重复。run 记录新增 `forked_from`。
+    - 风险：对话会越积越长，每轮重发的上下文变大；靠 1.5 MB 上限与 Pi 自己的压缩控制。复跑时对比返工运行的 token 与轮数再调上限。
+    - 验收：`test/e2e/pi-subprocess.test.ts`（真实 pi + 假模型：第一次提交在审查前验证失败，第二次运行的第一个请求带着上次的 5 条回复、用户消息是续做说明，任务完成，`forked_from` 正确，新会话单独留档；`buildPiArgs` 含 `--fork`）；`test/unit/prompt-assembler.test.ts`。
+
 ## 第三轮优化设计要点
 
 - **A 模型暂停**（第 88 条）。验收见该条。

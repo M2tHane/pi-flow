@@ -18,7 +18,7 @@ export function piInvocation(): { command: string; prefix: string[] } {
 }
 
 export function buildPiArgs(spec: SubagentSpec): string[] {
-  const args = ['--mode', 'json', '-p', ...(spec.sessionDir ? ['--session-dir', spec.sessionDir] : ['--no-session']), '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-context-files'];
+  const args = ['--mode', 'json', '-p', ...(spec.sessionDir ? ['--session-dir', spec.sessionDir, ...(spec.forkFrom ? ['--fork', spec.forkFrom] : [])] : ['--no-session']), '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-context-files'];
   for (const e of spec.extensions) args.push('-e', e);
   if (spec.model) args.push('--model', spec.model);
   if (spec.thinking) args.push('--thinking', spec.thinking);

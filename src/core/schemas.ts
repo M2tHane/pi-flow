@@ -189,6 +189,8 @@ export const RunFile = Type.Object({
   escalated: Type.Optional(Type.Boolean()),
   /** 审查 run 的方式：light 低风险便宜审查，full 普通审查（审查者自己的模型），strong 高风险强模型审查 */
   review_mode: Type.Optional(Type.Union([Type.Literal('full'), Type.Literal('light'), Type.Literal('strong')])),
+  /** 接着哪次 run 的对话继续（返工时 fork 上一次的会话） */
+  forked_from: Type.Optional(Type.String()),
   /** 子进程会话留档目录（<项目>.worktrees/.sessions/<run>/）与结束后找到的会话文件 */
   session_dir: Type.Optional(Type.String()),
   session_file: Type.Optional(Nullable(Type.String())),
@@ -251,6 +253,8 @@ export const WorkflowFile = Type.Object({
     fix_max_files: PosInt,
     /** 子进程会话留档的保留天数（/flow doctor --fix 清理），默认 14 */
     session_retention_days: Type.Optional(PosInt),
+    /** 返工时接着上一次的对话继续（pi --fork），默认 true（第三轮后续 2） */
+    continue_session: Type.Optional(Type.Boolean()),
   }, { additionalProperties: false }),
   models: Type.Record(Type.String(), Type.String({ minLength: 1 })),
   modes: Type.Object({ build: Type.Optional(ModeDef), feature: Type.Optional(ModeDef) }, { additionalProperties: false }),

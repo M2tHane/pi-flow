@@ -91,6 +91,18 @@ test('第二轮起的审查：附上次打回的问题与之后的改动，只�
   assert.match(impl.user, /上次未通过的原因/);
 });
 
+test('返工接着上一次的对话：用户消息只有续做说明，系统提示不变', () => {
+  const agent = { name: 'backend-engineer', tier: 'medium', thinking: null, description: '', prompt: 'R' };
+  const task = mkTask('T-001', { base_sha: 'abc123', last_failure: '审查前验证失败：test 退出码 1' });
+  const base = { agent, rules: [], task, flowId: 'B-001', handoff: 'HANDOFF', mode: 'impl' as const, commands: config.commands, scratchDir: '/tmp/s/r-2' };
+  const full = assemblePrompt(base);
+  const cont = assemblePrompt({ ...base, continuation: { run: 'r-1' } });
+  assert.equal(cont.system, full.system, '系统提示相同，命中缓存');
+  assert.match(cont.user, /^# 继续任务 B-001\/T-001[\s\S]*r-1[\s\S]*审查前验证失败：test 退出码 1[\s\S]*\/tmp\/s\/r-2[\s\S]*flow_claim/);
+  assert.doesNotMatch(cont.user, /验收标准|HANDOFF/, '任务说明与 handoff 已在对话里，不重复');
+  assert.ok(cont.user.length < full.user.length);
+});
+
 test('重新派发时提示工作区已有的改动，位于任务说明之后、handoff 之前', () => {
   const agent = { name: 'backend-engineer', tier: 'medium', thinking: null, description: '', prompt: 'R' };
   const p = assemblePrompt({ agent, rules: [], task: mkTask('T-001', { base_sha: 'abc123' }), flowId: 'B-001', handoff: 'HANDOFF', mode: 'impl',

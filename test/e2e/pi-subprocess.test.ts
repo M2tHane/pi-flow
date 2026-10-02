@@ -40,6 +40,8 @@ test('buildPiArgs：关闭扩展发现、guard 扩展最后、工具白名单、
   const kept = buildPiArgs({ cwd: '/w', model: null, thinking: null, tools: [], extensions: [], appendSystemPromptFiles: [], prompt: 'x', env: {}, sessionDir: '/s/r-1' });
   assert.deepEqual(kept.slice(0, 5), ['--mode', 'json', '-p', '--session-dir', '/s/r-1']);
   assert.ok(!kept.includes('--no-session'));
+  const forked = buildPiArgs({ cwd: '/w', model: null, thinking: null, tools: [], extensions: [], appendSystemPromptFiles: [], prompt: 'x', env: {}, sessionDir: '/s/r-2', forkFrom: '/s/r-1/a.jsonl' });
+  assert.deepEqual(forked.slice(0, 7), ['--mode', 'json', '-p', '--session-dir', '/s/r-2', '--fork', '/s/r-1/a.jsonl']);
   assert.ok(args.includes('--tools') && args[args.indexOf('--tools') + 1] === 'read,flow_claim');
 });
 
@@ -148,5 +150,37 @@ test('真实 pi 子进程：模型返回额度用完（429 insufficient_quota）
     assert.equal(pause?.model, 'fakellm/quota');
     assert.equal(pause?.kind, 'quota');
     assert.match(pause?.reason ?? '', /quota/);
+  } finally { p.cleanup(); }
+});
+
+test('真实 pi 子进程：返工时接着上一次的对话继续（--fork），只给简短的续做说明', { skip: !piAvailable && 'pi 不可用', timeout: 240_000 }, async () => {
+  const p = await setupProject({ tasks: [mkTask('T-001', { verify: ['typecheck', 'test'] })] });
+  try {
+    const logFile = '/tmp/pi-flow-e2e-llm.log';
+    const before = existsSync(logFile) ? readFileSync(logFile, 'utf8').length : 0;
+    const errors: unknown[] = [];
+    const engine = new Engine({
+      root: p.dir, store: p.store, config: p.config, launcher: new PiLauncher(),
+      roleSettings: () => ({ version: 1, roles: { 'backend-engineer': { model: 'fakellm/impl-fork' }, reviewer: { model: 'fakellm/review-pass' } } }),
+      packageAgentsDir: path.join(ROOT, 'agents'),
+      subagentExtension: path.join(ROOT, 'src/pi-adapter/subagent.ts'),
+      extraExtensions: () => [path.join(ROOT, 'test/fixtures/fake-llm/provider.ts')],
+      onError: (e) => errors.push(e),
+    });
+    await engine.next(p.flowId);
+    await engine.idle();
+    assert.deepEqual(errors, []);
+    const t = p.store.readTask(p.flowId, 'T-001');
+    assert.equal(t.status, 'done', `${t.status} ${t.last_failure ?? ''}`);
+    assert.equal(t.attempts, 1, '第一次提交在审查前验证中失败');
+    const impl = p.store.listRuns().filter((r) => r.role === 'backend-engineer').sort((a, b) => a.started_at.localeCompare(b.started_at));
+    assert.equal(impl.length, 2);
+    assert.equal(impl[1]!.forked_from, impl[0]!.run_id);
+    assert.equal(impl[1]!.outcome, 'submitted');
+    const reqs = readFileSync(logFile, 'utf8').slice(before).trim().split('\n').map((l) => JSON.parse(l)).filter((r) => r.model === 'impl-fork');
+    const second = reqs.find((r) => r.turn === 5)!;
+    assert.ok(second, '第二次运行的第一个请求带着上一次的 5 条回复');
+    assert.match(JSON.stringify(second.last), /继续任务[\s\S]*审查前验证失败[\s\S]*flow_claim/);
+    assert.ok(impl[1]!.session_file && impl[1]!.session_file !== impl[0]!.session_file, '新会话单独留档');
   } finally { p.cleanup(); }
 });

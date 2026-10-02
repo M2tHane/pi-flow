@@ -223,6 +223,9 @@
         }
       ]
     },
+    "forked_from": {
+      "type": "string"
+    },
     "session_dir": {
       "type": "string"
     },
