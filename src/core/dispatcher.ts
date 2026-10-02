@@ -11,6 +11,7 @@ import { hashToken } from './state-machine.ts';
 import { resolveRoleModel } from './role-settings.ts';
 import { loadAgent } from './agents.ts';
 import { assemblePrompt, ruleFilesFor } from './prompt-assembler.ts';
+import { formatEntry, selectKnowledge } from './knowledge.ts';
 import { carriedTestOf, computeReady, isLeadingTest } from './dag.ts';
 import { selectDispatchable } from './scheduler.ts';
 import { createTaskWorktree, ensureLocalExcludes, worktreesRoot } from './worktree.ts';
@@ -187,6 +188,11 @@ export class Engine {
       agent, rules, skills, task, flowId, handoff: store.readHandoff(flowId, task.id), mode, commands: config.commands,
       ...(carried ? { carriedTest: { id: carried.id, title: carried.title, writes: carried.writes } } : {}),
       ...(isLeadingTest(task, tasks) ? { leadingTest: true } : {}),
+      knowledge: selectKnowledge(store.readKnowledge(), task).map(formatEntry),
+      upstream: task.depends_on.flatMap((d) => {
+        const u = tasks.find((x) => x.id === d.task);
+        return u ? [{ id: u.id, title: u.title, type: d.type, status: u.status === 'done' ? '已完成' : `未完成：${u.status}`, handoff: store.readHandoff(flowId, u.id) }] : [];
+      }),
       ...(diffStat !== undefined ? { diffStat } : {}),
       ...(existingWork ? { existingWork } : {}),
     });

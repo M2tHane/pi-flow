@@ -7,7 +7,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import lockfile from 'proper-lockfile';
 import {
-  validate, type FlowFile, type MergeQueueFile, type RunFile, type ProposalFile, type BriefFile, type SchemaKind, type StageStatus, type StateFile,
+  validate, type FlowFile, type MergeQueueFile, type RunFile, type ProposalFile, type BriefFile, type KnowledgeFile, type SchemaKind, type StageStatus, type StateFile,
   type TaskFile, type TaskStatus, type FlowEvent,
 } from './schemas.ts';
 import {
@@ -62,6 +62,7 @@ export const runRel = (run: string) => `runs/${run}.json`;
 export const proposalRel = (flow: string) => `flows/${flow}/proposal.json`;
 export const stageEvidenceRel = (flow: string, stage: string) => `flows/${flow}/evidence/stage-${stage}`;
 const MQ_REL = 'merge-queue.json';
+export const KNOWLEDGE_REL = 'knowledge.json';
 
 export function schemaKindOf(rel: string): SchemaKind | null {
   if (rel === MQ_REL) return 'merge-queue';
@@ -70,6 +71,7 @@ export function schemaKindOf(rel: string): SchemaKind | null {
   if (/^runs\/[^/]+\.json$/.test(rel)) return 'run';
   if (/^flows\/[^/]+\/proposal\.json$/.test(rel)) return 'proposal';
   if (rel === 'brief.json') return 'brief';
+  if (rel === KNOWLEDGE_REL) return 'knowledge';
   return null;
 }
 
@@ -683,6 +685,23 @@ export class StateStore {
         tx.putTask(v.flow, task);
       }
       return { count, terminate, blocked };
+    });
+  }
+
+  /** 项目级知识库（跨流程）；尚无条目时返回空库 */
+  readKnowledge(): KnowledgeFile {
+    return this.readJsonRel<KnowledgeFile>(KNOWLEDGE_REL) ?? { entries: [], version: 0 };
+  }
+
+  /** 修改知识库：mutate 在事务内收到当前库（可原地修改），返回值原样返回；业务校验见 core/knowledge.ts */
+  async writeKnowledge<T>(mutate: (k: KnowledgeFile, ts: string) => T, event: { actor: string; flow?: string | null; task?: string; reason: string; data?: Record<string, unknown> }): Promise<T> {
+    return this.transaction((tx) => {
+      const cur = tx.readJson<KnowledgeFile>(KNOWLEDGE_REL);
+      const k: KnowledgeFile = cur ?? { entries: [], version: 1 };
+      const result = mutate(k, tx.ts);
+      tx.putJson(KNOWLEDGE_REL, 'knowledge', k);
+      tx.event({ flow: event.flow ?? null, ...(event.task ? { task: event.task } : {}), actor: event.actor, type: 'note', reason: event.reason, ...(event.data ? { data: event.data } : {}) });
+      return result;
     });
   }
 

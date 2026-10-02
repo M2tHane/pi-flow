@@ -1,0 +1,164 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pi-flow/knowledge.schema.json",
+  "type": "object",
+  "required": [
+    "entries",
+    "version"
+  ],
+  "properties": {
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "category",
+          "content",
+          "scopes",
+          "paths",
+          "source",
+          "status",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^K-[0-9]{3,}$"
+          },
+          "category": {
+            "enum": [
+              "convention",
+              "pitfall",
+              "decision",
+              "environment",
+              "dependency"
+            ]
+          },
+          "content": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "paths": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "source": {
+            "type": "object",
+            "required": [
+              "kind",
+              "flow",
+              "task",
+              "run",
+              "role"
+            ],
+            "properties": {
+              "kind": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "const": "agent"
+                  },
+                  {
+                    "type": "string",
+                    "const": "review"
+                  },
+                  {
+                    "type": "string",
+                    "const": "merge"
+                  },
+                  {
+                    "type": "string",
+                    "const": "human"
+                  }
+                ]
+              },
+              "flow": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "task": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "run": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "role": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "additionalProperties": false
+          },
+          "status": {
+            "enum": [
+              "candidate",
+              "active",
+              "retired",
+              "promoted"
+            ]
+          },
+          "draft": {
+            "type": "string"
+          },
+          "status_reason": {
+            "type": "string",
+            "maxLength": 500
+          },
+          "created_at": {
+            "type": "string",
+            "minLength": 1
+          },
+          "updated_at": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    }
+  },
+  "additionalProperties": false
+}

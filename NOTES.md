@@ -199,12 +199,25 @@
     - 已知局限：承载者最终 blocked 时，测试也不会进入集成分支；测试因自身写错（而非实现缺失）而失败也会被确认，靠审查把关。
 70. **pump 循环以最新任务状态为准**：循环体中有 await，开头取得的任务列表可能过时；曾出现 verify 刚结束、标记已清除，又按旧状态对同一任务启动第二次 verify 的竞态（`merging -> queued_merge` 被拒）。现在每个任务处理前重新读取。
 
+71. **上游 handoff 传给下游（第二轮 B）**：实施提示中新增"上游任务的 handoff"一节，放在任务说明之后、本任务 handoff 之前。来源是硬依赖与软依赖的任务，每个上游取最近 800 字（从完整的行开始），合计不超过 4000 字。没有上游或上游都没有 handoff 时不出现。审查提示不带这一节。
+72. **项目级知识库（第二轮 C）**：
+    - 存储 `.flow/knowledge.json`（schema `knowledge`，登记哈希与版本，经 StateStore 事务写入）。条目 `K-NNN`：类别（convention、pitfall、decision、environment、dependency）、内容（≤500 字）、适用 scopes 与路径 glob（都为空表示全局）、来源（agent、review、merge、human，含流程、任务、run、角色）、状态（candidate、active、retired、promoted）、提升后的草案文件。
+    - 新工具 `flow_learn`：除 orchestrator 外的 subagent 角色隐式拥有（同 `flow_block`，第 10 条）。校验类别、长度、scope 存在、路径为仓库内相对路径且不指向 `.flow/`、`.git/`；与未废弃条目内容相同（忽略空白与标点）则拒绝；每个 run 最多 3 条。**提交即生效**（用户选择）。
+    - 程序提炼候选（用户选择"提炼为候选，需确认"）：审查打回（`flow_approve` reject）与合并后验证失败时，截取原文生成 candidate（不调用模型）；"需要你处理"中提示；`/flow knowledge accept`（可改写）后生效。
+    - 注入：派发时选出生效中且适用于任务的条目（全局、scope 相交、路径与 writes/inputs 重叠），放在系统提示末尾（技能之后），按编号排序；超过 40 条或 6000 字时保留最近的。声明"不是规则，与规则冲突时以规则为准"。
+    - 管理：`/flow knowledge` 列出与搜索、`accept`、`retire`、`promote`。`promote` 把条目追加到 `docs/rules-draft/<规则名>.md`（默认取条目共同 scope 的第一个规则文件，否则 global；以现有规则内容为底稿）并在主工作区当前分支提交；`/flow rules` 现在同时读取主分支与当前流程集成分支上的草案（同名以集成分支为准），没有进行中的流程也能用。应用后引用该草案的条目标为 promoted。"规则只有用户能改"不变。
+    - 展示：`/flow status --detail` 列出最近 5 条；访谈者提示中说明可读 `.flow/knowledge.json`。
+    - 已知局限：每个 run 的条数检查在事务外读取，同一 run 并发提交时可能多出一条；知识与规则是否矛盾无法由程序判断，靠"以规则为准"的声明和用户废弃。
+
 ## 第二轮优化设计要点
 
 - **A 先行验收测试先失败**（第 69、70 条）。验收：
   - `test/e2e/modes.test.ts` build 全流程：验收测试第一次"必然通过"被打回（原因"验收测试没有失败"），第二次确认失败；不单独合入；集成分支每次前进后的 HEAD 都不出现"有验收测试没有实现"；测试提交紧接着实现提交。
   - `test/e2e/merge-queue.test.ts`：承载者从测试分支开工，合并后验证失败后重新提交不被判越界，最终测试与实现一次快进，测试的 worktree 被回收。
   - `scripts/demo.ts` 的演示脚本改为实现前会失败的验收测试（原脚本正是"实现缺失时跳过"的必然通过测试），并改用 `/flow-build --direct`（访谈模式上线后演示已无法直接开流程）。
+- **B + C 上游经验与项目级知识库**（第 71、72 条）。验收：
+  - `test/e2e/knowledge.test.ts`：agent 提交的知识出现在后续同 scope 任务的系统提示中，其他 scope 的不出现；下游提示含上游 handoff；重复与非法 scope 被拒；agent 写 `.flow/knowledge.json` 被拦；审查打回生成候选，确认前不注入；废弃；提升为规则草案并应用；跨流程保留；篡改知识库被完整性校验发现。
+  - `test/unit/knowledge.test.ts`：校验、去重、选择与上限、提示位置、上游长度限制、提升目标。
 
 ## M8 设计要点
 
@@ -302,4 +315,5 @@
 - 2026-10-01（M8）：角色提示（scout、researcher、architect）变更，新增技能注入；升级后首次派发时提示缓存失效一次。
 - 2026-10-01：新增 `agents/interviewer.md`（只用于主会话）；`agents/architect.md` 与 `skills/design-contract` 增加规则草案说明，architect 子进程的提示缓存失效一次。
 - 2026-10-01（第二轮 A）：`agents/test-engineer.md`、`skills/decompose-dag`、`rules/testing.md` 增加"先行验收测试必须先失败"的说明；test-engineer 与 architect（S1/F1）子进程提示缓存失效一次。新项目 `/flow init` 时复制的 `rules/testing.md` 随之变化，已有项目的 `rules/` 不受影响。
+- 2026-10-01（第二轮 B + C）：`skills/write-handoff`（所有实施角色）、`agents/reviewer.md`、`agents/scout.md` 增加 flow_learn 说明，`agents/interviewer.md`（主会话）增加读知识库的说明；所有子进程角色的工具声明多了 flow_learn。以上都会让提示缓存失效一次。此外项目知识新增条目时，系统提示末尾的知识部分变化，只影响其后的缓存。
 - 以后修改 `agents/`、`rules/`、`skills/` 时，在此追加一条。

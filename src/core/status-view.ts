@@ -130,6 +130,11 @@ export function actionsNeeded(store: StateStore, config: FlowConfig): Action[] {
       out.push({ key: `${flow.id}:blocked:${t.id}:${t.version}`, text: `${t.id}「${short(t.title, 40)}」阻塞：${short(t.blocked_reason ?? '')}`, command: `/flow answer ${t.id}` });
     }
   }
+  const cand = store.readKnowledge().entries.filter((e) => e.status === 'candidate');
+  if (cand.length) {
+    out.push({ key: `knowledge:candidates:${cand.at(-1)!.id}`, text: `${cand.length} 条知识候选待确认（来自审查打回、合并后验证失败）：${cand.slice(-3).map((e) => e.id).join('、')}${cand.length > 3 ? ' 等' : ''}`,
+      command: '/flow knowledge 查看；确认 /flow knowledge accept <K-编号>，不要 /flow knowledge retire <K-编号>' });
+  }
   return out;
 }
 

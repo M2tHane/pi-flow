@@ -17,6 +17,7 @@ import { CHECKLISTS, CONFIRM_COMMAND, MODE_LABEL, activeBrief, cancelBrief, conf
 import { costReport, formatCost } from '../core/cost.ts';
 import { renderStatus } from '../core/status-view.ts';
 import { applyDrafts, formatDrafts, listDrafts, type Draft } from '../core/rules-draft.ts';
+import { KnowledgeError, acceptCandidate, formatKnowledgeList, markPromoted, promoteToDraft, retireEntries, searchKnowledge } from '../core/knowledge.ts';
 import { loadConfig } from '../core/config.ts';
 import { git } from '../core/git.ts';
 import type { StateStore as Store } from '../core/state-store.ts';
@@ -65,7 +66,8 @@ export const FLOW_USAGE = [
   '  /flow answer [<任务>]   回答阻塞任务提出的问题（弹出输入框），回答后任务继续',
   '  /flow unblock <任务> ["<回答>"] [--attempts N]   解除阻塞（无界面时用它回答）',
   '  /flow gate              闸门失败并修复后，重跑当前阶段闸门',
-  '  /flow rules [apply [all|<草案文件>...]]   查看或应用架构师提出的规则与命令草案（docs/rules-draft/）',
+  '  /flow rules [apply [all|<草案文件>...]]   查看或应用规则与命令草案（docs/rules-draft/，来自架构师或知识提升）',
+  '  /flow knowledge [...]   项目知识库：列出、搜索、确认候选、废弃、提升为规则草案（/flow knowledge help）',
   '  /flow status --cost     成本统计：按流程、阶段、角色、模型、任务汇总 token 与耗时，返工最多的任务',
   '  /flow abort [--yes]     中止当前修复或流程（集成分支保留，主分支不受影响）',
 ].join('\n');
@@ -92,7 +94,10 @@ function fullStatus(store: Store, engine: Engine | null): string {
       parts.push(`修复 ${fix.id} 等待你决定：${why}\n继续按修复处理 → /flow approve；改用功能流程 → /flow abort 后 /flow-build --feature "<描述>"`);
     }
   }
-  return parts.join('\n\n') || '当前没有进行中的流程。开始：/flow-build "<描述>"、/flow-build --feature "<描述>" 或 /flow-fix "<描述>"。';
+  if (!parts.length) parts.push('当前没有进行中的流程。开始：/flow-build "<描述>"、/flow-build --feature "<描述>" 或 /flow-fix "<描述>"。');
+  const recent = store.readKnowledge().entries.filter((e) => e.status === 'active' || e.status === 'candidate').slice(-5);
+  if (recent.length) parts.push(`最近的项目知识（全部：/flow knowledge）：\n${formatKnowledgeList(recent)}`);
+  return parts.join('\n\n');
 }
 
 function option(argv: string[], name: string): string | undefined {
@@ -221,11 +226,11 @@ export async function runFlowCommand(args: string, env: CommandEnv): Promise<str
     }
     case 'rules': {
       const h = env.engine();
-      const flowId = currentFlowId(h.store);
-      const drafts = listDrafts(env.root, h.store.readFlow(flowId).integration_branch);
+      const flowId = currentFlowIdOrNull(h.store);
+      const drafts = allDrafts(env.root, h, flowId);
       if (argv[1] !== 'apply') {
         return drafts.length
-          ? `架构师提出的规则与命令草案（${flowId}）：\n${formatDrafts(drafts)}\n应用：/flow rules apply all，或 /flow rules apply <草案文件>...`
+          ? `待应用的规则与命令草案${flowId ? `（${flowId} 与主分支）` : '（主分支）'}：\n${formatDrafts(drafts)}\n应用：/flow rules apply all，或 /flow rules apply <草案文件>...`
           : '没有待应用的规则或命令草案。';
       }
       const picks = argv.slice(2);
@@ -233,6 +238,13 @@ export async function runFlowCommand(args: string, env: CommandEnv): Promise<str
       if (!chosen.length) throw new Error(`没有匹配的草案。可用：${drafts.map((d) => d.file).join('、') || '无'}`);
       return applyAndReport(env, h, flowId, chosen);
     }
+    case 'knowledge':
+      try {
+        return await runKnowledge(argv.slice(1), env);
+      } catch (e) {
+        if (e instanceof KnowledgeError) return `未完成：${e.message}`;
+        throw e;
+      }
     case 'answer':
       return runFlowAnswer(argv, env);
     case 'off':
@@ -425,10 +437,66 @@ export async function runFlowAnswer(argv: string[], env: CommandEnv): Promise<st
   return `${text}${answer.trim() ? '回答已交给该任务。' : ''}`;
 }
 
-function applyAndReport(env: CommandEnv, h: EngineHandle, flowId: string, drafts: Draft[]): string {
-  const r = applyDrafts(env.root, drafts, flowId);
+/** 不要求有进行中的流程（知识提升的规则草案在主分支上） */
+function currentFlowIdOrNull(store: Store): string | null {
+  try { return currentFlowId(store); } catch { return null; }
+}
+
+/** 主分支上的草案（知识提升）+ 当前流程集成分支上的草案（架构师）；同名时以集成分支为准 */
+function allDrafts(root: string, h: EngineHandle, flowId: string | null): Draft[] {
+  const byFile = new Map(listDrafts(root, h.config.raw.main_branch).map((d) => [d.file, d]));
+  if (flowId) for (const d of listDrafts(root, h.store.readFlow(flowId).integration_branch)) byFile.set(d.file, d);
+  return [...byFile.values()];
+}
+
+async function applyAndReport(env: CommandEnv, h: EngineHandle, flowId: string | null, drafts: Draft[]): Promise<string> {
+  const r = applyDrafts(env.root, drafts, flowId ?? '知识库');
   if (r.commands) Object.assign(h.config.raw.commands, r.commands);
-  return `已应用：${r.applied.join('、')}，并已提交。之后派发的任务使用新的规则${r.commands ? '与命令' : ''}（子进程提示的稳定前缀变化，模型服务的提示缓存会失效一次）。`;
+  const promoted = await markPromoted(h.store, drafts.map((d) => d.file));
+  return `已应用：${r.applied.join('、')}，并已提交。之后派发的任务使用新的规则${r.commands ? '与命令' : ''}（子进程提示的稳定前缀变化，模型服务的提示缓存会失效一次）。${promoted.length ? `\n知识 ${promoted.join('、')} 已成为规则，不再作为知识注入。` : ''}`;
+}
+
+const KNOWLEDGE_USAGE = [
+  '/flow knowledge [<搜索词>] [--all]          列出或搜索项目知识（--all 含已废弃与已成为规则的）',
+  '/flow knowledge accept <K-编号> ["<改写>"]   确认程序提炼的候选，可同时改写内容',
+  '/flow knowledge retire <K-编号>... ["<原因>"] 废弃条目',
+  '/flow knowledge promote <K-编号>... [--rule <规则名>]   提升为规则草案（docs/rules-draft/），再用 /flow rules apply 应用',
+].join('\n');
+
+async function runKnowledge(argv: string[], env: CommandEnv): Promise<string> {
+  const store = env.store();
+  const ids = argv.slice(1).filter((a) => /^K-\d{3,}$/.test(a));
+  const rest = argv.slice(1).filter((a) => !/^K-\d{3,}$/.test(a) && !a.startsWith('--') && a !== option(argv, '--rule'));
+  switch (argv[0]) {
+    case 'accept': {
+      if (ids.length !== 1) return `用法：${KNOWLEDGE_USAGE.split('\n')[1]}`;
+      const e = await acceptCandidate(store, ids[0]!, rest.join(' ') || undefined);
+      return `已确认 ${e.id}，之后相关任务的提示中会看到它：\n${formatKnowledgeList([e])}`;
+    }
+    case 'retire': {
+      if (!ids.length) return `用法：${KNOWLEDGE_USAGE.split('\n')[2]}`;
+      const es = await retireEntries(store, ids, rest.join(' '));
+      return `已废弃 ${es.map((e) => e.id).join('、')}。`;
+    }
+    case 'promote': {
+      if (!ids.length) return `用法：${KNOWLEDGE_USAGE.split('\n')[3]}`;
+      const config = loadConfig(path.join(env.root, 'workflow.yaml'));
+      const r = await promoteToDraft(env.root, store, config, ids, option(argv, '--rule'));
+      return `已写入规则草案 ${r.file} 并提交（${ids.join('、')}）。规则只有你能改：确认内容后执行 /flow rules apply ${path.basename(r.file)} 应用；应用前这些条目仍作为知识注入。`;
+    }
+    case 'help':
+      return KNOWLEDGE_USAGE;
+    default: {
+      const all = argv.includes('--all');
+      const query = argv.filter((a) => a !== '--all').join(' ');
+      const k = store.readKnowledge();
+      const hits = searchKnowledge(k, query, all);
+      if (!k.entries.length) return `项目知识库还是空的。任务执行中 agent 会用 flow_learn 记录经验；审查打回与合并后验证失败会生成候选。\n\n${KNOWLEDGE_USAGE}`;
+      if (!hits.length) return `没有匹配的知识条目${query ? `（${query}）` : ''}。\n\n${KNOWLEDGE_USAGE}`;
+      const cand = hits.filter((e) => e.status === 'candidate').length;
+      return `项目知识（${hits.length} 条${cand ? `，其中 ${cand} 条候选待确认` : ''}）：\n${formatKnowledgeList(hits)}\n\n${KNOWLEDGE_USAGE}`;
+    }
+  }
 }
 
 /** S1/F1 批准后：有草案时请用户选择是否应用（无界面时给出命令提示，或按 --rules all|none） */
@@ -436,7 +504,7 @@ async function offerDrafts(env: CommandEnv, h: EngineHandle, flowId: string, fla
   const drafts = listDrafts(env.root, h.store.readFlow(flowId).integration_branch);
   if (!drafts.length) return '';
   const list = `架构师提出了规则与命令草案：\n${formatDrafts(drafts)}`;
-  if (flag === 'all') return `${list}\n${applyAndReport(env, h, flowId, drafts)}`;
+  if (flag === 'all') return `${list}\n${await applyAndReport(env, h, flowId, drafts)}`;
   if (flag === 'none') return `${list}\n未应用（之后可用 /flow rules apply）。`;
   if (!env.ui) return `${list}\n应用：/flow rules apply all（或逐个指定文件）；暂不应用则忽略。`;
   const pick = await env.ui.select(`${list}\n\n是否应用？`, ['全部应用', '逐个选择', '暂不应用']);

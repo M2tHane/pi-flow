@@ -7,7 +7,7 @@ export const BUILTIN_READ_TOOLS = ['read', 'grep', 'find', 'ls'] as const;
 export const BUILTIN_WRITE_TOOLS = ['write', 'edit'] as const;
 export const FLOW_TOOLS = [
   'flow_status', 'flow_dispatch', 'flow_wait', 'flow_claim', 'flow_note', 'flow_submit',
-  'flow_approve', 'flow_propose_tasks', 'flow_block',
+  'flow_approve', 'flow_propose_tasks', 'flow_block', 'flow_learn',
 ] as const;
 /** 虚拟工具：实际启用 Pi 的 bash，由 guard 施加只读白名单 */
 export const BASH_READONLY = 'bash_readonly';
@@ -201,6 +201,8 @@ export function parseConfig(source: string): FlowConfig {
     });
     // 偏离：所有 subagent 角色都隐式拥有 flow_block（第 13、16 节要求遇到歧义先 flow_block）
     if (name !== 'orchestrator' && !toolList.includes('flow_block')) toolList.push('flow_block');
+    // 偏离：所有 subagent 角色都隐式拥有 flow_learn（项目知识库，第二轮 C 项）
+    if (name !== 'orchestrator' && !toolList.includes('flow_learn')) toolList.push('flow_learn');
     // 偏离：有 flow_submit 的角色隐式拥有 flow_claim（角色提示要求先 claim；第 8 节模板对 architect、researcher、scout 漏写）
     if (toolList.includes('flow_submit') && !toolList.includes('flow_claim')) toolList.push('flow_claim');
     const unique = [...new Set(toolList)];

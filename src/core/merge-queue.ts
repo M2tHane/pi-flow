@@ -10,6 +10,7 @@ import { git, gitOk } from './git.ts';
 import { headSha, removeWorktree, taskBranch, worktreePath } from './worktree.ts';
 import { matchesAny, isProtected, CONTRACTS_PATH } from './paths.ts';
 import { carriedTestOf } from './dag.ts';
+import { proposeCandidate } from './knowledge.ts';
 import { evidenceText, runShell } from './verify-runner.ts';
 
 export interface MergeHooks {
@@ -107,7 +108,11 @@ export class MergeQueue {
     });
     if (marked.length) return this.verifyFailed(flowId, t, `文件中残留冲突标记：${marked.join('、')}`, []);
     const verify = await this.postMergeVerify(flowId, t, wt, changed);
-    if (!verify.ok) return this.verifyFailed(flowId, t, verify.reason, verify.results);
+    if (!verify.ok) {
+      // 合并后验证失败多半是与已合入任务的语义冲突：提炼为知识候选，用户确认后才生效
+      await proposeCandidate(this.store, this.config, t, flowId, 'merge', verify.reason, null);
+      return this.verifyFailed(flowId, t, verify.reason, verify.results);
+    }
 
     // 4. 快进集成分支（CAS：期间集成分支被移动则失败，回到队首重试）。
     //    fix 流程直接合入主分支；主分支在主工作区检出时（状态提交也在推进它），在主工作区 cherry-pick 应用。

@@ -1,5 +1,6 @@
 // 组装子进程提示：稳定内容（角色提示、规则）进系统提示，动态内容（任务、handoff、打回意见）进用户消息。
-// 顺序固定：角色提示 → global 规则 → scope 规则 → 任务说明与输入 → handoff → 打回意见，以便命中提供商的提示缓存。
+// 顺序固定：角色提示 → global 规则 → scope 规则 → 技能 → 项目知识 → 任务说明与输入 → 上游 handoff → handoff → 打回意见，
+// 以便命中提供商的提示缓存（项目知识按编号只追加，放在系统提示末尾，新增条目只影响其后的部分）。
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import type { FlowConfig } from './config.ts';
@@ -10,6 +11,9 @@ export interface RuleFile { path: string; content: string }
 
 export const GLOBAL_RULES = 'rules/global.md';
 const HANDOFF_TAIL = 6000;
+/** 每个上游任务的 handoff 取最近部分的字数，以及所有上游合计的上限 */
+export const UPSTREAM_TAIL = 800;
+export const UPSTREAM_TOTAL = 4000;
 
 /** global.md 加上任务 scopes 对应的规则文件（按 scope 顺序去重）；路径相对项目根。 */
 export function ruleFilesFor(config: FlowConfig, projectRoot: string, scopes: readonly string[]): { rules: RuleFile[]; missing: string[] } {
@@ -42,6 +46,32 @@ export interface AssembleInput {
   carriedTest?: { id: string; title: string; writes: readonly string[] };
   /** 本任务是先行验收测试：实现尚不存在，verify 应当失败 */
   leadingTest?: boolean;
+  /** 适用于本任务的项目知识（已格式化，按编号排序） */
+  knowledge?: string[];
+  /** 本任务依赖的上游任务（硬依赖与软依赖）及其 handoff */
+  upstream?: { id: string; title: string; type: 'hard' | 'soft'; status: string; handoff: string }[];
+}
+
+/** 取 handoff 的最近部分，从完整的行开始 */
+function tail(text: string, n: number): string {
+  const t = text.trim();
+  if (t.length <= n) return t;
+  const cut = t.slice(-n);
+  const nl = cut.indexOf('\n');
+  return `…${nl >= 0 && nl < n / 2 ? cut.slice(nl + 1) : cut}`;
+}
+
+/** 上游任务的 handoff 摘要；没有上游或上游都没有 handoff 时返回空 */
+export function upstreamSection(ups: NonNullable<AssembleInput['upstream']>): string {
+  const blocks: string[] = [];
+  let used = 0;
+  for (const u of ups) {
+    if (!u.handoff.trim() || used >= UPSTREAM_TOTAL) continue;
+    const body = tail(u.handoff, Math.min(UPSTREAM_TAIL, UPSTREAM_TOTAL - used));
+    used += body.length;
+    blocks.push(`### ${u.id}「${u.title}」（${u.type === 'hard' ? '硬依赖' : '软依赖'}，${u.status}）\n${body}`);
+  }
+  return blocks.length ? `## 上游任务的 handoff（摘要，仅保留最近部分）\n上游任务留下的进展、约定与踩过的坑；需要细节时读取对应文件。\n\n${blocks.join('\n\n')}` : '';
 }
 
 export interface AssembledPrompt { system: string; user: string }
@@ -55,6 +85,7 @@ export function assemblePrompt(i: AssembleInput): AssembledPrompt {
       ? `# 本次生效的规则\n\n${i.rules.map((r) => `## ${r.path}\n\n${r.content}`).join('\n\n')}`
       : '# 本次生效的规则\n\n（无规则文件）',
     ...(i.skills?.length ? [`# 本任务使用的技能\n\n${i.skills.map((r) => `## ${r.path}\n\n${r.content}`).join('\n\n')}`] : []),
+    ...(i.knowledge?.length ? [`# 项目知识\n\n此前的任务积累的经验，供参考；不是规则，与上面的规则冲突时以规则为准。发现新的约定或坑时用 flow_learn 补充。\n\n${i.knowledge.map((k) => `- ${k}`).join('\n')}`] : []),
   ].join('\n\n');
 
   const t = i.task;
@@ -82,6 +113,8 @@ export function assemblePrompt(i: AssembleInput): AssembledPrompt {
   if (i.mode === 'impl' && i.existingWork?.trim()) {
     parts.push(`## 工作区已有的改动\n这些改动是本任务之前的运行留下的（会话中断或被打回前的工作），还没有通过审查。先用 \`git status\` 与 \`git diff ${t.base_sha ?? '<base_sha>'}\` 检查，再决定继续完善还是重写；不要无故丢弃仍然有用的部分。\n\n\`\`\`\n${i.existingWork.trim()}\n\`\`\``);
   }
+  const up = i.mode === 'impl' && i.upstream?.length ? upstreamSection(i.upstream) : '';
+  if (up) parts.push(up);
   if (i.handoff.trim()) {
     const h = i.handoff.trim();
     parts.push(`## handoff 笔记${h.length > HANDOFF_TAIL ? '（仅保留最近部分）' : ''}\n${h.slice(-HANDOFF_TAIL)}`);

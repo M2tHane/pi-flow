@@ -56,3 +56,27 @@ test('/flow-build：--direct 缺少描述报错；已有进行中的流程时拒
     await assert.rejects(runFlowBuild('--direct', env(p, engine)), /需要描述/);
   } finally { p.cleanup(); }
 });
+
+test('/flow knowledge：列出、确认改写、废弃、提升；/flow rules 在没有流程时也读取主分支上的草案并应用', async () => {
+  const p = await setupProject();
+  try {
+    const { engine } = makeEngine(p, async () => {});
+    const e = env(p, engine);
+    assert.match(await runFlowCommand('knowledge', e), /知识库还是空的/);
+    const { learn } = await import('../../src/core/knowledge.ts');
+    const src = { kind: 'review' as const, flow: p.flowId, task: 'T-001', run: null, role: null };
+    await learn(p.store, p.config, { category: 'convention', content: '审查打回：缺少参数校验', scopes: ['backend'], source: src, status: 'candidate' }, 'engine');
+    await learn(p.store, p.config, { category: 'pitfall', content: '本地测试需要先启动 redis', source: { ...src, kind: 'agent' }, status: 'active' }, 'engine');
+    assert.match(await runFlowCommand('knowledge', e), /2 条，其中 1 条候选待确认[\s\S]*K-001 \[约定\]（backend） 审查打回：缺少参数校验　候选/);
+    assert.match(await runFlowCommand('knowledge redis', e), /K-002[\s\S]*/);
+    assert.match(await runFlowCommand('knowledge accept K-001 "handler 入参一律用 zod 校验"', e), /已确认 K-001[\s\S]*handler 入参一律用 zod 校验/);
+    assert.match(await runFlowCommand('knowledge accept K-001', e), /不是候选/);
+    assert.match(await runFlowCommand('knowledge promote K-001', e), /docs\/rules-draft\/backend\.md[\s\S]*\/flow rules apply backend\.md/);
+    await p.store.transitionStage(p.flowId, { to: 'aborted', trigger: 'abort', actor: 'human' });
+    assert.match(await runFlowCommand('rules', e), /（主分支）[\s\S]*docs\/rules-draft\/backend\.md → rules\/backend\.md/);
+    assert.match(await runFlowCommand('rules apply backend.md', e), /已应用：rules\/backend\.md[\s\S]*知识 K-001 已成为规则/);
+    assert.match(await runFlowCommand('knowledge retire K-002 "已改用内存实现"', e), /已废弃 K-002/);
+    assert.doesNotMatch(await runFlowCommand('knowledge', e), /K-00/);
+    assert.match(await runFlowCommand('knowledge --all', e), /K-001[\s\S]*已成为规则[\s\S]*K-002[\s\S]*已废弃/);
+  } finally { p.cleanup(); }
+});

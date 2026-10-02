@@ -104,7 +104,8 @@ pi install /path/to/pi-flow
 | `/flow answer [<任务>]` | 回答阻塞任务提出的问题：弹出输入框由你作答，回答交给该任务后它继续 |
 | `/flow unblock <任务> ["<回答>"] [--attempts N]` | 解除阻塞，任务回到 ready（没有交互界面时用它回答） |
 | `/flow gate` | 闸门失败并修复后重跑闸门 |
-| `/flow rules [apply [all\|<草案文件>...]]` | 查看或应用架构师提出的规则与命令草案（`docs/rules-draft/`）；由程序写入 `rules/` 与 `workflow.yaml` 并提交 |
+| `/flow rules [apply [all\|<草案文件>...]]` | 查看或应用规则与命令草案（`docs/rules-draft/`，来自架构师或知识提升）；由程序写入 `rules/` 与 `workflow.yaml` 并提交 |
+| `/flow knowledge [<搜索词>] [--all]` | 列出、搜索项目知识；`accept <K-编号> ["<改写>"]` 确认候选，`retire <K-编号>...` 废弃，`promote <K-编号>... [--rule <规则名>]` 提升为规则草案 |
 | `/flow abort [--yes]` | 中止当前修复或流程（集成分支保留，主分支不受影响） |
 | `/flow resume` | 会话丢失后恢复，并进入调度模式 |
 | `/flow off` | 退出调度模式，恢复原来的模型与工具（流程状态不变） |
@@ -129,6 +130,18 @@ B-001「做一个待办应用」
 阻塞：无
 ```
 
+### 项目知识库
+
+项目在多次流程中积累的经验（约定、踩过的坑、做出的决策、环境与外部依赖的注意事项）保存在 `.flow/knowledge.json`，跨流程保留，build、feature、fix 都会用到。
+
+- **谁来写**：
+  - 实施、审查、探查角色用 `flow_learn` 提交，程序去重、限长、检查范围后写入并立即生效，每次运行最多 3 条。
+  - 审查打回意见、合并后验证失败原因由程序截取为**候选**，在"需要你处理"中提示，由你 `/flow knowledge accept`（可改写）或 `retire`。
+  - agent 不能直接改这个文件，它和其他状态文件一样受完整性校验。
+- **怎么用**：派发任务时，程序按任务的 scopes、writes、inputs 选出相关条目，放在子进程系统提示的规则与技能之后，并注明"不是规则，与规则冲突时以规则为准"。条目按编号只追加，新增条目只让它之后的提示缓存失效。下游任务的提示中还会附上它依赖的上游任务的 handoff 摘要。
+- **变成规则**：`/flow knowledge promote K-003 K-007` 把条目追加进规则草案 `docs/rules-draft/<规则名>.md` 并提交，你确认后用 `/flow rules apply` 应用。应用后条目标为"已成为规则"，不再作为知识注入。
+- 访谈新功能或修复时，访谈者会先读相关条目。
+
 高层阶段与底层阶段的对应写在 `workflow.yaml` 每个阶段的 `phase` 字段（discovery、planning、execution、acceptance），可以按需调整。pi-flow 只在进入新阶段、出现需要你处理的事、任务第一次未通过、流程结束时主动提醒你。
 
 开始流程或执行 `/flow resume` 后，当前会话进入**调度模式**：会话切换到你在 `/flow-config` 中为 orchestrator 设置的模型，只能查看状态、派发任务和等待结果，不能自己改代码；每轮开头会看到"当前状态与唯一允许的下一步"。流程结束、中止或执行 `/flow off` 后恢复原来的模型与工具。普通的 pi 会话不受影响。
@@ -143,6 +156,7 @@ rules/               按模块注入的规则（只有你修改）
 docs/                PRD、ARCHITECTURE、DESIGN、adr/、contracts/、features/、research/
 AGENTS.md            极简说明
 .flow/               运行时状态（程序维护，纳入 git，状态提交以 flow-state: 开头）
+  knowledge.json     项目知识库（跨流程；只经 flow_learn 与 /flow knowledge 由程序写入）
 ../<项目>.worktrees/  每个任务的 worktree（在项目目录之外）
 ```
 

@@ -144,6 +144,10 @@
       "type": "integer",
       "minimum": 0
     },
+    "interruptions": {
+      "type": "integer",
+      "minimum": 0
+    },
     "lease": {
       "anyOf": [
         {

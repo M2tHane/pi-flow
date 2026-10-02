@@ -281,6 +281,45 @@ export const BriefFile = Type.Object({
 }, { additionalProperties: false });
 export type BriefFile = Static<typeof BriefFile>;
 
+// —— 项目级知识库（.flow/knowledge.json）：跨流程积累的约定、坑、决策；只由程序写入 ——
+
+export const KNOWLEDGE_CATEGORIES = ['convention', 'pitfall', 'decision', 'environment', 'dependency'] as const;
+export const KnowledgeCategory = Type.Enum(KNOWLEDGE_CATEGORIES);
+export type KnowledgeCategory = (typeof KNOWLEDGE_CATEGORIES)[number];
+export const KNOWLEDGE_STATUSES = ['candidate', 'active', 'retired', 'promoted'] as const;
+export type KnowledgeStatus = (typeof KNOWLEDGE_STATUSES)[number];
+
+export const KnowledgeEntry = Type.Object({
+  id: Type.String({ pattern: '^K-[0-9]{3,}$' }),
+  category: KnowledgeCategory,
+  content: Type.String({ minLength: 1, maxLength: 500 }),
+  /** 适用的 scope；与 paths 都为空表示全局 */
+  scopes: Type.Array(Type.String({ minLength: 1 })),
+  /** 适用的路径 glob（相对仓库根） */
+  paths: Type.Array(Type.String({ minLength: 1 })),
+  source: Type.Object({
+    /** agent：flow_learn 提交；review：审查打回提炼；merge：合并后验证失败提炼；human：用户 */
+    kind: Type.Union([Type.Literal('agent'), Type.Literal('review'), Type.Literal('merge'), Type.Literal('human')]),
+    flow: Nullable(Type.String()),
+    task: Nullable(Type.String()),
+    run: Nullable(Type.String()),
+    role: Nullable(Type.String()),
+  }, { additionalProperties: false }),
+  status: Type.Enum(KNOWLEDGE_STATUSES),
+  /** 已提升为规则草案时的草案文件 */
+  draft: Type.Optional(Type.String()),
+  status_reason: Type.Optional(Type.String({ maxLength: 500 })),
+  created_at: IsoTime,
+  updated_at: IsoTime,
+}, { additionalProperties: false });
+export type KnowledgeEntry = Static<typeof KnowledgeEntry>;
+
+export const KnowledgeFile = Type.Object({
+  entries: Type.Array(KnowledgeEntry),
+  version: Type.Integer({ minimum: 1 }),
+}, { additionalProperties: false });
+export type KnowledgeFile = Static<typeof KnowledgeFile>;
+
 // —— ~/.pi/agent/pi-flow.json：用户通过 /flow-config 设置的角色模型与思考级别 ——
 
 export const RoleSettingsFile = Type.Object({
@@ -304,6 +343,7 @@ export const SCHEMAS = {
   'role-settings': RoleSettingsFile,
   proposal: ProposalFile,
   brief: BriefFile,
+  knowledge: KnowledgeFile,
 } as const;
 export type SchemaKind = keyof typeof SCHEMAS;
 

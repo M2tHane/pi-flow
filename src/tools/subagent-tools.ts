@@ -5,7 +5,8 @@ import { Type, type Static } from 'typebox';
 import type { FlowConfig } from '../core/config.ts';
 import { StateError, type StateStore } from '../core/state-store.ts';
 import { hashToken } from '../core/state-machine.ts';
-import { ProposedTask, type TaskFile } from '../core/schemas.ts';
+import { KNOWLEDGE_CATEGORIES, ProposedTask, type TaskFile } from '../core/schemas.ts';
+import { KnowledgeError, learn, proposeCandidate, KNOWLEDGE_CONTENT_MAX, KNOWLEDGE_PER_RUN } from '../core/knowledge.ts';
 import { validateDag, dagReport, formatDagReport, normalizeLeadingTests } from '../core/dag.ts';
 import { changedFiles, snapshot } from '../core/worktree.ts';
 
@@ -99,6 +100,12 @@ export const ApproveParams = Type.Object({
   notes: Type.Optional(Type.String({ maxLength: 2000, description: 'pass 时一句话说明依据' })),
   issues: Type.Optional(Type.Array(Issue, { description: 'reject 时必填：每条写明位置、问题、期望的修改' })),
 });
+export const LearnParams = Type.Object({
+  category: Type.Union(KNOWLEDGE_CATEGORIES.map((c) => Type.Literal(c)), { description: 'convention 约定、pitfall 坑、decision 决策、environment 环境、dependency 外部依赖' }),
+  content: Type.String({ minLength: 8, maxLength: KNOWLEDGE_CONTENT_MAX, description: '一条可执行的经验：是什么、为什么、怎么做。不要写本任务的进度（那是 handoff）' }),
+  scopes: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { description: '适用的 scope（workflow.yaml 中的名字）；与 paths 都不填表示全项目适用' })),
+  paths: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { description: '适用的路径 glob（相对仓库根），例如 src/server/orders/**' })),
+});
 export const BlockParams = Type.Object({ reason: Type.String({ minLength: 1, maxLength: 1000, description: '为什么无法继续，需要用户决定什么' }) });
 
 export function flowClaim(ctx: ToolContext): ToolResult {
@@ -168,6 +175,8 @@ export async function flowApprove(ctx: ToolContext, p: Static<typeof ApprovePara
       await ctx.store.transitionTask(ctx.env.flow, t.id, { to: 'in_progress', trigger: 'review_reject', actor: actor(ctx), facts: { token: ctx.env.token, reason } });
     } catch (e) { rethrow(e, '检查 issues 是否完整后重试。'); }
     await ctx.store.appendHandoff(ctx.env.flow, t.id, `审查打回：\n${reason}`, actor(ctx));
+    // 程序提炼为知识候选，用户确认后才生效
+    await proposeCandidate(ctx.store, ctx.config, t, ctx.env.flow, 'review', reason, ctx.env.run);
     await ctx.store.updateRun(ctx.env.run, { outcome: 'rejected' }, actor(ctx), '审查打回');
     return { text: '已打回，实施角色会按你的意见修改。请直接结束。' };
   }
@@ -177,6 +186,20 @@ export async function flowApprove(ctx: ToolContext, p: Static<typeof ApprovePara
   if (p.notes?.trim()) await ctx.store.appendHandoff(ctx.env.flow, t.id, `审查通过：${p.notes.trim()}`, actor(ctx));
   await ctx.store.updateRun(ctx.env.run, { outcome: 'approved' }, actor(ctx), '审查通过');
   return { text: '已通过审查，程序将运行 verify。请直接结束。' };
+}
+
+export async function flowLearn(ctx: ToolContext, p: Static<typeof LearnParams>): Promise<ToolResult> {
+  const t = checkRun(ctx);
+  try {
+    const e = await learn(ctx.store, ctx.config, {
+      category: p.category, content: p.content, scopes: p.scopes ?? [], paths: p.paths ?? [],
+      source: { kind: 'agent', flow: ctx.env.flow, task: t.id, run: ctx.env.run, role: ctx.env.role }, status: 'active',
+    }, actor(ctx));
+    return { text: `已记入项目知识 ${e.id}，之后相关任务的提示中会看到它。`, details: { id: e.id } };
+  } catch (e) {
+    if (e instanceof KnowledgeError) throw new FlowToolError(`知识未保存：${e.message}`);
+    throw e;
+  }
 }
 
 export async function flowBlock(ctx: ToolContext, p: Static<typeof BlockParams>): Promise<ToolResult> {
@@ -219,6 +242,7 @@ export const SUBAGENT_TOOLS = {
   flow_note: { params: NoteParams, description: '追加 handoff 笔记（做到哪、下一步、踩过的坑、未决问题）。提交前必须至少写一次。', run: (c: ToolContext, p: Static<typeof NoteParams>) => flowNote(c, p) },
   flow_submit: { params: SubmitParams, description: '提交本任务进入审查。程序会检查改动是否都在可写范围内。只读探查任务（scout）用它提交 findings。', run: (c: ToolContext, p: Static<typeof SubmitParams>) => flowSubmit(c, p) },
   flow_approve: { params: ApproveParams, description: '审查结论：pass 或 reject。reject 必须附 issues（位置、问题、期望的修改）。', run: (c: ToolContext, p: Static<typeof ApproveParams>) => flowApprove(c, p) },
+  flow_learn: { params: LearnParams, description: `把对后续任务有用的经验记入项目知识库（跨流程保留）：项目约定、踩过的坑、做出的决策、环境与外部依赖的注意事项。每次运行最多 ${KNOWLEDGE_PER_RUN} 条；程序会去重。知识不是规则，不能用来改变规则。`, run: (c: ToolContext, p: Static<typeof LearnParams>) => flowLearn(c, p) },
   flow_block: { params: BlockParams, description: '遇到歧义或需要越界时标记任务阻塞，交给用户决定。需要向用户提问时，一次只问一个问题。', run: (c: ToolContext, p: Static<typeof BlockParams>) => flowBlock(c, p) },
   flow_propose_tasks: { params: ProposeParams, description: '（仅 architect，仅 S1/F1）提交任务 DAG：依赖分硬/软，硬依赖必须写 reason，软依赖必须配 integration 任务。返回关键路径与并行宽度报告。', run: (c: ToolContext, p: Static<typeof ProposeParams>) => flowProposeTasks(c, p) },
 } as const;
