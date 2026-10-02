@@ -10,9 +10,9 @@ export const PROPOSAL_STAGES = new Set(['S1', 'F1']);
 /** 各阶段注入的技能（子进程以 --no-skills 运行，由 prompt-assembler 注入） */
 export const STAGE_SKILLS: Record<string, string[]> = {
   S0: ['write-prd'],
-  S1: ['design-contract', 'decompose-dag'],
+  S1: ['design-contract', 'decompose-dag', 'write-rules'],
   F0: ['write-feature-spec'],
-  F1: ['design-contract', 'decompose-dag'],
+  F1: ['design-contract', 'decompose-dag', 'write-rules'],
 };
 
 export function slug(text: string): string {

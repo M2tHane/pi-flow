@@ -288,6 +288,8 @@
     - 冒烟中引起冲突的条目（"错误统一使用 shared 中定义的错误类型"、"显式声明外键约束"）改为"以契约与 ARCHITECTURE.md 为准"；global 新增"通用规则与已批准的契约冲突时 flow_block 请用户决定"。`design-contract` 技能要求架构师把错误类型、主键生成、外键策略、响应格式写进 ARCHITECTURE.md 与规则草案。
     - S1/F1 批准时的规则草案选项改为"全部应用（推荐）"，并说明不应用的后果。
 
+84. **新增技能 `write-rules`**（S1、F1 注入给 architect）：规则草案的写法从 `design-contract` 中独立出来并展开——替换与新增的区别、F1 只改相关条目、覆盖清单（技术栈、目录分层、数据访问、错误处理、命名、数据模型、接口、测试、明确禁止）、每条可检查、关键条目给正确与错误写法对照、按重要性排列、文件末尾附审查清单、自检。参考了用户提供的外部项目规则的结构。草案应用时的行数上限 60 → 120（技能要求不超过 100 行，留出余量给代码对照）。
+
 ## 第二轮优化设计要点
 
 - **A 先行验收测试先失败**（第 69、70 条）。验收：
@@ -405,4 +407,5 @@
 - 2026-10-01（第二轮 G）：新增技能 `skills/revise-plan`（只注入修订任务）；`agents/orchestrator.md`（主会话）增加 flow_replan 说明，orchestrator 的工具多了 flow_replan；architect 的工具声明多了 flow_revise_plan，architect 子进程提示缓存失效一次。
 - 2026-10-02（真实模型冒烟后）：`agents/reviewer.md`、`agents/scout.md`、`skills/decompose-dag`、`skills/revise-plan` 修改；审查与实施提示新增临时目录、evidence 路径两节（在动态部分）。reviewer、scout、architect 子进程提示缓存失效一次。
 - 2026-10-02（默认规则更新）：`rules/` 全部重写并新增 `rules/docs.md`，`skills/design-contract` 修改。只影响之后 `/flow init` 的新项目（已有项目的 rules/ 不变）；architect 子进程提示缓存失效一次。
+- 2026-10-02（write-rules）：新增技能 `skills/write-rules`，`skills/design-contract` 与 `agents/architect.md` 修改；architect 子进程提示缓存失效一次。
 - 以后修改 `agents/`、`rules/`、`skills/` 时，在此追加一条。

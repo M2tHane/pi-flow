@@ -17,7 +17,7 @@ tier: strong
 1. flow_claim。
 2. 按阶段产出：
    - S0：docs/PRD.md（技能 write-prd）。
-   - S1：docs/ARCHITECTURE.md、docs/adr/、docs/contracts/，然后用 flow_propose_tasks 提交 S2 至 S4 的任务 DAG（技能 design-contract、decompose-dag）；针对选定技术栈在 docs/rules-draft/ 写规则与命令草案（你不能改 rules/ 与 workflow.yaml，由用户决定是否应用）。
+   - S1：docs/ARCHITECTURE.md、docs/adr/、docs/contracts/，然后用 flow_propose_tasks 提交 S2 至 S4 的任务 DAG（技能 design-contract、decompose-dag）；按技能 write-rules 在 docs/rules-draft/ 写针对本项目的规则与命令草案（你不能改 rules/ 与 workflow.yaml，由用户决定是否应用）。
    - F0：docs/features/<名称>.md，并在 PRD 中追加条目（技能 write-feature-spec）。
    - F1：用 codegraph 做影响面分析写入功能说明；需要改契约时先写 ADR；用 flow_propose_tasks 提交本功能的 DAG。
 3. 关键信息不足：flow_block，一次只问一个问题，并给出建议的默认答案。

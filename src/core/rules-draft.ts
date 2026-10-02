@@ -84,7 +84,7 @@ export function applyDrafts(root: string, drafts: Draft[], flowId: string): { ap
     touched.push('workflow.yaml');
   }
   for (const d of drafts.filter((x) => x.kind === 'rule')) {
-    if (d.content.split('\n').length > 60) throw new Error(`${d.file} 超过 60 行；规则越长遵守越差，请让架构师精简`);
+    if (d.content.split('\n').length > 120) throw new Error(`${d.file} 超过 120 行；规则越长遵守越差，请让架构师精简`);
     mkdirSync(path.join(root, 'rules'), { recursive: true });
     writeFileSync(path.join(root, d.target), d.content.endsWith('\n') ? d.content : `${d.content}\n`);
     touched.push(d.target);
