@@ -6,6 +6,7 @@ import { spawn, execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { activePauses, describePause } from '../src/core/model-pause.ts';
 import { StateStore } from '../src/core/state-store.ts';
 import { costReport, formatRow } from '../src/core/cost.ts';
 
@@ -63,6 +64,8 @@ limits:`));
   let replanned = args.has('--no-replan') || store.listTasks(store.readState().active_flow ?? '').some((t) => !!t.replan);
   const unblocked = new Set<string>();
   const unblockCount = new Map<string, number>();
+  let lastSig = '';
+  let stalled = 0;
   for (let i = 0; i < 40; i++) {
     const active = store.readState().active_flow;
     if (!active) break;
@@ -92,6 +95,15 @@ limits:`));
       step(`${b.id} 阻塞：${b.blocked_reason}\n→ 代替用户回答（第 ${unblockCount.get(b.id)} 次）`);
       await pi(dir, `/flow unblock ${b.id} "同意你给出的建议（默认方案），按建议继续。如果需要临时实验，放在提示中给出的临时目录里。"`);
       continue;
+    }
+    const pauses = activePauses(store, new Date());
+    const sig = store.listTasks(active).map((t) => `${t.id}:${t.status}:${t.attempts}`).join(',');
+    stalled = pauses.length && sig === lastSig ? stalled + 1 : 0;
+    lastSig = sig;
+    if (stalled >= 2) {
+      // 模型额度用完或服务不可用，且再派发也没有进展：不空转，停下等用户（恢复后用 --dir 接着跑）
+      step(`模型暂停，停止：${pauses.map((p) => describePause(p, new Date())).join('；')}\n恢复后：node scripts/real-build.ts --dir ${dir} --keep`);
+      break;
     }
     if (!replanned && f.stage === 'S3' && store.listTasks(active).some((t) => t.stage === 'S3' && t.status === 'done')) {
       replanned = true;

@@ -138,6 +138,7 @@ pi install -l /path/to/pi-flow     # 只装到当前项目（写入 .pi/settings
 | `/flow gate` | 闸门失败并修复后重跑闸门 |
 | `/flow rules [apply [all\|<草案文件>...]]` | 查看或应用规则与命令草案（`docs/rules-draft/`，来自架构师或知识提升）；由程序写入 `rules/` 与 `workflow.yaml` 并提交 |
 | `/flow budget [tokens\|cost <数值>]` | 查看或设置本流程的预算；用到 80% 时提醒，超出后暂停派发新任务，提高预算后继续 |
+| `/flow models [resume <模型>\|all]` | 查看因额度用完、限流、服务连不上而暂停的模型；`resume` 立即恢复派发（模型名可只写 id） |
 | `/flow replan "<要改什么>"` | 执行中修订计划：architect 起草新增任务、调整或取消未开始的任务，你用 `/flow approve` 批准（`/flow reject "<意见>"` 打回重做）。在调度模式下直接告诉主 agent 也可以 |
 | `/flow sync` | 把主分支同步进集成分支（每个阶段开始时自动执行）；同步冲突由你处理后用它恢复 |
 | `/flow run [<run_id>]` | 某次子进程运行的工具调用摘要（含被拦下的调用）与最后的回复；不给 id 时列出最近的运行。会话文件保存在 `<项目>.worktrees/.sessions/<run>/` |
@@ -170,6 +171,7 @@ B-001「做一个待办应用」
 
 - **按风险审查**：只改文档或测试、改动不超过 3 个文件和 100 行、不涉及契约与 shared 的任务算低风险，用便宜模型审查（`workflow.yaml` 的 `review.low_risk.model`，取不到时用原来的审查模型）；设 `mode: skip` 则只做程序检查、不派审查。先行验收测试、解决合并冲突、之前失败过的任务一律完整审查。同时进行的审查数受 `review.max_parallel` 限制。
 - **失败后升级模型**：同一任务失败 2 次后（`escalation.after_failures`），下一次实施换成升级模型：`/flow-config escalate <角色> <模型>` 或菜单"设置失败后升级用的模型" > `roles.<角色>.escalate_model` > 上一档（cheap → medium → strong）。run 记录标明升级。
+- **模型额度用完、限流时暂停，不判失败**：子进程因模型额度用完（usage limit、insufficient_quota 等）或暂时不可用（限流、过载、5xx、本地服务没启动）而结束时，任务不计失败、不会被推向阻塞，而是暂停这个模型：用它的实施、审查、升级都先不派发，用其他模型的照常进行。"需要你处理"里会列出被暂停的模型、原因、受影响的角色与任务。恢复方式：错误信息里带恢复时间（如 Codex 的 "Try again in ~120 min"）时到点自动恢复；限流、过载从 5 分钟起自动重试，再失败时间隔加倍（最多 60 分钟）；额度用完又没给时间的等你 `/flow models resume <模型>`；也可以用 `/flow-config` 给受影响的角色换模型，换后立即继续。
 - **预算**：`workflow.yaml` 的 `budget`（tokens 计输入 + 输出、cost 计金额）或 `/flow budget` 为单个流程设置。用到 `warn_ratio`（默认 80%）时在"需要你处理"中提醒，超出后暂停派发新任务（返工与审查照常），提高预算后继续。`/flow status --cost` 显示用量。
 
 ### 执行中修订计划
@@ -214,6 +216,7 @@ AGENTS.md            极简说明
 .flow/               运行时状态（程序维护；不进入分支历史，每次状态变化提交到专用引用 refs/pi-flow/state，
                      用 git log refs/pi-flow/state 查看；需要备份时 git push origin refs/pi-flow/state）
   knowledge.json     项目知识库（跨流程；只经 flow_learn 与 /flow knowledge 由程序写入）
+  model-pauses.json  因额度用完、限流而暂停的模型（程序写入；/flow models 查看与恢复）
 ../<项目>.worktrees/  每个任务的 worktree（在项目目录之外）
 ```
 

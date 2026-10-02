@@ -5,6 +5,7 @@ import type { StateStore } from './state-store.ts';
 import { isFinished } from './state-store.ts';
 import { isLeadingTest } from './dag.ts';
 import { budgetState, formatBudget } from './cost-control.ts';
+import { activePauses, describePause } from './model-pause.ts';
 import { PHASES, type FlowFile, type Phase, type TaskFile } from './schemas.ts';
 
 export type PhaseOrDone = Phase | 'done';
@@ -144,6 +145,11 @@ export function actionsNeeded(store: StateStore, config: FlowConfig): Action[] {
       out.push({ key: `${flow.id}:blocked:${t.id}:${t.version}`, text: `${t.id}「${short(t.title, 40)}」阻塞：${short(t.blocked_reason ?? '')}`, command: `/flow answer ${t.id}` });
     }
   }
+  const now = new Date();
+  for (const p of activePauses(store, now)) {
+    out.push({ key: `model-pause:${p.model}@${p.since}`, text: short(describePause(p, now), 400),
+      command: `等待自动恢复，或 /flow models resume ${p.model} 立即恢复；也可以用 /flow-config 给 ${p.roles.join('、')} 换模型（换后立即继续）` });
+  }
   const cand = store.readKnowledge().entries.filter((e) => e.status === 'candidate');
   if (cand.length) {
     out.push({ key: `knowledge:candidates:${cand.at(-1)!.id}`, text: `${cand.length} 条知识候选待确认（来自审查打回、合并后验证失败）：${cand.slice(-3).map((e) => e.id).join('、')}${cand.length > 3 ? ' 等' : ''}`,
@@ -230,6 +236,9 @@ export function notices(prev: StatusSnapshot, next: StatusSnapshot, failureKind?
   }
   for (const [key, text] of Object.entries(next.actions)) {
     if (!(key in prev.actions)) out.push(`pi-flow 需要你处理：${text}`);
+  }
+  for (const key of Object.keys(prev.actions)) {
+    if (key.startsWith('model-pause:') && !(key in next.actions)) out.push(`pi-flow：模型 ${key.slice('model-pause:'.length, key.lastIndexOf('@'))} 已恢复派发。`);
   }
   for (const [key, n] of Object.entries(next.attempts)) {
     if (n === 1 && (prev.attempts[key] ?? 0) === 0) {

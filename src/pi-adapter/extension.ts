@@ -298,7 +298,7 @@ export default function piFlow(pi: ExtensionAPI): void {
     if (!s?.orchestrator || !s.handle) return;
     const { store, engine, config } = s.handle;
     s.driftBefore = dirtyFiles(ctx.cwd);
-    const injected = `${agentPrompt(ctx.cwd, 'orchestrator')}\n\n${turnContext(store, config.limits.max_parallel, engine.activeRuns().length, config)}`;
+    const injected = `${agentPrompt(ctx.cwd, 'orchestrator')}\n\n${turnContext(store, config.limits.max_parallel, engine.activeRuns().length, config, (f, t) => engine.pausedFor(f, t))}`;
     event.systemPromptOptions.appendSystemPrompt = `${event.systemPromptOptions.appendSystemPrompt ?? ''}\n\n${injected}`.trim();
   });
 
@@ -322,8 +322,8 @@ export default function piFlow(pi: ExtensionAPI): void {
       if (event.toolName !== 'read') return { block: true, reason: '需求访谈阶段只能阅读 docs/ 下的文档并用 flow_brief 记录需求；不能写文件或执行命令。' };
     }
     if (!s?.handle || (!s.orchestrator && !s.interview)) return;
-    const { store, config } = s.handle;
-    const step = nextStep(store, config.limits.max_parallel, 0, config);
+    const { store, config, engine } = s.handle;
+    const step = nextStep(store, config.limits.max_parallel, 0, config, (f, t) => engine.pausedFor(f, t));
     const r = await enforceToolCall({ toolName: event.toolName, input: event.input }, {
       config, role: 'orchestrator', cwd: ctx.cwd, workspaceRoot: ctx.cwd, mainRoot: ctx.cwd,
       contractsLocked: true, ...(step.task ? { readyTaskId: step.task } : {}),
@@ -338,7 +338,7 @@ export default function piFlow(pi: ExtensionAPI): void {
 
   pi.registerCommand('flow', {
     description: 'pi-flow 管理：status、next、resume、approve、reject、unblock、gate、doctor、init',
-    getArgumentCompletions: (prefix) => ['status', 'next', 'resume', 'answer', 'rules', 'knowledge', 'run', 'sync', 'replan', 'budget', 'off', 'approve', 'reject', 'unblock', 'gate', 'abort', 'doctor', 'init', 'help']
+    getArgumentCompletions: (prefix) => ['status', 'next', 'resume', 'answer', 'rules', 'knowledge', 'run', 'sync', 'replan', 'budget', 'models', 'off', 'approve', 'reject', 'unblock', 'gate', 'abort', 'doctor', 'init', 'help']
       .filter((x) => x.startsWith(prefix.trim())).map((x) => ({ value: x, label: x })),
     handler: async (args, ctx) => {
       try {
@@ -381,6 +381,8 @@ export default function piFlow(pi: ExtensionAPI): void {
         const { config } = loadProjectConfig(ctx.cwd);
         const ui = ctx.hasUI ? { select: (t: string, o: string[]) => ctx.ui.select(t, o), notify: (m: string, l?: 'info' | 'warning' | 'error') => ctx.ui.notify(m, l) } : null;
         report(ctx, await runFlowConfig(args, { ui, models: availableModels(ctx), config, settingsPath: roleSettingsPath() }));
+        // 换了模型的角色不再等被暂停的模型：立即继续
+        sessions.get(ctx.cwd)?.handle?.engine.retryPaused();
       } catch (e) {
         report(ctx, (e as Error).message, 'error');
       }

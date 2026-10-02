@@ -121,3 +121,32 @@ test('codemode：审查者在脚本中并行调用工具；脚本内的越权调
     assert.match(result, /DIFF:.*a\.ts.*FILE:export const a = 1;/);
   } finally { p.cleanup(); }
 });
+
+test('真实 pi 子进程：模型返回额度用完（429 insufficient_quota）时暂停该模型，任务不计失败', { skip: !piAvailable && 'pi 不可用', timeout: 120_000 }, async () => {
+  const p = await setupProject({ tasks: [mkTask('T-001', { verify: ['typecheck', 'test'] })] });
+  try {
+    const errors: unknown[] = [];
+    const engine = new Engine({
+      root: p.dir, store: p.store, config: p.config, launcher: new PiLauncher(),
+      roleSettings: () => ({ version: 1, roles: { 'backend-engineer': { model: 'fakellm/quota' }, reviewer: { model: 'fakellm/review-pass' } } }),
+      packageAgentsDir: path.join(ROOT, 'agents'),
+      subagentExtension: path.join(ROOT, 'src/pi-adapter/subagent.ts'),
+      extraExtensions: () => [path.join(ROOT, 'test/fixtures/fake-llm/provider.ts')],
+      onError: (e) => errors.push(e),
+    });
+    await engine.next(p.flowId);
+    await engine.idle();
+    assert.deepEqual(errors, []);
+    const t = p.store.readTask(p.flowId, 'T-001');
+    assert.equal(t.status, 'in_progress');
+    assert.equal(t.attempts, 0, `${t.last_failure ?? ''}`);
+    assert.equal(t.lease, null);
+    const runs = p.store.listRuns();
+    assert.equal(runs.length, 1, '暂停后不再派发');
+    assert.equal(runs[0]!.outcome, 'unavailable');
+    const pause = p.store.readModelPauses().pauses[0];
+    assert.equal(pause?.model, 'fakellm/quota');
+    assert.equal(pause?.kind, 'quota');
+    assert.match(pause?.reason ?? '', /quota/);
+  } finally { p.cleanup(); }
+});

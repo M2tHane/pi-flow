@@ -27,6 +27,8 @@ import { ensureStageTasks } from './stages.ts';
 import { STAGE_SKILLS } from '../modes/plan.ts';
 import { fixStep } from '../modes/fix.ts';
 import { existsSync, readFileSync } from 'node:fs';
+import { activePause, classifyUnavailable, clearPause, describePause, pauseActive, recordPause } from './model-pause.ts';
+import type { ModelPause } from './schemas.ts';
 
 export const REVIEWER_ROLE = 'reviewer';
 
@@ -66,6 +68,9 @@ export interface Dispatched { run_id: string; task: string; role: string; model:
 
 interface ActiveRun { flow: string; task: string; role: string; handle: SubagentHandle }
 
+/** 一次派发会用的角色与模型（审查分级、失败升级之后） */
+interface ModelPlan { role: string; model: string; thinking: ThinkingLevel | null; reviewMode?: 'full' | 'light'; escalated: boolean }
+
 export class Engine {
   private readonly d: EngineDeps;
   private readonly runs = new Map<string, ActiveRun>();
@@ -102,7 +107,7 @@ export class Engine {
     if (flow.sync?.status === 'conflict') return [];
     if (budgetState(this.d.store, this.d.config, flow)?.exceeded) return [];
     const held = heldByRevision(this.d.store, flowId);
-    const ids = selectDispatchable(this.d.store.listTasks(flowId).filter((t) => !held.has(t.id)), flow.stage, this.d.config.limits.max_parallel);
+    const ids = selectDispatchable(this.d.store.listTasks(flowId).filter((t) => !held.has(t.id) && !this.pausedFor(flowId, t)), flow.stage, this.d.config.limits.max_parallel);
     const out: Dispatched[] = [];
     for (const id of ids) out.push(await this.dispatch(flowId, id));
     return out;
@@ -114,25 +119,9 @@ export class Engine {
     ensureLocalExcludes(root);
     const flow = store.readFlow(flowId);
     let task = store.readTask(flowId, taskId);
-    const role = task.status === 'review' ? REVIEWER_ROLE : task.role;
-    const base = this.modelFor(role);
-    const { thinking } = base;
-    let model = base.model;
-    // 按风险审查（H）：低风险任务用便宜模型审查（取不到便宜模型时用原来的审查模型）
-    let reviewMode: 'full' | 'light' | undefined;
-    if (role === REVIEWER_ROLE) {
-      const low = assessRisk(this.d.config, task, store.listTasks(flowId), diffNumstat(task)).low;
-      const policy = reviewPolicy(this.d.config).lowRisk;
-      reviewMode = low && policy.mode === 'cheap' ? 'light' : 'full';
-      if (reviewMode === 'light') model = resolveModelRef(this.d.config, policy.model) ?? model;
-    }
-    // 失败后升级模型（I）：同一任务失败达到次数后，实施换成升级模型
-    let escalated = false;
-    const esc = escalationPolicy(this.d.config);
-    if (role !== REVIEWER_ROLE && esc.enabled && task.attempts >= esc.afterFailures) {
-      const up = escalationModel(this.d.config, this.d.roleSettings(), role, model);
-      if (up) { model = up; escalated = true; }
-    }
+    const { role, model, thinking, reviewMode, escalated } = this.planModel(flowId, task);
+    const paused = activePause(store, model, this.now());
+    if (paused) throw new DispatchError(`${describePause(paused, this.now())}。恢复：/flow models resume ${paused.model}，或用 /flow-config 给 ${role} 换模型`);
     const runId = `r-${this.now().getTime().toString(36)}${randomBytes(3).toString('hex')}`;
     const token = randomBytes(24).toString('base64url');
     const lease = {
@@ -205,7 +194,42 @@ export class Engine {
     }
     const reviewing = [...this.runs.values()].filter((r) => r.role === REVIEWER_ROLE).length;
     if (reviewing >= policy.maxParallel) return; // 审查并发已满：有审查结束时 pump 会再来
+    if (this.pausedFor(flowId, t)) return; // 审查模型暂停中：恢复后 pump 会再来
     await this.dispatch(flowId, t.id);
+  }
+
+  /** 派发这个任务会用的角色与模型：审查按风险分级（H），实施失败后升级（I） */
+  private planModel(flowId: string, task: TaskFile): ModelPlan {
+    const role = task.status === 'review' ? REVIEWER_ROLE : task.role;
+    const base = this.modelFor(role);
+    let model = base.model;
+    // 按风险审查（H）：低风险任务用便宜模型审查（取不到便宜模型时用原来的审查模型）
+    let reviewMode: 'full' | 'light' | undefined;
+    if (role === REVIEWER_ROLE) {
+      const low = assessRisk(this.d.config, task, this.d.store.listTasks(flowId), diffNumstat(task)).low;
+      const policy = reviewPolicy(this.d.config).lowRisk;
+      reviewMode = low && policy.mode === 'cheap' ? 'light' : 'full';
+      if (reviewMode === 'light') model = resolveModelRef(this.d.config, policy.model) ?? model;
+    }
+    // 失败后升级模型（I）：同一任务失败达到次数后，实施换成升级模型
+    let escalated = false;
+    const esc = escalationPolicy(this.d.config);
+    if (role !== REVIEWER_ROLE && esc.enabled && task.attempts >= esc.afterFailures) {
+      const up = escalationModel(this.d.config, this.d.roleSettings(), role, model);
+      if (up) { model = up; escalated = true; }
+    }
+    return { role, model, thinking: base.thinking, ...(reviewMode ? { reviewMode } : {}), escalated };
+  }
+
+  /** 任务下一次派发要用的模型正被暂停时返回暂停记录（没设置模型等其他问题交给 dispatch 报错） */
+  pausedFor(flowId: string, task: TaskFile): ModelPause | null {
+    if (task.lease || !['ready', 'in_progress', 'review'].includes(task.status)) return null;
+    if (!this.d.store.readModelPauses().pauses.some((p) => pauseActive(p, this.now()))) return null;
+    try {
+      return activePause(this.d.store, this.planModel(flowId, task).model, this.now());
+    } catch {
+      return null;
+    }
   }
 
   private modelFor(role: string): { model: string; thinking: ThinkingLevel | null } {
@@ -289,13 +313,26 @@ export class Engine {
     const { store } = this.d;
     const prev = store.readRun(runId);
     const leaseHeld = store.readTask(active.flow, active.task).lease?.run_id === runId;
-    const outcome = prev.outcome ?? (leaseHeld ? 'failed' : null);
+    // 模型额度用完、限流、服务不可用：不是任务的问题，暂停这个模型而不是计失败
+    const unavailable = leaseHeld ? classifyUnavailable(r.error, r.stderrTail, r.exitCode) : null;
+    const outcome = prev.outcome ?? (leaseHeld ? (unavailable ? 'unavailable' : 'failed') : null);
     await store.updateRun(runId, {
       ended_at: this.now().toISOString(), tokens: r.tokens, model: r.model ?? prev.model, ...(outcome ? { outcome } : {}),
       ...(r.cost !== undefined ? { cost: r.cost } : {}),
       ...(prev.session_dir ? { session_file: findSessionFile(prev.session_dir) } : {}),
     }, 'dispatcher', 'run 结束');
-    if (leaseHeld) {
+    if (unavailable && prev.model) {
+      const pause = await recordPause(store, { model: prev.model, role: active.role, flow: active.flow, task: active.task, u: unavailable, now: this.now() });
+      const t = store.readTask(active.flow, active.task);
+      if (t.lease?.run_id === runId && (t.status === 'in_progress' || t.status === 'review')) {
+        await store.transitionTask(active.flow, active.task, { to: t.status, trigger: 'run_paused', actor: 'dispatcher', facts: { reason: describePause(pause, this.now()) } });
+      }
+    } else if (prev.model && r.turns > 0 && !r.error) {
+      // 模型正常响应过：清除它残留的暂停记录（自动恢复后的第一次成功，连续暂停次数归零）
+      const p = store.readModelPauses().pauses.find((x) => x.model === prev.model);
+      if (p && !pauseActive(p, this.now())) await clearPause(store, prev.model, 'dispatcher', '恢复后已正常响应');
+    }
+    if (leaseHeld && !unavailable) {
       const why = r.error ?? (r.exitCode ? `退出码 ${r.exitCode}${r.stderrTail ? `：${r.stderrTail.slice(-300)}` : ''}` : '未提交就结束');
       await this.failRun(active.flow, active.task, runId, `子进程结束但没有${active.role === REVIEWER_ROLE ? '给出审查结论' : '提交'}（${why}）`);
     }
@@ -331,7 +368,7 @@ export class Engine {
         if (t.status === 'review') {
           await this.reviewStep(flowId, t);
         } else if (t.status === 'in_progress') {
-          await this.dispatch(flowId, t.id);
+          if (!this.pausedFor(flowId, t)) await this.dispatch(flowId, t.id);
         } else if (t.status === 'verifying' && !this.verifying.has(t.id)) {
           this.verifying.add(t.id);
           // 测试必须先失败：fix 的复现测试，build/feature 的先行验收测试
@@ -347,7 +384,7 @@ export class Engine {
       const flow = this.d.store.readFlow(flowId);
       const tasks = this.d.store.listTasks(flowId);
       const fixes = selectDispatchable(tasks, flow.stage, this.d.config.limits.max_parallel)
-        .filter((id) => tasks.find((t) => t.id === id)?.kind === 'merge-fix');
+        .filter((id) => { const t = tasks.find((x) => x.id === id); return t?.kind === 'merge-fix' && !this.pausedFor(flowId, t); });
       for (const id of fixes) await this.dispatch(flowId, id);
     } catch (e) { report(e); }
     // merge-fix 最终失败：挂起的原任务一并转 blocked（第 10 节 merging → blocked）
@@ -382,7 +419,8 @@ export class Engine {
     try {
       const flow = this.d.store.readFlow(flowId);
       if (flow.mode === 'fix') {
-        await fixStep({ root: this.d.root, store: this.d.store, config: this.d.config, dispatch: (f, t) => this.dispatch(f, t),
+        await fixStep({ root: this.d.root, store: this.d.store, config: this.d.config,
+          dispatch: (f, t) => (this.pausedFor(f, this.d.store.readTask(f, t)) ? Promise.resolve(null) : this.dispatch(f, t)),
           promote: (f) => this.promote(f), ...(this.d.now ? { now: this.d.now } : {}) }, flowId);
         return;
       }
@@ -448,11 +486,50 @@ export class Engine {
   }
 
   private watchTimer: NodeJS.Timeout | null = null;
+  /** 已处理过的自动恢复（模型@恢复时间），避免同一次到期重复推进 */
+  private readonly resumed = new Set<string>();
+
+  /** 暂停到期的模型：推进受影响的流程（派发等它恢复的任务）。返回到期的模型。 */
+  checkPauses(): string[] {
+    const due = this.d.store.readModelPauses().pauses.filter((p) => p.retry_after && !pauseActive(p, this.now()) && !this.resumed.has(`${p.model}@${p.retry_after}`));
+    for (const p of due) {
+      this.resumed.add(`${p.model}@${p.retry_after}`);
+      this.pumpFlowsOf(p);
+    }
+    return due.map((p) => p.model);
+  }
+
+  /** 用户恢复模型（/flow models resume）：删除暂停记录并推进受影响的流程 */
+  async resumeModel(model: string): Promise<ModelPause | null> {
+    const p = await clearPause(this.d.store, model, 'human', '用户恢复');
+    if (p) this.pumpFlowsOf(p);
+    this.notify();
+    return p;
+  }
+
+  /** 角色模型改动后（/flow-config）：推进等待暂停模型的流程，换了模型的任务立即继续 */
+  retryPaused(): void {
+    for (const p of this.d.store.readModelPauses().pauses) this.pumpFlowsOf(p);
+  }
+
+  private pumpFlowsOf(p: ModelPause): void {
+    const flows = new Set(p.tasks.map((k) => k.split('/')[0]!));
+    for (const f of flows) {
+      let flow;
+      try { flow = this.d.store.readFlow(f); } catch { continue; }
+      // 修复流程由 pump 推进；其他流程的 ready 任务由程序直接派发（与 /flow budget 提高预算后相同）
+      const mode = flow.mode;
+      this.track(this.pump(f).then(() => (mode !== 'fix' && this.d.store.readFlow(f).stage_status === 'active' ? this.next(f) : undefined)));
+    }
+  }
 
   /** 周期性检查租约（不阻止进程退出） */
   startLeaseWatch(intervalMs = 30_000): void {
     if (this.watchTimer) return;
-    this.watchTimer = setInterval(() => this.checkLeases(), intervalMs);
+    this.watchTimer = setInterval(() => {
+      this.checkLeases();
+      try { this.checkPauses(); } catch (e) { (this.d.onError ?? (() => {}))(e); }
+    }, intervalMs);
     this.watchTimer.unref();
   }
 

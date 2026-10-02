@@ -209,6 +209,21 @@ test('run_interrupted：会话中断不消耗失败预算，保留 worktree；�
   assert.match(many.task.blocked_reason ?? '', /连续中断 5 次/);
 });
 
+test('run_paused：模型服务不可用不计失败、不计中断，保留 worktree；不会因次数转 blocked', () => {
+  const r = ok(planTransition(inProgress({ attempts: 2, interruptions: 4 }), 'in_progress', 'run_paused', facts({ reason: '额度用完' })));
+  assert.equal(r.to, 'in_progress');
+  assert.equal(r.task.attempts, 2);
+  assert.equal(r.task.interruptions, 4);
+  assert.equal(r.task.lease, null);
+  assert.equal(r.task.worktree, '/wt/T-001');
+  assert.equal(r.task.last_failure, null, '不覆盖上次失败原因');
+  bad(planTransition(r.task, 'in_progress', 'run_paused', facts({ reason: 'x' })), /没有运行中/);
+  bad(planTransition(inProgress(), 'in_progress', 'run_paused', facts()), /原因/);
+  const rv = ok(planTransition(mkTask('T-001', { status: 'review', lease: lease('r-2', RTOKEN) }), 'review', 'run_paused', facts({ reason: '限流' })));
+  assert.equal(rv.task.status, 'review');
+  bad(planTransition(mkTask('T-001', { status: 'review', lease: lease('r-2', RTOKEN) }), 'in_progress', 'run_paused', facts({ reason: '限流' })), /非法/);
+});
+
 test('审查中 flow_block 的任务，用户回答后回到审查；实施中阻塞的仍回到 ready', () => {
   const inReview = mkTask('T-001', { status: 'review', worktree: '/w', branch: 'b', base_sha: 'abc', lease: lease('r-2', RTOKEN) });
   const blocked = ok(planTransition(inReview, 'blocked', 'block', facts({ reason: '规则冲突，请确认' }))).task;

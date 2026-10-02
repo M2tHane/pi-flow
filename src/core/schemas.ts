@@ -176,6 +176,8 @@ export const RunFile = Type.Object({
   outcome: Nullable(Type.Union([
     Type.Literal('submitted'), Type.Literal('approved'), Type.Literal('rejected'), Type.Literal('blocked'),
     Type.Literal('failed'), Type.Literal('killed'), Type.Literal('lease_expired'), Type.Literal('noted'),
+    /** 模型服务不可用（额度用完、限流等）：不计失败，模型暂停 */
+    Type.Literal('unavailable'),
   ])),
   token_hash: Type.String({ minLength: 64, maxLength: 64 }),
   violations: Type.Integer({ minimum: 0 }),
@@ -427,6 +429,34 @@ export const KnowledgeFile = Type.Object({
 }, { additionalProperties: false });
 export type KnowledgeFile = Static<typeof KnowledgeFile>;
 
+// —— 项目级模型暂停（.flow/model-pauses.json）：模型额度用完、限流、服务不可用时暂停派发；只由程序写入 ——
+
+export const MODEL_PAUSE_KINDS = ['quota', 'unavailable'] as const;
+export type ModelPauseKind = (typeof MODEL_PAUSE_KINDS)[number];
+
+export const ModelPause = Type.Object({
+  /** provider/id */
+  model: Type.String({ minLength: 1 }),
+  /** quota：额度用完；unavailable：限流、过载、服务或网络不可用 */
+  kind: Type.Enum(MODEL_PAUSE_KINDS),
+  reason: Type.String(),
+  since: IsoTime,
+  /** 自动恢复时间；没有时等用户 /flow models resume */
+  retry_after: Type.Optional(IsoTime),
+  /** 连续暂停次数（自动恢复后又失败时退避加倍） */
+  strikes: Type.Integer({ minimum: 1 }),
+  roles: Type.Array(Type.String()),
+  /** 受影响的任务：<流程>/<任务> */
+  tasks: Type.Array(Type.String()),
+}, { additionalProperties: false });
+export type ModelPause = Static<typeof ModelPause>;
+
+export const ModelPausesFile = Type.Object({
+  pauses: Type.Array(ModelPause),
+  version: Type.Integer({ minimum: 1 }),
+}, { additionalProperties: false });
+export type ModelPausesFile = Static<typeof ModelPausesFile>;
+
 // —— ~/.pi/agent/pi-flow.json：用户通过 /flow-config 设置的角色模型与思考级别 ——
 
 export const RoleSettingsFile = Type.Object({
@@ -454,6 +484,7 @@ export const SCHEMAS = {
   brief: BriefFile,
   knowledge: KnowledgeFile,
   revision: RevisionFile,
+  'model-pauses': ModelPausesFile,
 } as const;
 export type SchemaKind = keyof typeof SCHEMAS;
 

@@ -1,4 +1,5 @@
 // orchestrator 的工具：flow_status（只读）、flow_dispatch（只收 ready 任务，非阻塞）、flow_wait（等待变化，返回精简摘要）。
+import { activePauses, describePause } from '../core/model-pause.ts';
 import { Type, type Static } from 'typebox';
 import type { StateStore } from '../core/state-store.ts';
 import type { Engine } from '../core/dispatcher.ts';
@@ -61,6 +62,9 @@ export function statusText(store: StateStore, engine: Engine | null, flowId: str
   if (ready.length) lines.push(`可派发：${ready.map((t) => `${t.id} ${t.title}（${t.role}）`).join('；')}`);
   const blocked = tasks.filter((t) => t.status === 'blocked');
   if (blocked.length) lines.push(`阻塞，需要用户处理：\n${blocked.map((t) => `- ${t.id}：${one(t.blocked_reason ?? '')} → /flow unblock ${t.id}`).join('\n')}`);
+  const now = new Date();
+  const pauses = activePauses(store, now);
+  if (pauses.length) lines.push(`模型暂停，需要用户处理：\n${pauses.map((p) => `- ${describePause(p, now)} → /flow models resume ${p.model} 或 /flow-config 换模型`).join('\n')}`);
   const failing = tasks.filter((t) => t.last_failure && !['blocked', 'done', 'cancelled'].includes(t.status));
   if (failing.length) lines.push(`最近失败：\n${failing.map((t) => `- ${t.id}（第 ${t.attempts} 次）：${one(t.last_failure!)}`).join('\n')}`);
   if (flow.stage_status === 'awaiting_human') {

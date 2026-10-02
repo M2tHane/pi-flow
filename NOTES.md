@@ -311,6 +311,20 @@
     - README 的安装一节重写为四步：基础环境 → pi-flow → 插件 → `/flow init` 自检。
     - 崩溃恢复测试的等待上限 90 → 180 秒：全量并发运行时真实 pi 子进程首次启动偶尔很慢，导致误报超时。
 
+88. **模型服务不可用时暂停模型，不判任务失败（第三轮 A）**：
+    - Pi 已核实（1.0.0 的 `pi-ai/dist/utils/retry.js` 与 `settings-manager.js`）：Pi 自己对限流、过载、5xx、网络错误自动重试（默认 3 次，间隔 2/4/8 秒），对额度用完类错误（`insufficient_quota`、`usage limit`、`quota exceeded`、`billing` 等）不重试；最终错误在最后一条 assistant 的 `errorMessage`（`stopReason: error`）中。所以传到 pi-flow 的已是"重试过还不行"或"不该重试"的错误。Codex 的额度错误带 "Try again in ~N min"。
+    - 识别集中在 `src/core/model-pause.ts` 的 `classifyUnavailable`：`quota`（额度、余额、订阅用量）与 `unavailable`（限流、过载、服务或网络不可用；HTTP 状态码只在模型的错误信息里认，stderr 只在异常退出时参考）。判定不了的仍按 `run_failed`。
+    - 新增触发 `run_paused`（in_progress→in_progress、review→review）：只清租约，不计 attempts、不计 interruptions、不覆盖 last_failure，所以不会因额度问题转 blocked，也碰不到 `MAX_INTERRUPTIONS`。run 的 outcome 新增 `unavailable`。
+    - 暂停记录是项目级的 `.flow/model-pauses.json`（新 schema `model-pauses`，经 StateStore 写入、记 note 事件）：`{ model, kind, reason, since, retry_after?, strikes, roles, tasks }`。恢复时间：错误里读得出就用它（至少 1 分钟）；`unavailable` 读不出时 5 分钟起，自动恢复后又失败则加倍，最多 60 分钟；`quota` 读不出时等用户。模型下一次正常响应后删除记录（strikes 归零）。
+    - 派发：`Engine.planModel` 把"这次派发用哪个模型"（审查分级 H、失败升级 I）抽出来，`pausedFor` 据此判断。`next`、pump（重新派发、审查、merge-fix）、fix 流程跳过模型被暂停的任务（并发名额让给其他任务）；显式 `dispatch`（`flow_dispatch`）报中文错误。
+    - 恢复：引擎每 30 秒的租约检查同时检查暂停到期（`checkPauses`），到期后推进受影响的流程（pump，非 fix 流程再 `next`）；`/flow models resume <模型|all>` 立即恢复；`/flow-config` 改设置后调用 `retryPaused`，换了模型的任务立即继续。没有另设"备用模型"配置：角色模型每次派发都重新读取，用 `/flow-config` 换模型就是改用备用模型。
+    - 提示："需要你处理"、主动通知（出现与恢复）、`flow_status`、orchestrator 每轮的"下一步"（只剩等暂停模型的任务时让它向用户说明并等待，不调用 flow_dispatch）。`scripts/real-build.ts` 在有暂停且两轮没有进展时停下，提示恢复后用 `--dir` 接着跑。
+    - 验收：`test/e2e/model-pause.test.ts`（额度用完：attempts 不变、不转阻塞、模型不再派发、其他模型的任务完成、提示与 orchestrator 下一步、`/flow models resume` 后完成；限流：5 分钟后自动恢复、再失败退避加倍、成功后清除记录）；`test/e2e/pi-subprocess.test.ts` 用真实 pi 与假模型的 429 insufficient_quota 验证错误能被识别；`test/unit/model-pause.test.ts`、`state-machine.test.ts`。假模型 `test/fixtures/fake-llm/server.ts` 的步骤支持 `error: { status, message, code }`。
+
+## 第三轮优化设计要点
+
+- **A 模型暂停**（第 88 条）。验收见该条。
+
 ## 第二轮优化设计要点
 
 - **A 先行验收测试先失败**（第 69、70 条）。验收：

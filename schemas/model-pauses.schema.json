@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pi-flow/model-pauses.schema.json",
+  "type": "object",
+  "required": [
+    "pauses",
+    "version"
+  ],
+  "properties": {
+    "pauses": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "model",
+          "kind",
+          "reason",
+          "since",
+          "strikes",
+          "roles",
+          "tasks"
+        ],
+        "properties": {
+          "model": {
+            "type": "string",
+            "minLength": 1
+          },
+          "kind": {
+            "enum": [
+              "quota",
+              "unavailable"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "since": {
+            "type": "string",
+            "minLength": 1
+          },
+          "retry_after": {
+            "type": "string",
+            "minLength": 1
+          },
+          "strikes": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "roles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "tasks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    }
+  },
+  "additionalProperties": false
+}

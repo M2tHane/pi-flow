@@ -11,6 +11,8 @@ export interface Step {
   usage?: { prompt_tokens: number; completion_tokens: number; cached_tokens?: number };
   /** 返回前延迟（模拟慢模型），毫秒 */
   delay_ms?: number;
+  /** 返回 HTTP 错误（模拟额度用完、限流）：{ status: 429, message: 'insufficient_quota ...' } */
+  error?: { status: number; message: string; code?: string };
 }
 
 export interface FakeLlm { url: string; close(): Promise<void> }
@@ -42,6 +44,11 @@ export function startFakeLlm(opts: { scriptsDir: string; logFile?: string; port?
       const steps: Step[] = script.variants ? (script.variants.find((v) => firstUser.includes(v.match))?.steps ?? []) : (script.steps ?? []);
       const step: Step = steps[turn] ?? { text: '（脚本已结束）' };
       if (step.delay_ms) await new Promise((r) => setTimeout(r, step.delay_ms));
+      if (step.error) {
+        res.writeHead(step.error.status, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: step.error.message, type: step.error.code ?? 'error', code: step.error.code ?? null } }));
+        return;
+      }
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
       const id = `chatcmpl-${turn}`;
       const send = (delta: unknown, finish: string | null = null, usage?: unknown) =>

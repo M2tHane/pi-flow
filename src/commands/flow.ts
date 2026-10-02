@@ -23,6 +23,7 @@ import { RevisionError, approveRevision, rejectRevision, startReplan } from '../
 import { KnowledgeError, acceptCandidate, formatKnowledgeList, markPromoted, promoteToDraft, retireEntries, searchKnowledge } from '../core/knowledge.ts';
 import { loadConfig } from '../core/config.ts';
 import { checkDependencies } from '../core/dependencies.ts';
+import { activePauses, describePause, matchPausedModel } from '../core/model-pause.ts';
 import { git } from '../core/git.ts';
 import type { StateStore as Store } from '../core/state-store.ts';
 import { existsSync } from 'node:fs';
@@ -73,6 +74,7 @@ export const FLOW_USAGE = [
   '  /flow unblock <任务> ["<回答>"] [--attempts N]   解除阻塞（无界面时用它回答）',
   '  /flow gate              闸门失败并修复后，重跑当前阶段闸门',
   '  /flow rules [apply [all|<草案文件>...]]   查看或应用规则与命令草案（docs/rules-draft/，来自架构师或知识提升）',
+  '  /flow models [resume <模型>|all]   查看因额度用完、限流而暂停的模型；resume 立即恢复派发',
   '  /flow budget [tokens|cost <数值>]   查看或设置本流程的预算；超出后暂停派发新任务',
   '  /flow replan "<要改什么>"   执行中修订计划：architect 起草（新增任务、调整或取消未开始的任务），你批准后生效',
   '  /flow sync              把主分支同步进集成分支（每个阶段开始时自动执行）',
@@ -108,6 +110,13 @@ function fullStatus(store: Store, engine: Engine | null): string {
   const recent = store.readKnowledge().entries.filter((e) => e.status === 'active' || e.status === 'candidate').slice(-5);
   if (recent.length) parts.push(`最近的项目知识（全部：/flow knowledge）：\n${formatKnowledgeList(recent)}`);
   return parts.join('\n\n');
+}
+
+function formatPauses(store: Store): string {
+  const now = new Date();
+  const pauses = activePauses(store, now);
+  if (!pauses.length) return '没有被暂停的模型。';
+  return `被暂停的模型：\n${pauses.map((p) => `- ${describePause(p, now)}`).join('\n')}\n恢复：/flow models resume <模型>；或用 /flow-config 给受影响的角色换模型（换后立即继续）。`;
 }
 
 function option(argv: string[], name: string): string | undefined {
@@ -287,6 +296,20 @@ export async function runFlowCommand(args: string, env: CommandEnv): Promise<str
       if (kind) return '用法：/flow budget（查看）、/flow budget tokens <数值>、/flow budget cost <金额>';
       const b = budgetState(h.store, h.config, h.store.readFlow(flowId));
       return b ? `${flowId} ${formatBudget(b)}` : `${flowId} 没有设置预算（workflow.yaml 的 budget 或 /flow budget tokens|cost <数值>）。`;
+    }
+    case 'models': {
+      if (argv[1] === 'resume') {
+        const name = argv[2];
+        if (!name) return '用法：/flow models resume <模型>（provider/id 或只写 id）或 /flow models resume all';
+        const h = env.engine();
+        const hits = matchPausedModel(h.store.readModelPauses().pauses, name);
+        if (!hits.length) return `没有被暂停的模型 ${name}。${formatPauses(h.store)}`;
+        for (const p of hits) await h.engine.resumeModel(p.model);
+        if (env.waitForIdle) await h.engine.idle();
+        return `已恢复 ${hits.map((p) => p.model).join('、')}，受影响的任务会重新派发。如果额度仍未恢复，会再次暂停。`;
+      }
+      if (argv[1]) return '用法：/flow models（查看）、/flow models resume <模型>|all';
+      return formatPauses(env.store());
     }
     case 'replan': {
       const h = env.engine();

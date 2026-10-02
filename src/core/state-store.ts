@@ -7,7 +7,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import lockfile from 'proper-lockfile';
 import {
-  validate, type FlowFile, type MergeQueueFile, type RunFile, type ProposalFile, type BriefFile, type KnowledgeFile, type RevisionFile, type SchemaKind, type StageStatus, type StateFile,
+  validate, type FlowFile, type MergeQueueFile, type RunFile, type ProposalFile, type BriefFile, type KnowledgeFile, type ModelPausesFile, type RevisionFile, type SchemaKind, type StageStatus, type StateFile,
   type TaskFile, type TaskStatus, type FlowEvent,
 } from './schemas.ts';
 import {
@@ -64,6 +64,7 @@ export const revisionRel = (flow: string) => `flows/${flow}/revision.json`;
 export const stageEvidenceRel = (flow: string, stage: string) => `flows/${flow}/evidence/stage-${stage}`;
 const MQ_REL = 'merge-queue.json';
 export const KNOWLEDGE_REL = 'knowledge.json';
+export const MODEL_PAUSES_REL = 'model-pauses.json';
 
 export function schemaKindOf(rel: string): SchemaKind | null {
   if (rel === MQ_REL) return 'merge-queue';
@@ -74,6 +75,7 @@ export function schemaKindOf(rel: string): SchemaKind | null {
   if (/^flows\/[^/]+\/revision\.json$/.test(rel)) return 'revision';
   if (rel === 'brief.json') return 'brief';
   if (rel === KNOWLEDGE_REL) return 'knowledge';
+  if (rel === MODEL_PAUSES_REL) return 'model-pauses';
   return null;
 }
 
@@ -739,6 +741,23 @@ export class StateStore {
       const k: KnowledgeFile = cur ?? { entries: [], version: 1 };
       const result = mutate(k, tx.ts);
       tx.putJson(KNOWLEDGE_REL, 'knowledge', k);
+      tx.event({ flow: event.flow ?? null, ...(event.task ? { task: event.task } : {}), actor: event.actor, type: 'note', reason: event.reason, ...(event.data ? { data: event.data } : {}) });
+      return result;
+    });
+  }
+
+  /** 项目级模型暂停记录（跨流程）；没有时返回空表 */
+  readModelPauses(): ModelPausesFile {
+    return this.readJsonRel<ModelPausesFile>(MODEL_PAUSES_REL) ?? { pauses: [], version: 0 };
+  }
+
+  /** 修改模型暂停记录：mutate 在事务内收到当前记录（可原地修改）；业务规则见 core/model-pause.ts */
+  async writeModelPauses<T>(mutate: (f: ModelPausesFile, ts: string) => T, event: { actor: string; flow?: string | null; task?: string; reason: string; data?: Record<string, unknown> }): Promise<T> {
+    return this.transaction((tx) => {
+      const cur = tx.readJson<ModelPausesFile>(MODEL_PAUSES_REL);
+      const f: ModelPausesFile = cur ?? { pauses: [], version: 1 };
+      const result = mutate(f, tx.ts);
+      tx.putJson(MODEL_PAUSES_REL, 'model-pauses', f);
       tx.event({ flow: event.flow ?? null, ...(event.task ? { task: event.task } : {}), actor: event.actor, type: 'note', reason: event.reason, ...(event.data ? { data: event.data } : {}) });
       return result;
     });

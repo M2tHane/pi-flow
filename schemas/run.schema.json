@@ -161,6 +161,10 @@
             {
               "type": "string",
               "const": "noted"
+            },
+            {
+              "type": "string",
+              "const": "unavailable"
             }
           ]
         },

@@ -8,7 +8,7 @@ import { isProtected, matchesAny } from './paths.ts';
 export type Trigger =
   | 'schedule' | 'dispatch' | 'submit' | 'review_pass' | 'review_reject'
   | 'verify_pass' | 'verify_fail' | 'merge_start' | 'merge_done' | 'merge_verify_fail'
-  | 'merge_blocked' | 'merge_requeue' | 'block' | 'unblock' | 'lease_expired' | 'run_failed' | 'run_interrupted' | 'report' | 'repro_confirmed' | 'cancel' | 'review_skip';
+  | 'merge_blocked' | 'merge_requeue' | 'block' | 'unblock' | 'lease_expired' | 'run_failed' | 'run_interrupted' | 'run_paused' | 'report' | 'repro_confirmed' | 'cancel' | 'review_skip';
 
 /** 同一任务连续会话中断达到此次数转 blocked，防止无限重来 */
 export const MAX_INTERRUPTIONS = 5;
@@ -249,6 +249,18 @@ export const TRANSITIONS: readonly Rule[] = [
     from: ['review'], to: 'review', trigger: 'run_interrupted',
     check: (t, f) => [...need(!!t.lease, '任务没有运行中的审查 run'), ...reasonRequired(f)],
     effect: (t) => { t.lease = null; t.interruptions = (t.interruptions ?? 0) + 1; },
+  },
+  {
+    // 偏离（第三轮 A）：模型服务不可用（额度用完、限流等）不是任务的问题，不计失败也不计中断；
+    // 清空租约等模型恢复后由引擎重新派发（暂停记录见 core/model-pause.ts）
+    from: ['in_progress'], to: 'in_progress', trigger: 'run_paused',
+    check: (t, f) => [...need(!!t.lease, '任务没有运行中的 run'), ...reasonRequired(f)],
+    effect: (t) => { t.lease = null; },
+  },
+  {
+    from: ['review'], to: 'review', trigger: 'run_paused',
+    check: (t, f) => [...need(!!t.lease, '任务没有运行中的审查 run'), ...reasonRequired(f)],
+    effect: (t) => { t.lease = null; },
   },
   {
     from: ['review'], to: 'review', trigger: 'run_failed', failure: true,

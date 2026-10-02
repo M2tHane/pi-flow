@@ -7,11 +7,14 @@ import { isSettled } from './state-machine.ts';
 import { heldByRevision } from './revision.ts';
 import { selectDispatchable } from './scheduler.ts';
 import { git } from './git.ts';
-import type { TaskFile } from './schemas.ts';
+import type { ModelPause, TaskFile } from './schemas.ts';
 
 export interface NextStep { summary: string; next: string; tool: 'flow_dispatch' | 'flow_wait' | 'none'; task?: string }
 
-export function nextStep(store: StateStore, maxParallel: number, activeRunCount = 0, config?: FlowConfig): NextStep {
+/** paused：任务下一次派发要用的模型正被暂停时返回暂停记录（来自 Engine.pausedFor） */
+export type PausedOf = (flowId: string, t: TaskFile) => ModelPause | null;
+
+export function nextStep(store: StateStore, maxParallel: number, activeRunCount = 0, config?: FlowConfig, paused?: PausedOf): NextStep {
   const flowId = store.readState().active_flow;
   if (!flowId) return { summary: '没有进行中的流程。', next: '如需开始，请用户执行 /flow-build（新项目）、/flow-build --feature "<描述>" 或 /flow-fix "<描述>"。不要自己修改代码。', tool: 'none' };
   const flow = store.readFlow(flowId);
@@ -31,19 +34,28 @@ export function nextStep(store: StateStore, maxParallel: number, activeRunCount 
   const promoted = new Set(computeReady(tasks, flow.stage));
   const view = tasks.map((t) => (promoted.has(t.id) ? { ...t, status: 'ready' as const } : t));
   const held = heldByRevision(store, flowId);
-  const pick = selectDispatchable(view.filter((t) => !held.has(t.id)), flow.stage, maxParallel)[0];
+  const waiting = new Map<string, ModelPause>();
+  for (const t of view) {
+    const p = paused?.(flowId, t);
+    if (p) waiting.set(t.id, p);
+  }
+  const pick = selectDispatchable(view.filter((t) => !held.has(t.id) && !waiting.has(t.id)), flow.stage, maxParallel)[0];
   if (pick && !overBudget) return { summary, next: `调用 flow_dispatch(${pick})。不要自己实现任务。`, tool: 'flow_dispatch', task: pick };
   const busy = view.some((t) => t.lease || ['verifying', 'queued_merge', 'merging'].includes(t.status)) || activeRunCount > 0;
   if (busy) return { summary, next: '有任务在运行或合并中，调用 flow_wait 等待结果。', tool: 'flow_wait' };
   if (overBudget) return { summary, next: overBudget, tool: 'none' };
+  if (waiting.size) {
+    const models = [...new Set([...waiting.values()].map((p) => p.model))];
+    return { summary, next: `模型 ${models.join('、')} 暂停中（额度用完或服务不可用），任务 ${[...waiting.keys()].join('、')} 在等它恢复，程序会在恢复后自动继续。向用户说明，请其等待自动恢复、执行 /flow models resume <模型> 立即恢复，或用 /flow-config 给受影响的角色换模型；你只能等待，不要调用 flow_dispatch。`, tool: 'none' };
+  }
   const blocked = stageTasks.filter((t) => t.status === 'blocked');
   if (blocked.length) return { summary, next: `没有可推进的任务。向用户报告阻塞：${blocked.map((t) => `${t.id}（${(t.blocked_reason ?? '').slice(0, 60)}）`).join('；')}，请其回答问题（/flow answer <任务>）；如果用户认为需要改计划（例如任务拆得不对、验收标准不合理），调用 flow_replan 交给 architect 修订。`, tool: 'none' };
   if (stageTasks.length && stageTasks.every(isSettled)) return { summary, next: '本阶段任务全部完成，等待程序执行阶段闸门；调用 flow_wait。', tool: 'flow_wait' };
   return { summary, next: '当前阶段没有任务。向用户说明并等待指示。', tool: 'none' };
 }
 
-export function turnContext(store: StateStore, maxParallel: number, activeRunCount = 0, config?: FlowConfig): string {
-  const s = nextStep(store, maxParallel, activeRunCount, config);
+export function turnContext(store: StateStore, maxParallel: number, activeRunCount = 0, config?: FlowConfig, paused?: PausedOf): string {
+  const s = nextStep(store, maxParallel, activeRunCount, config, paused);
   return `[pi-flow 状态] ${s.summary}\n[唯一允许的下一步] ${s.next}`;
 }
 
