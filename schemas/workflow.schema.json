@@ -384,6 +384,15 @@
       },
       "additionalProperties": false
     },
+    "knowledge": {
+      "type": "object",
+      "properties": {
+        "auto_candidates": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
     "budget": {
       "type": "object",
       "properties": {

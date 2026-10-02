@@ -85,8 +85,9 @@ export async function learn(store: StateStore, config: FlowConfig, i: KnowledgeI
   });
 }
 
-/** 程序提炼的候选（审查打回、合并后验证失败）：截取原文，失败不影响主流程 */
+/** 程序提炼的候选（审查打回、合并后验证失败）：只在 workflow.yaml 的 knowledge.auto_candidates 为 true 时生成；截取原文，失败不影响主流程 */
 export async function proposeCandidate(store: StateStore, config: FlowConfig, t: TaskFile, flow: string, kind: 'review' | 'merge', text: string, run: string | null): Promise<KnowledgeEntry | null> {
+  if (!config.raw.knowledge?.auto_candidates) return null;
   const head = kind === 'review' ? `${t.id}「${t.title}」审查打回：` : `${t.id}「${t.title}」合并后验证失败：`;
   const content = `${head}${text.trim()}`.slice(0, KNOWLEDGE_CONTENT_MAX);
   try {

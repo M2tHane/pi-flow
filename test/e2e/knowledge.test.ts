@@ -11,7 +11,10 @@ import { acceptCandidate, retireEntries, promoteToDraft, markPromoted, selectKno
 import { applyDrafts, listDrafts } from '../../src/core/rules-draft.ts';
 import { renderStatus } from '../../src/core/status-view.ts';
 
-const YAML = PROJECT_YAML.replace(/  test:      ".*"/, '  test:      "true"');
+const YAML = `${PROJECT_YAML.replace(/  test:      ".*"/, '  test:      "true"')}
+knowledge:
+  auto_candidates: true
+`;
 const LESSON = '订单金额一律用整数分存储，避免浮点误差';
 
 async function implement(a: FakeAgent, file: string, note: string) {

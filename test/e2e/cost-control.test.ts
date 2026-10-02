@@ -103,6 +103,7 @@ test('失败后升级模型：第 2 次失败后的派发使用升级模型并�
     const impl = p.store.listRuns().filter((r) => r.task === 'T-001' && r.role === 'backend-engineer');
     assert.deepEqual(impl.map((r) => [r.model, !!r.escalated]), [['f/medium', false], ['f/medium', false], ['f/strong', true]]);
     assert.equal(p.store.readTask(p.flowId, 'T-001').status, 'done');
+    assert.deepEqual(p.store.readKnowledge().entries, [], '默认不把审查打回提炼为知识候选');
 
     // 超预算：不再派发新任务；提示用户；orchestrator 只能报告
     assert.deepEqual(await engine.next(p.flowId), []);

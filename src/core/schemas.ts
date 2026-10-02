@@ -290,6 +290,8 @@ export const WorkflowFile = Type.Object({
     enabled: Type.Optional(Type.Boolean()),
     after_failures: Type.Optional(PosInt),
   }, { additionalProperties: false })),
+  /** 项目知识库：auto_candidates 为 true 时，审查打回与合并后验证失败会提炼为知识候选（默认关闭：真实冒烟中这些候选多是一次性细节） */
+  knowledge: Type.Optional(Type.Object({ auto_candidates: Type.Optional(Type.Boolean()) }, { additionalProperties: false })),
   /** 每个流程的成本预算（第二轮 I）：tokens 计输入 + 输出；cost 为 Pi 报告的金额。超出后暂停派发新任务 */
   budget: Type.Optional(Type.Object({
     tokens: Type.Optional(PosInt),
