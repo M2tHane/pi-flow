@@ -9,7 +9,7 @@ commands:                       # verify 与闸门只能引用这里定义的命
   test_affected: "pnpm test --related {files}"
   e2e:       "pnpm e2e"
 limits:
-  max_parallel: 2
+  max_parallel: 3               # 同时进行的实施任务数（审查另计，见 review.max_parallel）；本地模型服务要能承受这么多并发
   max_attempts: 3
   lease_minutes: 45
   max_violations_per_run: 5     # 每次运行被拦下的操作达到此数即终止（弱模型适当调大）

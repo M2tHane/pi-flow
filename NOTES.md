@@ -356,6 +356,8 @@
     - 风险：对话会越积越长，每轮重发的上下文变大；靠 1.5 MB 上限与 Pi 自己的压缩控制。复跑时对比返工运行的 token 与轮数再调上限。
     - 验收：`test/e2e/pi-subprocess.test.ts`（真实 pi + 假模型：第一次提交在审查前验证失败，第二次运行的第一个请求带着上次的 5 条回复、用户消息是续做说明，任务完成，`forked_from` 正确，新会话单独留档；`buildPiArgs` 含 `--fork`）；`test/unit/prompt-assembler.test.ts`。
 
+94. **默认并发 2 → 3（第三轮后续 3）**：模板 `limits.max_parallel` 改为 3。核实调度代码：`selectDispatchable` 与转移表的并发只计 in_progress（实施）任务，审查另由 `review.max_parallel` 限制（模板为 2），两者本来就分开计数，不需要改代码。测试用配置（`test/helpers/config.ts` 的 `TEST_YAML`）保持 2，测试中的调度顺序不变。已有项目（包括冒烟的中型项目）的 `workflow.yaml` 不受影响。
+
 ## 第三轮优化设计要点
 
 - **A 模型暂停**（第 88 条）。验收见该条。

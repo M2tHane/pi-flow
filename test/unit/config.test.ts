@@ -15,7 +15,8 @@ const errorsOf = (yaml: string): string[] => {
 
 test('模板 workflow.yaml 通过校验', () => {
   const c = parseConfig(TEMPLATE_YAML);
-  assert.equal(c.limits.max_parallel, 2);
+  assert.equal(c.limits.max_parallel, 3);
+  assert.equal(parseConfig(TEST_YAML).limits.max_parallel, 2, '测试用配置保持 2');
   assert.ok(c.warnings.some((w) => w.includes('models.strong')), '未填写模型应给出警告');
 });
 
