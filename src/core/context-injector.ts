@@ -2,6 +2,7 @@
 import type { StateStore } from './state-store.ts';
 import { computeReady } from './dag.ts';
 import { isSettled } from './state-machine.ts';
+import { heldByRevision } from './revision.ts';
 import { selectDispatchable } from './scheduler.ts';
 import { git } from './git.ts';
 import type { TaskFile } from './schemas.ts';
@@ -25,7 +26,8 @@ export function nextStep(store: StateStore, maxParallel: number, activeRunCount 
   // 预测 promote 后的 ready（只读计算，不落盘）
   const promoted = new Set(computeReady(tasks, flow.stage));
   const view = tasks.map((t) => (promoted.has(t.id) ? { ...t, status: 'ready' as const } : t));
-  const pick = selectDispatchable(view, flow.stage, maxParallel)[0];
+  const held = heldByRevision(store, flowId);
+  const pick = selectDispatchable(view.filter((t) => !held.has(t.id)), flow.stage, maxParallel)[0];
   if (pick) return { summary, next: `调用 flow_dispatch(${pick})。不要自己实现任务。`, tool: 'flow_dispatch', task: pick };
   const busy = view.some((t) => t.lease || ['verifying', 'queued_merge', 'merging'].includes(t.status)) || activeRunCount > 0;
   if (busy) return { summary, next: '有任务在运行或合并中，调用 flow_wait 等待结果。', tool: 'flow_wait' };

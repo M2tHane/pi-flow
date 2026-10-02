@@ -28,6 +28,13 @@ export function openReplan(store: StateStore, flowId: string): { task?: TaskFile
   return task || revision ? { ...(task ? { task } : {}), ...(revision ? { revision } : {}) } : null;
 }
 
+/** 待批准的修订中点名（调整依赖或取消）的任务：批准或打回前暂停派发，避免批准时它们已经开始 */
+export function heldByRevision(store: StateStore, flowId: string): Set<string> {
+  const rev = store.readRevision(flowId);
+  if (rev?.status !== 'proposed') return new Set();
+  return new Set([...rev.rewire.map((r) => r.task), ...rev.cancel.map((c) => c.task)]);
+}
+
 /** 修订任务的输入：现有任务一览（状态、角色、依赖、writes）与阻塞原因 */
 export function planSnapshot(tasks: readonly TaskFile[]): string {
   const rows = tasks.filter((t) => !t.replan).map((t) => {

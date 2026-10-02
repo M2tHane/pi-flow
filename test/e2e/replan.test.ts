@@ -138,3 +138,22 @@ test('执行中修订计划：经主 agent 发起，architect 起草，校验拒
     assert.deepEqual((await p.store.verifyIntegrity()).errors, []);
   } finally { p.cleanup(); }
 });
+
+test('修订待批准期间，被点名调整或取消的任务暂停派发；打回后恢复', async () => {
+  const p = await setupProject({ yaml: YAML, tasks: [mkTask('T-001', { verify: [] }), mkTask('T-002', { verify: [], writes: ['src/server/t-002/**'] })] });
+  try {
+    const { engine } = makeEngine(p, async (role, _n, a) => {
+      if (role === 'reviewer') { assert.ok((await a.call('flow_approve', { decision: 'pass', notes: 'ok' })).ok); return; }
+      return implement(a, `src/server/${a.env.task.toLowerCase()}/a.ts`);
+    }, ALL_FAKE);
+    await engine.promote(p.flowId);
+    await p.store.saveRevision(p.flowId, { task: 'T-001', reason: '测试', run: 'r-x', created_at: new Date().toISOString(), status: 'proposed',
+      add: [], rewire: [{ task: 'T-002', depends_on: [] }], cancel: [{ task: 'T-001', reason: '不要了' }], summary: '取消 T-001' }, 'test');
+    assert.deepEqual(await engine.next(p.flowId), []);
+    await assert.rejects(engine.dispatch(p.flowId, 'T-001'), /待批准的计划修订中/);
+    assert.notEqual(nextStep(p.store, 2).tool, 'flow_dispatch');
+    await p.store.rejectRevision(p.flowId, '不改了');
+    assert.deepEqual((await engine.next(p.flowId)).map((d) => d.task).sort(), ['T-001', 'T-002']);
+    await engine.idle();
+  } finally { p.cleanup(); }
+});

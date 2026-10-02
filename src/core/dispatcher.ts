@@ -13,6 +13,7 @@ import { loadAgent } from './agents.ts';
 import { assemblePrompt, ruleFilesFor } from './prompt-assembler.ts';
 import { formatEntry, selectKnowledge } from './knowledge.ts';
 import { findSessionFile, sessionDirOf } from './session-log.ts';
+import { heldByRevision } from './revision.ts';
 import { carriedTestOf, computeReady, isLeadingTest } from './dag.ts';
 import { selectDispatchable } from './scheduler.ts';
 import { createTaskWorktree, ensureLocalExcludes, worktreesRoot } from './worktree.ts';
@@ -98,7 +99,8 @@ export class Engine {
     await this.promote(flowId);
     const flow = this.d.store.readFlow(flowId);
     if (flow.sync?.status === 'conflict') return [];
-    const ids = selectDispatchable(this.d.store.listTasks(flowId), flow.stage, this.d.config.limits.max_parallel);
+    const held = heldByRevision(this.d.store, flowId);
+    const ids = selectDispatchable(this.d.store.listTasks(flowId).filter((t) => !held.has(t.id)), flow.stage, this.d.config.limits.max_parallel);
     const out: Dispatched[] = [];
     for (const id of ids) out.push(await this.dispatch(flowId, id));
     return out;
@@ -121,6 +123,9 @@ export class Engine {
 
     if (task.status === 'ready' && task.kind !== 'merge-fix' && flow.sync?.status === 'conflict') {
       throw new DispatchError(`同步 ${this.d.config.raw.main_branch} 到集成分支时冲突，需要你先处理（${flow.sync.reason ?? ''}），处理后执行 /flow sync`);
+    }
+    if (task.status === 'ready' && heldByRevision(store, flowId).has(taskId)) {
+      throw new DispatchError(`任务 ${taskId} 在待批准的计划修订中（将被调整或取消），用户批准或打回修订前暂停派发`);
     }
     if (task.status === 'ready') {
       // merge-fix 任务的 worktree 由合并队列预先准备（含冲突标记），直接复用；

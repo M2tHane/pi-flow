@@ -231,6 +231,7 @@
     - 修订任务：kind=analysis、角色 architect、writes 为空（guard 下不能写任何文件）、新字段 `replan`（原因），handoff 附现有任务一览与阻塞原因；注入技能 `revise-plan` 与 `decompose-dag`。它经 `report` 直接完成（`report` 的检查放宽为 findings 或 replan），没有审查与合并。
     - 新工具 `flow_revise_plan`（architect 独占；有 `flow_propose_tasks` 的角色隐式拥有）：`add`（临时编号 N-001 起，依赖可指向 T-xxx 或 N-xxx）、`rewire`（整体替换未开始任务的依赖，只能指向现有任务）、`cancel`（未开始的任务，写原因）。保存为 `flows/<id>/revision.json`（schema `revision`，登记哈希）。校验（`core/revision.ts` 的 `checkRevision`）：被改动的任务必须是 pending/ready 且不是程序生成的；新增任务的阶段不早于当前阶段且不是设计阶段；剩余任务不得依赖被取消的任务；合并后的 DAG 用 `validateDag` 校验，只报告修订引入的新错误；先行验收测试按第 69 条规范化（必要时把现有未开始任务的依赖调整并入 rewire）。
     - 闸门：修订待批准期间不提交阶段闸门；orchestrator 每轮注入"等待用户批准"；"需要你处理"列出修订。`/flow approve` 有待批准修订时先处理修订：按当前任务重新校验（批准前状态变化则拒绝并提示打回重做），重新编号，在一个事务内新增任务、改依赖、取消任务（`applyRevision`）。`/flow reject "<意见>"` 有待批准修订时打回修订并生成新的修订任务（原因附上意见与上一版）。
+    - 修订待批准期间，被点名调整依赖或取消的任务暂停派发（`heldByRevision`：`next`、`dispatch`、orchestrator 下一步都跳过），批准或打回后恢复，避免批准时它们已经开始（用户选择）。起草期间开始的任务由 `flow_revise_plan` 的校验拦下，architect 当场修正。
     - **新增任务状态 `cancelled` 与转移 `cancel`（pending/ready → cancelled）**：只接受 actor=human（即用户批准的修订）。阶段完成、闸门、orchestrator 下一步的判断改为"done 或 cancelled 视为已结束"；进度不计已取消的任务。
 
 ## 第二轮优化设计要点
