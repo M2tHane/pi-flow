@@ -111,6 +111,12 @@ export class Engine {
 
   private now(): Date { return this.d.now?.() ?? new Date(); }
 
+  /** ready 任务是否由引擎自动派发（workflow.yaml 的 limits.auto_dispatch，默认 true） */
+  get autoDispatch(): boolean { return this.d.config.limits.auto_dispatch !== false; }
+
+  /** 没有运行中的子进程、验证、合并等程序步骤 */
+  isIdle(): boolean { return this.runs.size === 0 && this.pending.size === 0 && this.pumping === 0; }
+
   activeRuns(): { run_id: string; flow: string; task: string; role: string; pid: number | undefined }[] {
     return [...this.runs].map(([run_id, r]) => ({ run_id, flow: r.flow, task: r.task, role: r.role, pid: r.handle.pid }));
   }
@@ -416,10 +422,14 @@ export class Engine {
 
   /** 程序步骤按流程串行执行：多个 run 同时结束时，避免并发地重复执行同一步骤 */
   pump(flowId: string): Promise<void> {
-    const next = this.pumpChain.then(() => this.pumpOnce(flowId), () => this.pumpOnce(flowId));
+    this.pumping++;
+    const next = this.pumpChain.then(() => this.pumpOnce(flowId), () => this.pumpOnce(flowId)).finally(() => { this.pumping--; });
     this.pumpChain = next.catch(() => {});
     return next;
   }
+
+  /** 排队或执行中的程序步骤数（pump） */
+  private pumping = 0;
 
   private async pumpOnce(flowId: string): Promise<void> {
     const report = this.d.onError ?? (() => {});
@@ -468,6 +478,13 @@ export class Engine {
       }
     } catch (e) { report(e); }
     await this.advanceStage(flowId, report);
+    // 自动派发（第三轮后续 5）：ready 任务由程序直接派发，不等 orchestrator 调用 flow_dispatch；修复流程由 fixStep 推进
+    if (this.autoDispatch) {
+      try {
+        const flow = this.d.store.readFlow(flowId);
+        if (flow.mode !== 'fix' && flow.stage_status === 'active') await this.next(flowId);
+      } catch (e) { report(e); }
+    }
     // 串行合并：合并名额空闲且队首就绪时处理
     const mq = this.d.store.readMergeQueue();
     if (!mq.merging && mq.queue[0]?.flow === flowId) {

@@ -8,11 +8,12 @@ import { FlowToolError, type ToolResult } from './subagent-tools.ts';
 import { proposalSummary } from '../core/stages.ts';
 import type { FlowConfig } from '../core/config.ts';
 import { RevisionError, formatRevision, openReplan, startReplan } from '../core/revision.ts';
+import { actionsNeeded } from '../core/status-view.ts';
 
 export const DispatchParams = Type.Object({ task_id: Type.String({ pattern: '^T-[0-9]{3,}$' }) });
 export const WaitParams = Type.Object({
   task_id: Type.Optional(Type.String({ pattern: '^T-[0-9]{3,}$' })),
-  timeout_s: Type.Optional(Type.Integer({ minimum: 1, maximum: 1800, default: 300 })),
+  timeout_s: Type.Optional(Type.Integer({ minimum: 1, maximum: 3600, default: 1200 })),
 });
 
 export const ReplanParams = Type.Object({
@@ -96,26 +97,49 @@ export async function flowDispatch(store: StateStore, engine: Engine, p: Static<
   return { text: `已派发 ${d.task} 给 ${d.role}（模型 ${d.model}，run ${d.run_id}）。用 flow_wait 等待结果。`, details: { ...d } };
 }
 
-export async function flowWait(store: StateStore, engine: Engine, p: Static<typeof WaitParams>): Promise<ToolResult> {
+/**
+ * 等待值得告诉用户的变化（第三轮后续 5）：任务完成、阻塞或取消，出现需要用户处理的事，阶段或流程状态变化，
+ * 关闭自动派发时出现可派发的任务，或者引擎已无事可做。审查、验证、合并等中间步骤不唤醒 orchestrator。
+ * 给了 task_id 时只等这个任务的状态变化。
+ */
+export async function flowWait(store: StateStore, engine: Engine, p: Static<typeof WaitParams>, config?: FlowConfig): Promise<ToolResult> {
   const flowId = activeFlowId(store);
-  const snapshot = () => new Map(store.listTasks(flowId).map((t) => [t.id, `${t.status}|${t.lease?.run_id ?? ''}`]));
-  const before = snapshot();
-  const deadline = Date.now() + (p.timeout_s ?? 300) * 1000;
-  let changed: string[] = [];
+  const statuses = () => new Map(store.listTasks(flowId).map((t) => [t.id, t.status as string]));
+  const flowState = () => { const f = store.readFlow(flowId); return `${f.stage}|${f.stage_status}|${store.readState().active_flow ?? ''}|${store.readRevision(flowId)?.status ?? ''}`; };
+  const actionKeys = () => new Set(config ? actionsNeeded(store, config).map((a) => a.key) : []);
+  const before = statuses();
+  const beforeFlow = flowState();
+  const beforeActions = actionKeys();
+  const deadline = Date.now() + (p.timeout_s ?? 1200) * 1000;
   const settled = (id: string) => ['done', 'blocked', 'cancelled'].includes(store.readTask(flowId, id).status);
   if (p.task_id && settled(p.task_id)) return { text: `${p.task_id} 已是 ${store.readTask(flowId, p.task_id).status}。\n\n${statusText(store, engine, flowId)}`, details: { changed: [] } };
+  const worthWaking = (): boolean => {
+    const now = statuses();
+    if (p.task_id) return now.get(p.task_id) !== before.get(p.task_id);
+    for (const [id, s] of now) {
+      if (s === before.get(id)) continue;
+      if (!before.has(id) || s === 'done' || s === 'blocked' || s === 'cancelled') return true;
+      if (s === 'ready' && !engine.autoDispatch) return true;
+    }
+    if (flowState() !== beforeFlow) return true;
+    for (const k of actionKeys()) if (!beforeActions.has(k)) return true;
+    return engine.isIdle();
+  };
+  let woke = false;
   while (Date.now() < deadline) {
     await engine.waitForChange(Math.min(5000, deadline - Date.now()));
-    const now = snapshot();
-    changed = [...now].filter(([id, v]) => before.get(id) !== v).map(([id]) => id);
-    if (p.task_id ? changed.includes(p.task_id) || settled(p.task_id) : changed.length) break;
-    if (!engine.activeRuns().length && !p.task_id) break;
+    try { woke = worthWaking(); } catch { woke = true; } // 流程已结束等：交给 orchestrator 看状态
+    if (woke) break;
   }
+  let flowGone = false;
+  try { store.readFlow(flowId); } catch { flowGone = true; }
+  if (flowGone || store.readState().active_flow !== flowId) return { text: `流程 ${flowId} 已结束或不再是活动流程。`, details: { changed: [] } };
   const tasks = store.listTasks(flowId);
+  const changed = tasks.filter((t) => before.get(t.id) !== t.status).map((t) => t.id);
   const desc = (id: string) => {
     const t = tasks.find((x) => x.id === id)!;
-    return `${id}：${before.get(id)?.split('|')[0]} → ${t.status}${t.status === 'blocked' ? `（${one(t.blocked_reason ?? '')}）` : t.last_failure && t.status === 'in_progress' ? `（${one(t.last_failure)}）` : ''}`;
+    return `${id}：${before.get(id) ?? '（新任务）'} → ${t.status}${t.status === 'blocked' ? `（${one(t.blocked_reason ?? '')}）` : t.last_failure && t.status === 'in_progress' ? `（${one(t.last_failure)}）` : ''}`;
   };
-  const head = changed.length ? `变化：\n${changed.map((id) => `- ${desc(id)}`).join('\n')}` : '等待超时，没有状态变化。';
+  const head = changed.length ? `变化：\n${changed.map((id) => `- ${desc(id)}`).join('\n')}` : woke ? '没有任务状态变化。' : '等待超时，没有值得报告的变化。';
   return { text: `${head}\n\n${statusText(store, engine, flowId)}`, details: { changed } };
 }

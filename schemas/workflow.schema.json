@@ -77,6 +77,9 @@
         },
         "continue_session": {
           "type": "boolean"
+        },
+        "auto_dispatch": {
+          "type": "boolean"
         }
       },
       "additionalProperties": false

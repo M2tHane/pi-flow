@@ -66,6 +66,12 @@ test('调度模式：orchestrator 不能自己写代码，只能 dispatch/wait�
     const sys = JSON.stringify(reqs[0].system);
     assert.match(sys, /你是 pi-flow 的调度者/);
     assert.match(sys, /唯一允许的下一步.*flow_dispatch\(T-001\)/);
+    // 主会话用量记入 runs（role=orchestrator），成本统计可见
+    const orch = store.listRuns().filter((x) => x.role === 'orchestrator');
+    assert.equal(orch.length, 1, JSON.stringify(orch));
+    assert.equal(orch[0]!.flow, p.flowId);
+    assert.ok((orch[0]!.turns ?? 0) >= 2 && (orch[0]!.tokens.output ?? 0) > 0 && orch[0]!.model === 'fakellm/orch', JSON.stringify(orch[0]));
+    assert.ok(orch[0]!.ended_at && orch[0]!.outcome === 'noted');
   } finally {
     rmSync(agentDir, { recursive: true, force: true });
     p.cleanup();

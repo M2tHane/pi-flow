@@ -64,7 +64,7 @@ test('orchestrator：read 只能读 docs 与 .flow', () => {
   allowed(checkToolCall(call('read', { path: 'docs/PRD.md' }), c));
   allowed(checkToolCall(call('read', { path: '.flow/state.json' }), c));
   allowed(checkToolCall(call('flow_status', {}), c));
-  blocked(checkToolCall(call('read', { path: 'src/server/a.ts' }), c), 'read_paths', /flow_dispatch/);
+  blocked(checkToolCall(call('read', { path: 'src/server/a.ts' }), c), 'read_paths', /调度者.*flow_wait/);
   blocked(checkToolCall(call('read', { path: '../proj/src/server/a.ts' }), c), 'read_paths');
 });
 

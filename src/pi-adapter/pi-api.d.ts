@@ -67,6 +67,8 @@ declare module '@earendil-works/pi-coding-agent' {
     setThinkingLevel(level: ThinkingLevel): void;
     on(event: 'session_start' | 'session_shutdown' | 'agent_end', handler: (event: unknown, ctx: ExtensionContext) => unknown): () => void;
     on(event: 'before_agent_start', handler: (event: BeforeAgentStartEvent, ctx: ExtensionContext) => unknown): () => void;
+    /** 每条消息结束（user、assistant、toolResult）；assistant 消息带 usage、provider、model（Pi 1.0.0 types.d.ts 的 MessageEndEvent） */
+    on(event: 'message_end', handler: (event: { type: 'message_end'; message: Record<string, unknown> }, ctx: ExtensionContext) => unknown): () => void;
     on(event: 'tool_call', handler: (event: ToolCallEvent, ctx: ExtensionContext) => Promise<ToolCallEventResult | void> | ToolCallEventResult | void): () => void;
   }
   export function getAgentDir(): string;

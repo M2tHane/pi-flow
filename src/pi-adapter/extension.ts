@@ -1,6 +1,9 @@
 // pi-flow 的 Pi 扩展入口。所有 Pi API 调用集中在 src/pi-adapter/，业务逻辑在 src/core、src/commands、src/tools。
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
+import { randomBytes } from 'node:crypto';
+import { UsageAccumulator } from '../core/metrics.ts';
+import { hashToken } from '../core/state-machine.ts';
 import { fileURLToPath } from 'node:url';
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
@@ -86,6 +89,30 @@ interface RootSession {
   status: ((text: string | undefined) => void) | null;
 }
 const sessions = new Map<string, RootSession>();
+
+/** 每个流程一条 orchestrator 用量记录（run_id 按会话与流程区分），在同一 pi 进程内累加；写入按顺序串行 */
+const orchUsage = new Map<string, { runId: string; acc: UsageAccumulator; chain: Promise<void> }>();
+
+function recordOrchestratorUsage(s: RootSession, message: Record<string, unknown>): Promise<void> {
+  const { store } = s.handle!;
+  const flow = store.readState().active_flow ?? store.openFixFlow()?.id ?? null;
+  const key = `${store.abs('')}|${flow ?? '-'}`;
+  let u = orchUsage.get(key);
+  if (!u) {
+    const runId = `o-${Date.now().toString(36)}${randomBytes(3).toString('hex')}`;
+    const at = new Date().toISOString();
+    // 记录创建即视为已结束（ended_at 随每条回复更新），恢复流程不会把它当成中断的子进程
+    u = { runId, acc: new UsageAccumulator(), chain: store.createRun({ run_id: runId, flow, task: null, role: 'orchestrator', model: null, started_at: at, ended_at: at,
+      tokens: { input: null, output: null, cache_read: null, cache_write: null }, outcome: 'noted', token_hash: hashToken(randomBytes(24).toString('hex')), violations: 0 }).then(() => {}) };
+    orchUsage.set(key, u);
+  }
+  u.acc.pushEvent({ type: 'message_end', message });
+  const m = u.acc.result();
+  const rec = u;
+  rec.chain = rec.chain.catch(() => {}).then(() => store.updateRun(rec.runId, { ended_at: new Date().toISOString(), tokens: m.tokens, model: m.model, turns: m.turns,
+    ...(m.cost !== undefined ? { cost: m.cost } : {}) }, 'orchestrator', '主会话用量')).then(() => {});
+  return rec.chain;
+}
 
 function session(root: string): RootSession {
   let s = sessions.get(root);
@@ -256,7 +283,7 @@ export default function piFlow(pi: ExtensionAPI): void {
       parameters: WaitParams,
       async execute(_id, p, _s, _u, ctx) {
         const h = engineFor(ctx.cwd);
-        const r = await flowWait(h.store, h.engine, checked(WaitParams, p, 'flow_wait'));
+        const r = await flowWait(h.store, h.engine, checked(WaitParams, p, 'flow_wait'), h.config);
         return toolResult(r.text, r.details);
       },
     });
@@ -303,6 +330,13 @@ export default function piFlow(pi: ExtensionAPI): void {
   });
 
   // 主工作区在本轮期间出现 .flow/ 之外的新改动：视为越权（第 20 节第 6 条）
+  // 主会话（orchestrator）的用量记入 runs（role=orchestrator，每个流程一条），成本统计与预算都能看到（第三轮后续 5）
+  pi.on('message_end', async (event, ctx) => {
+    const s = sessions.get(ctx.cwd);
+    if (!s?.orchestrator || !s.handle || event.message['role'] !== 'assistant') return;
+    try { await recordOrchestratorUsage(s, event.message); } catch { /* 记账失败不影响对话 */ }
+  });
+
   pi.on('agent_end', async (_e, ctx) => {
     const s = sessions.get(ctx.cwd);
     if (!s?.orchestrator || !s.handle || !s.driftBefore) return;

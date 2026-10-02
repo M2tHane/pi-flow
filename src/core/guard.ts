@@ -96,7 +96,9 @@ class Evaluator {
 
   hint(): string {
     if (this.isOrchestrator) {
-      return `你是调度者，不能直接修改代码。请调用 flow_dispatch(${this.ctx.readyTaskId ?? '<task_id>'}) 交给对应 subagent。`;
+      return this.ctx.readyTaskId
+        ? `你是调度者，不能直接修改代码。请调用 flow_dispatch(${this.ctx.readyTaskId}) 交给对应 subagent。`
+        : '你是调度者，不能直接修改代码。任务由程序派发给对应 subagent，用 flow_wait 等待结果。';
     }
     if (this.role.name === 'reviewer') return '你是只读审查者，不能修改任何文件；请通过 flow_approve 提交审查结论。';
     if (this.isReadonlyRole) return `你是只读角色（${this.role.name}），不能修改任何文件；结论请写进 flow_note 并 flow_submit。`;

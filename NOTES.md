@@ -364,6 +364,14 @@
     - 没做：按工具统计调用次数已在冒烟脚本里；其他减少轮数的办法等复跑数据（第 5、6 项暂缓，用户决定）。
     - 验收：`test/unit/prompt-assembler.test.ts`；`test/e2e/cost-control.test.ts`（第一轮附全部改动、第二轮附上次审查之后的改动，run 都有轮数，`/flow status --cost` 按角色显示平均轮数）。
 
+96. **自动派发，orchestrator 只在值得汇报时醒来（第三轮后续 5，偏离第 15、20 节）**：
+    - 起因：ready 任务原来要等 orchestrator 调用 `flow_dispatch`，可派发哪个任务又是程序算好的；`flow_wait` 在任何任务的状态或租约变化时都返回，一个任务从实施到合入要唤醒主会话 6～8 次，每次都重发整段对话。中型项目估计 100～150 次唤醒（未实测，冒烟脚本不走 orchestrator）。
+    - 偏离：`limits.auto_dispatch`（默认 true；没写时也按 true）开启时，引擎在每次 pump 末尾对非 fix 流程调用 `next`（与 `/flow next`、`/flow budget` 提高预算后相同的调度规则：关键路径优先、并发与互斥、预算、修订冻结、模型暂停）。orchestrator 不再需要派发，只负责沟通与 `flow_replan`。第 15 节说 orchestrator"派发"，但第 20 节第 4 条"调度由 scheduler 决定，flow_dispatch 只收 task_id"——它本来就没有决策权，自动派发不放松任何约束。`flow_dispatch` 保留：`nextStep` 在程序空闲却仍有可派发任务（自动派发出错）时仍要求它，让 orchestrator 看到错误原因；关闭自动派发时照旧。
+    - `flow_wait` 改为只在以下情况返回：任务完成、阻塞、取消或新增；关闭自动派发时出现 ready 任务；阶段、阶段状态、活动流程或修订状态变化；"需要你处理"出现新事项；引擎空闲（没有子进程、程序步骤、排队的 pump——`Engine.isIdle` 新增 pump 计数，避免 pump 进行中误判空闲）；超时（默认 300 → 1200 秒，上限 1800 → 3600）。给了 task_id 时只等该任务的状态变化。
+    - 主会话用量：`pi.on('message_end')`（Pi 1.0.0 `types.d.ts` 的 `MessageEndEvent`，已在 `pi-api.d.ts` 补声明）在调度模式下把 assistant 消息的 usage 用 `UsageAccumulator` 累加，写成 role=orchestrator 的 run（每个流程、每个 pi 进程一条；创建即带 ended_at、outcome noted，恢复流程不会当成中断的子进程）。成本统计与预算随之计入主会话；"耗时"是会话跨度，不是运行时长。
+    - `agents/orchestrator.md` 与 guard 的提示改为"任务由程序派发，用 flow_wait 等待"（缓存提醒见下）。测试用配置 `TEST_YAML` 关闭自动派发，测试中显式调用 `engine.next`，派发顺序可控。
+    - 验收：`test/e2e/orchestrator-tools.test.ts`（不调用 flow_dispatch，一次 pump 后两个有依赖的任务依次自动派发、审查、合入；flow_wait 跳过中间步骤，第一次返回时报告 T-001 完成；空闲时立即返回；自动派发时忙碌中的下一步是 flow_wait，空闲且有可派发任务时退回 flow_dispatch，关闭时照旧）；`test/e2e/orchestrator-session.test.ts`（真实 pi 主会话的用量写入 orchestrator run）；全量端到端 64 个通过。
+
 ## 第三轮优化设计要点
 
 - **A 模型暂停**（第 88 条）。验收见该条。
@@ -481,6 +489,7 @@
 
 ## 缓存提醒
 
+- 2026-10-02（第三轮后续 5）：`agents/orchestrator.md` 改为"任务由程序派发，用 flow_wait 等待"；主会话进入调度模式后的提示缓存失效一次。
 - 2026-10-02（第三轮后续 1）：`agents/reviewer.md` 改为"派审查前已验证"；reviewer 子进程提示缓存失效一次。
 - 2026-10-02（第三轮 D）：`skills/decompose-dag` 增加"尽早并行"；architect 在 S1/F1 与计划修订时的子进程提示缓存失效一次。
 - 2026-10-02（第三轮 B、C）：`agents/reviewer.md` 增加多轮审查的说明、tier 改为 medium；reviewer 子进程的提示缓存失效一次。审查默认改用中等模型后，缓存按新模型重新建立。

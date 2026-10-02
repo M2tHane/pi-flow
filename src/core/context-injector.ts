@@ -40,9 +40,13 @@ export function nextStep(store: StateStore, maxParallel: number, activeRunCount 
     if (p) waiting.set(t.id, p);
   }
   const pick = selectDispatchable(view.filter((t) => !held.has(t.id) && !waiting.has(t.id)), flow.stage, maxParallel)[0];
-  if (pick && !overBudget) return { summary, next: `调用 flow_dispatch(${pick})。不要自己实现任务。`, tool: 'flow_dispatch', task: pick };
   const busy = view.some((t) => t.lease || ['verifying', 'queued_merge', 'merging'].includes(t.status)) || activeRunCount > 0;
-  if (busy) return { summary, next: '有任务在运行或合并中，调用 flow_wait 等待结果。', tool: 'flow_wait' };
+  // 自动派发（limits.auto_dispatch，默认开）时 ready 任务由程序派发；只有程序空闲却还有可派发的任务（自动派发出错）时才让 orchestrator 手动派发以看到原因
+  const auto = config?.limits.auto_dispatch !== false;
+  if (pick && !overBudget && !(auto && busy)) return { summary, next: `调用 flow_dispatch(${pick})。不要自己实现任务。`, tool: 'flow_dispatch', task: pick };
+  if (busy) return { summary, next: auto
+    ? '任务由程序自动派发、审查、验证与合并。调用 flow_wait 等待：它只在任务完成或阻塞、需要用户处理、阶段变化时返回；返回后用一两句话向用户汇报进展，再继续 flow_wait。'
+    : '有任务在运行或合并中，调用 flow_wait 等待结果。', tool: 'flow_wait' };
   if (overBudget) return { summary, next: overBudget, tool: 'none' };
   if (waiting.size) {
     const models = [...new Set([...waiting.values()].map((p) => p.model))];
