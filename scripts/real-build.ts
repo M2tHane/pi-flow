@@ -127,7 +127,7 @@ limits:`));
   console.log(`\n知识库：${store.readKnowledge().entries.map((e) => `${e.id}[${e.status}] ${e.content.slice(0, 80)}`).join('\n  ') || '（空）'}`);
   const ev = store.readEvents().filter((e) => e.flow === flowId);
   console.log(`\n违规 ${ev.filter((e) => e.type === 'violation').length} 次：${ev.filter((e) => e.type === 'violation').map((e) => (e.reason ?? '').slice(0, 100)).join('\n  ')}`);
-  console.log(`审查打回 ${ev.filter((e) => e.trigger === 'review_reject').length} 次；验证失败 ${ev.filter((e) => e.trigger === 'verify_fail').length} 次；合并后验证失败 ${ev.filter((e) => e.trigger === 'merge_verify_fail').length} 次；免审查 ${ev.filter((e) => e.trigger === 'review_skip').length} 次`);
+  console.log(`审查打回 ${ev.filter((e) => e.trigger === 'review_reject').length} 次；审查前验证失败 ${ev.filter((e) => e.trigger === 'precheck_fail').length} 次；验证失败 ${ev.filter((e) => e.trigger === 'verify_fail').length} 次；合并后验证失败 ${ev.filter((e) => e.trigger === 'merge_verify_fail').length} 次；免审查 ${ev.filter((e) => e.trigger === 'review_skip').length} 次`);
   // 工具调用统计（来自会话留档；codemode 脚本内部的调用不单独计）
   const { summarizeSession, findSessionFile } = await import('../src/core/session-log.ts');
   const calls = new Map<string, { runs: number; calls: number; errors: number }>();
@@ -141,7 +141,7 @@ limits:`));
   console.log(`\n工具调用（顶层，按角色）：`);
   for (const [role, c] of calls) console.log(`  ${role}：${c.runs} 次运行，${c.calls} 次工具调用，其中失败 ${c.errors} 次`);
   const runs = store.listRuns().filter((x) => x.flow === flowId);
-  console.log(`升级模型的运行 ${runs.filter((r) => r.escalated).length} 次；低风险审查 ${runs.filter((r) => r.review_mode === 'light').length} 次；强模型审查 ${runs.filter((r) => r.review_mode === 'strong').length} 次；被终止 ${runs.filter((r) => r.outcome === 'killed').length} 次`);
+  console.log(`升级模型的运行 ${runs.filter((r) => r.escalated).length} 次；低风险审查 ${runs.filter((r) => r.review_mode === 'light').length} 次；强模型审查 ${runs.filter((r) => r.review_mode === 'strong').length} 次；被终止 ${runs.filter((r) => r.outcome === 'killed').length} 次；接着上次对话的返工 ${runs.filter((r) => r.forked_from).length} 次；模型暂停 ${runs.filter((r) => r.outcome === 'unavailable').length} 次`);
   console.log(`完整性校验：${(await store.verifyIntegrity()).ok ? '通过' : '失败'}`);
 } finally {
   if (!args.has('--keep')) { rmSync(dir, { recursive: true, force: true }); rmSync(`${dir}.worktrees`, { recursive: true, force: true }); }
