@@ -7,7 +7,7 @@ import type { FlowConfig } from './config.ts';
 import type { StateStore } from './state-store.ts';
 import type { TaskFile } from './schemas.ts';
 import { git, gitOk } from './git.ts';
-import { headSha, removeWorktree, taskBranch, worktreePath } from './worktree.ts';
+import { headSha, removeWorktree, taskBranch, worktreePath, worktreesRoot } from './worktree.ts';
 import { matchesAny, isProtected, CONTRACTS_PATH } from './paths.ts';
 import { carriedTestOf } from './dag.ts';
 import { proposeCandidate } from './knowledge.ts';
@@ -20,6 +20,13 @@ export interface MergeHooks {
   afterMerge?: (root: string) => Promise<void>;
   verifyTimeoutMs?: number;
 }
+
+export type SyncResult =
+  | { kind: 'up_to_date' }
+  | { kind: 'synced'; sha: string; files: number }
+  | { kind: 'merge_fix'; task: string; conflicts: string[] }
+  | { kind: 'conflict'; reason: string; conflicts: string[] }
+  | { kind: 'fixing'; task: string };
 
 export type MergeResult =
   | { kind: 'merged'; task: string; sha: string; finished: string[] }
@@ -59,6 +66,7 @@ export class MergeQueue {
   }
 
   private async merge(flowId: string, t: TaskFile): Promise<MergeResult> {
+    if (t.sync_main) return this.mergeSyncFix(flowId, t);
     const flow = this.store.readFlow(flowId);
     const integ = flow.integration_branch;
     const wt = t.worktree!;
@@ -285,5 +293,156 @@ export class MergeQueue {
     }, conflicts);
     await this.store.appendHandoff(flowId, fixId, `合并冲突（程序生成）：${t.id} rebase 到集成分支时冲突。\n冲突文件当前内容：\n\n${excerpt}`, 'merge-queue');
     return { kind: 'merge_fix', task: t.id, mergeFix: fixId, conflicts };
+  }
+
+  /**
+   * 把主分支同步进集成分支（阶段边界或 /flow sync）。与合并共用互斥：合并进行中返回 null，稍后重试。
+   * - 无冲突：在临时 worktree 中 merge 主分支，快进集成分支（CAS）。
+   * - .flow/ 的冲突取主分支版本（状态只在主分支上有意义）。
+   * - 冲突只涉及某个角色可写的文件：保留含冲突标记的合并提交，生成 merge-fix 任务解决，合入时保留合并关系。
+   * - 涉及契约、受保护路径或没有角色能写：中止，交给用户（流程暂停派发新任务）。
+   */
+  async syncMain(flowId: string): Promise<SyncResult | null> {
+    if (this.running || this.store.readMergeQueue().merging) return null;
+    this.running = true;
+    try {
+      return await this.doSync(flowId);
+    } finally {
+      this.running = false;
+    }
+  }
+
+  private async doSync(flowId: string): Promise<SyncResult | null> {
+    const flow = this.store.readFlow(flowId);
+    if (flow.sync?.status === 'fixing' && flow.sync.task) {
+      const fix = this.store.readTask(flowId, flow.sync.task);
+      // 修复任务阻塞时等待用户处理（/flow answer 或 unblock），不重复生成
+      if (fix.status !== 'done') return { kind: 'fixing', task: fix.id };
+    }
+    const main = this.config.raw.main_branch;
+    const integ = flow.integration_branch;
+    const mainSha = headSha(this.root, main);
+    const at = new Date().toISOString();
+    const ok = (reason: string) => this.store.setFlowSync(flowId, { stage: flow.stage, status: 'ok', main_sha: mainSha, at }, 'engine', reason);
+    // 主分支上只有状态提交（.flow/）时不算有新改动：状态只在主分支上有意义，不必为它产生合并提交
+    const mb = git(this.root, ['merge-base', mainSha, integ]).trim();
+    const changedOnMain = git(this.root, ['diff', '--name-only', mb, mainSha, '--', '.', ':(exclude).flow']).trim();
+    if (!changedOnMain || gitOk(this.root, ['merge-base', '--is-ancestor', mainSha, integ])) {
+      if (flow.sync?.stage !== flow.stage || flow.sync.status !== 'ok' || flow.sync.main_sha !== mainSha) await ok(`集成分支已包含 ${main}`);
+      return { kind: 'up_to_date' };
+    }
+    const integHead = headSha(this.root, integ);
+    const temp = path.join(worktreesRoot(this.root), `${flowId}-sync`);
+    removeWorktree(this.root, temp);
+    mkdirSync(path.dirname(temp), { recursive: true });
+    git(this.root, ['worktree', 'add', '-q', '--detach', temp, integHead]);
+    try {
+      const msg = `pi-flow: 同步 ${main} 到 ${integ}（${flow.stage}）`;
+      let conflicts: string[] = [];
+      try {
+        git(temp, ['merge', '--no-ff', '--no-edit', '-m', msg, mainSha], { engineIdentity: true, allowFail: true });
+      } catch {
+        conflicts = git(temp, ['diff', '--name-only', '--diff-filter=U']).split('\n').filter(Boolean).sort();
+        const state = conflicts.filter((f) => f === '.flow' || f.startsWith('.flow/'));
+        for (const f of state) {
+          if (!gitOk(temp, ['checkout', '--theirs', '--', f])) git(temp, ['rm', '-q', '--', f]);
+          else git(temp, ['add', '--', f]);
+        }
+        conflicts = conflicts.filter((f) => !state.includes(f));
+        if (!conflicts.length) git(temp, ['commit', '-q', '--no-verify', '--no-edit'], { engineIdentity: true });
+      }
+      if (!conflicts.length) {
+        const sha = headSha(temp);
+        try {
+          git(this.root, ['update-ref', `refs/heads/${integ}`, sha, integHead]);
+        } catch {
+          return null; // 集成分支在同步期间被移动：下次再试
+        }
+        const files = git(temp, ['diff', '--name-only', integHead, sha]).split('\n').filter(Boolean).length;
+        await ok(`同步 ${main}（${mainSha.slice(0, 8)}）到 ${integ}：${files} 个文件`);
+        return { kind: 'synced', sha, files };
+      }
+
+      // 冲突分类：契约、受保护路径 → 用户；否则找能写全部冲突文件的角色生成 merge-fix
+      const protectedFiles = conflicts.filter((f) => matchesAny(f, [CONTRACTS_PATH]) || isProtected(f, { contractsLocked: true }));
+      const tasks = this.store.listTasks(flowId);
+      const owners = tasks.filter((t) => t.status === 'done' && t.kind !== 'merge-fix' && conflicts.some((f) => matchesAny(f, t.writes)));
+      const covers = (role: string) => {
+        const r = this.config.roles[role];
+        return !!r && r.tools.has('flow_submit') && r.writes.length > 0 && conflicts.every((f) => matchesAny(f, r.writes));
+      };
+      const role = protectedFiles.length ? null
+        : [...new Set(owners.map((t) => t.role)), ...Object.keys(this.config.roles)].find((r) => r !== 'architect' && r !== 'orchestrator' && covers(r)) ?? null;
+      if (!role) {
+        gitOk(temp, ['merge', '--abort']);
+        const reason = protectedFiles.length ? `冲突涉及契约或受保护文件：${protectedFiles.join('、')}` : `没有角色的可写范围覆盖冲突文件：${conflicts.join('、')}`;
+        await this.store.setFlowSync(flowId, { stage: flow.stage, status: 'conflict', main_sha: mainSha, at, files: conflicts, reason }, 'engine', `同步 ${main} 冲突：${reason}`);
+        return { kind: 'conflict', reason, conflicts };
+      }
+      git(temp, ['add', '-A']);
+      git(temp, ['commit', '-q', '--no-verify', '-m', `${msg}（冲突文件含冲突标记，待解决）`], { engineIdentity: true });
+      const merged = headSha(temp);
+      const ids = tasks.map((x) => Number(x.id.slice(2)));
+      const fixId = `T-${String(Math.max(0, ...ids) + 1).padStart(3, '0')}`;
+      const fixWt = worktreePath(this.root, flowId, fixId);
+      const fixBranch = taskBranch(flowId, fixId);
+      git(this.root, ['worktree', 'add', '-q', '-b', fixBranch, fixWt, merged]);
+      const verify = [...new Set(owners.filter((t) => conflicts.some((f) => matchesAny(f, t.writes))).flatMap((t) => t.verify))];
+      const r = this.config.roles[role]!;
+      await this.store.addTasks(flowId, [{
+        id: fixId, stage: flow.stage, kind: 'merge-fix', title: `解决同步 ${main} 的冲突：${conflicts.join('、')}`.slice(0, 120),
+        role, scopes: [...r.scopes], depends_on: [], inputs: [...conflicts], writes: [...conflicts],
+        acceptance: [`删除 ${conflicts.join('、')} 中的全部冲突标记，同时保留 ${main} 与集成分支双方的意图`],
+        verify, worktree: fixWt, branch: fixBranch, base_sha: merged, conflict_files: conflicts, sync_main: mainSha,
+      }], 'merge-queue');
+      const excerpt = conflicts.map((f) => `${f}：\n${existsSync(path.join(fixWt, f)) ? readFileSync(path.join(fixWt, f), 'utf8').slice(0, 1500) : '（已删除）'}`).join('\n\n');
+      await this.store.appendHandoff(flowId, fixId, `同步冲突（程序生成）：把 ${main} 合并进集成分支时冲突。当前工作区是这次合并的结果，冲突文件含冲突标记。\n冲突文件当前内容：\n\n${excerpt}`, 'merge-queue');
+      await this.store.setFlowSync(flowId, { stage: flow.stage, status: 'fixing', main_sha: mainSha, at, task: fixId, files: conflicts }, 'engine', `同步 ${main} 冲突，生成 ${fixId} 解决`);
+      return { kind: 'merge_fix', task: fixId, conflicts };
+    } finally {
+      removeWorktree(this.root, temp);
+    }
+  }
+
+  /** 同步冲突修复任务合入：在含冲突标记的合并提交上 squash 修复，必要时再合入集成分支的新提交，验证后快进（保留与主分支的合并关系） */
+  private async mergeSyncFix(flowId: string, t: TaskFile): Promise<MergeResult> {
+    const flow = this.store.readFlow(flowId);
+    const integ = flow.integration_branch;
+    const wt = t.worktree!;
+    const merged = t.base_sha!;
+    const tree = (ref: string) => git(wt, ['rev-parse', `${ref}^{tree}`]).trim();
+    if (tree('HEAD') !== tree(merged)) {
+      const c = git(wt, ['commit-tree', 'HEAD^{tree}', '-p', merged, '-m', `[${flowId}/${t.id}] 解决同步 ${this.config.raw.main_branch} 的冲突`], { engineIdentity: true }).trim();
+      git(wt, ['reset', '-q', '--soft', c]);
+    }
+    const integHead = headSha(this.root, integ);
+    if (!gitOk(wt, ['merge-base', '--is-ancestor', integHead, 'HEAD'])) {
+      try {
+        git(wt, ['merge', '--no-edit', '-m', `pi-flow: 合入 ${integ} 的新提交`, integHead], { engineIdentity: true, allowFail: true });
+      } catch {
+        gitOk(wt, ['merge', '--abort']);
+        return this.blocked(flowId, t, `同步冲突解决后，集成分支又有新的提交与之冲突，需要用户处理`);
+      }
+    }
+    await this.store.updateTask(flowId, t.id, { base_sha: headSha(wt) }, { actor: 'merge-queue', type: 'note', reason: '同步修复：基线前移', data: { base: headSha(wt) } });
+    const changed = git(wt, ['diff', '--name-only', '--no-renames', integHead, 'HEAD']).split('\n').filter(Boolean);
+    const marked = changed.filter((f) => existsSync(path.join(wt, f)) && CONFLICT_MARKER.test(readFileSync(path.join(wt, f), 'utf8')));
+    if (marked.length) return this.verifyFailed(flowId, t, `文件中残留冲突标记：${marked.join('、')}`, []);
+    const verify = await this.postMergeVerify(flowId, t, wt, changed);
+    if (!verify.ok) return this.verifyFailed(flowId, t, verify.reason, verify.results);
+    const sha = headSha(wt);
+    try {
+      git(this.root, ['update-ref', `refs/heads/${integ}`, sha, integHead]);
+    } catch {
+      await this.store.transitionTask(flowId, t.id, { to: 'queued_merge', trigger: 'merge_requeue', actor: 'merge-queue' });
+      return this.verifyFailed(flowId, t, '集成分支在合并过程中被移动，已放回队首', [], true);
+    }
+    await this.store.transitionTask(flowId, t.id, { to: 'done', trigger: 'merge_done', actor: 'merge-queue', evidence: sha,
+      facts: { rebase_ok: true, post_verify_ok: true, fast_forwarded: true } });
+    await this.store.recordEvent({ flow: flowId, task: t.id, actor: 'merge-queue', type: 'merge', evidence: sha,
+      data: { integration_branch: integ, from: integHead, to: sha, files: changed.length, sync_main: t.sync_main } });
+    removeWorktree(this.root, wt, t.branch ?? undefined);
+    await this.store.setFlowSync(flowId, { stage: flow.sync?.stage ?? flow.stage, status: 'ok', main_sha: t.sync_main!, at: new Date().toISOString() }, 'merge-queue', `${t.id} 解决同步冲突后合入`);
+    return { kind: 'merged', task: t.id, sha, finished: [t.id] };
   }
 }

@@ -31,7 +31,8 @@ export async function startFlow(d: StageDeps, mode: FlowMode, description: strin
 export async function ensureStageTasks(d: StageDeps, flowId: string, revision?: string): Promise<string[]> {
   const flow = d.store.readFlow(flowId);
   if (flow.mode === 'fix' || !DESIGN_STAGES.has(flow.stage)) return [];
-  const existing = d.store.listTasks(flowId).filter((t) => t.stage === flow.stage);
+  // 同步主分支产生的 merge-fix 不算本阶段的设计任务
+  const existing = d.store.listTasks(flowId).filter((t) => t.stage === flow.stage && t.kind !== 'merge-fix');
   if (existing.length && !revision) return [];
   const planned = designTasks(flow.mode, flow.stage, flow.title);
   const tasks: TaskInput[] = planned.map((t, i) => ({

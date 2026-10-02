@@ -52,6 +52,16 @@ export const FlowFile = Type.Object({
   base_sha: Nullable(Type.String()),
   approvals: Type.Record(Type.String(), Approval),
   created_at: IsoTime,
+  /** 最近一次把主分支同步进集成分支（阶段边界或 /flow sync）：ok 已同步；fixing 由 merge-fix 任务解决冲突；conflict 需要用户处理 */
+  sync: Type.Optional(Type.Object({
+    stage: Type.String({ minLength: 1 }),
+    status: Type.Union([Type.Literal('ok'), Type.Literal('fixing'), Type.Literal('conflict')]),
+    main_sha: Type.String({ minLength: 1 }),
+    at: IsoTime,
+    task: Type.Optional(TaskId),
+    files: Type.Optional(Type.Array(Type.String())),
+    reason: Type.Optional(Type.String()),
+  }, { additionalProperties: false })),
   version: Type.Integer({ minimum: 1 }),
 }, { additionalProperties: false });
 export type FlowFile = Static<typeof FlowFile>;
@@ -109,6 +119,8 @@ export const TaskFile = Type.Object({
   // merge-fix 专用：被挂起的原任务与冲突文件
   merge_fix_for: Type.Optional(TaskId),
   conflict_files: Type.Optional(Type.Array(Type.String())),
+  /** 同步主分支的冲突修复任务：合并的主分支提交（worktree 是含冲突标记的合并提交） */
+  sync_main: Type.Optional(Type.String({ minLength: 1 })),
   created_by: Type.String({ minLength: 1 }),
   version: Type.Integer({ minimum: 1 }),
 }, { additionalProperties: false });

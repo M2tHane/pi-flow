@@ -158,7 +158,7 @@ export interface CreateFlowInput {
 }
 
 export type TaskInput = Pick<TaskFile, 'id' | 'stage' | 'kind' | 'title' | 'role' | 'scopes' | 'depends_on' | 'inputs'
-  | 'writes' | 'acceptance' | 'verify'> & Partial<Pick<TaskFile, 'merge_fix_for' | 'conflict_files' | 'worktree' | 'branch' | 'base_sha'>>;
+  | 'writes' | 'acceptance' | 'verify'> & Partial<Pick<TaskFile, 'merge_fix_for' | 'conflict_files' | 'worktree' | 'branch' | 'base_sha' | 'sync_main'>>;
 
 export type Findings = NonNullable<TaskFile['findings']>;
 
@@ -468,6 +468,7 @@ export class StateStore {
           blocked_reason: null, last_failure: null, created_by: actor, version: 1,
           ...(t.merge_fix_for ? { merge_fix_for: t.merge_fix_for } : {}),
           ...(t.conflict_files ? { conflict_files: [...t.conflict_files] } : {}),
+          ...(t.sync_main ? { sync_main: t.sync_main } : {}),
         };
         return tx.putTask(flow, task);
       });
@@ -801,6 +802,17 @@ export class StateStore {
   }
 
   /** 当前阶段 done 后进入下一阶段；最后一个阶段完成时流程结束，清除活动流程指针。 */
+  /** 记录主分支同步状态（不属于阶段状态机，只是流程上的标记） */
+  async setFlowSync(flowId: string, sync: NonNullable<FlowFile['sync']>, actor: string, reason: string): Promise<FlowFile> {
+    return this.transaction((tx) => {
+      const flow = tx.readFlow(flowId);
+      const next = tx.putFlow({ ...flow, sync });
+      tx.event({ flow: flowId, actor, type: sync.status === 'conflict' ? 'merge_conflict' : 'note', reason,
+        data: { sync: sync.status, stage: sync.stage, main: sync.main_sha, ...(sync.files ? { files: sync.files } : {}), ...(sync.task ? { task: sync.task } : {}) } });
+      return next;
+    });
+  }
+
   async advanceStage(flowId: string, actor: string): Promise<FlowFile> {
     return this.transaction((tx) => {
       const flow = tx.readFlow(flowId);

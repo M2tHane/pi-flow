@@ -68,6 +68,7 @@ export const FLOW_USAGE = [
   '  /flow unblock <任务> ["<回答>"] [--attempts N]   解除阻塞（无界面时用它回答）',
   '  /flow gate              闸门失败并修复后，重跑当前阶段闸门',
   '  /flow rules [apply [all|<草案文件>...]]   查看或应用规则与命令草案（docs/rules-draft/，来自架构师或知识提升）',
+  '  /flow sync              把主分支同步进集成分支（每个阶段开始时自动执行）',
   '  /flow run [<run_id>]    某次子进程运行的工具调用摘要与最后的回复（会话留档）；不给 id 时列出最近的运行',
   '  /flow knowledge [...]   项目知识库：列出、搜索、确认候选、废弃、提升为规则草案（/flow knowledge help）',
   '  /flow status --cost     成本统计：按流程、阶段、角色、模型、任务汇总 token 与耗时，返工最多的任务',
@@ -242,6 +243,22 @@ export async function runFlowCommand(args: string, env: CommandEnv): Promise<str
       const chosen = !picks.length || picks.includes('all') ? drafts : drafts.filter((d) => picks.includes(d.file) || picks.includes(path.basename(d.file)));
       if (!chosen.length) throw new Error(`没有匹配的草案。可用：${drafts.map((d) => d.file).join('、') || '无'}`);
       return applyAndReport(env, h, flowId, chosen);
+    }
+    case 'sync': {
+      const h = env.engine();
+      const flowId = activeFlowId(h.store);
+      const r = await h.engine.sync(flowId);
+      const main = h.config.raw.main_branch;
+      const text = !r ? '合并正在进行，稍后再试。'
+        : r.kind === 'up_to_date' ? `集成分支已包含 ${main} 的全部提交。`
+          : r.kind === 'synced' ? `已把 ${main} 同步进集成分支（${r.files} 个文件，${r.sha.slice(0, 8)}）。`
+            : r.kind === 'merge_fix' ? `同步冲突：${r.conflicts.join('、')}。已生成 ${r.task} 解决冲突，完成后集成分支即与 ${main} 同步。`
+              : r.kind === 'fixing' ? `冲突修复任务 ${r.task} 尚未完成，完成后再同步。`
+                : `同步冲突，需要你处理：${r.reason}。在 ${h.store.readFlow(flowId).integration_branch} 上合并 ${main} 并解决冲突后再执行 /flow sync；在此之前不会派发新任务。`;
+      await h.engine.pump(flowId);
+      if (r?.kind !== 'conflict') await h.engine.next(flowId);
+      if (env.waitForIdle) await h.engine.idle();
+      return text;
     }
     case 'run':
       return runDetail(argv[1], env.store());

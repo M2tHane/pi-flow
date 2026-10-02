@@ -19,7 +19,7 @@ import { createTaskWorktree, ensureLocalExcludes, worktreesRoot } from './worktr
 import { runVerify } from './verify-runner.ts';
 import { git } from './git.ts';
 import { RUN_ENV_KEYS } from '../tools/subagent-tools.ts';
-import { MergeQueue, type MergeHooks, type MergeResult } from './merge-queue.ts';
+import { MergeQueue, type MergeHooks, type MergeResult, type SyncResult } from './merge-queue.ts';
 import { runStageGate, gateFailedWithoutChange, type GateOutcome } from './gates.ts';
 import { ensureStageTasks } from './stages.ts';
 import { STAGE_SKILLS } from '../modes/plan.ts';
@@ -56,6 +56,8 @@ export interface EngineDeps {
   /** 技能目录（skills/<name>/SKILL.md）；子进程以 --no-skills 运行，技能由提示注入 */
   packageSkillsDir?: string;
   onGate?: (r: GateOutcome) => void;
+  /** 主分支同步完成的回调 */
+  onSync?: (flowId: string, r: SyncResult) => void;
 }
 
 export interface Dispatched { run_id: string; task: string; role: string; model: string }
@@ -95,6 +97,7 @@ export class Engine {
   async next(flowId: string): Promise<Dispatched[]> {
     await this.promote(flowId);
     const flow = this.d.store.readFlow(flowId);
+    if (flow.sync?.status === 'conflict') return [];
     const ids = selectDispatchable(this.d.store.listTasks(flowId), flow.stage, this.d.config.limits.max_parallel);
     const out: Dispatched[] = [];
     for (const id of ids) out.push(await this.dispatch(flowId, id));
@@ -116,6 +119,9 @@ export class Engine {
       expires_at: new Date(this.now().getTime() + this.d.config.limits.lease_minutes * 60_000).toISOString(),
     };
 
+    if (task.status === 'ready' && task.kind !== 'merge-fix' && flow.sync?.status === 'conflict') {
+      throw new DispatchError(`同步 ${this.d.config.raw.main_branch} 到集成分支时冲突，需要你先处理（${flow.sync.reason ?? ''}），处理后执行 /flow sync`);
+    }
     if (task.status === 'ready') {
       // merge-fix 任务的 worktree 由合并队列预先准备（含冲突标记），直接复用；
       // 承载先行验收测试的任务从测试分支末端开工，合并时把测试一并带入集成分支
@@ -260,6 +266,11 @@ export class Engine {
 
   private async pumpOnce(flowId: string): Promise<void> {
     const report = this.d.onError ?? (() => {});
+    // 阶段边界：本阶段还没同步过主分支时先同步（与合并互斥；合并进行中则下次再试）
+    try {
+      const flow = this.d.store.readFlow(flowId);
+      if (flow.mode !== 'fix' && flow.stage_status === 'active' && flow.sync?.stage !== flow.stage) await this.sync(flowId);
+    } catch (e) { report(e); }
     try {
       await this.promote(flowId);
     } catch (e) { report(e); }
@@ -341,6 +352,17 @@ export class Engine {
         .finally(() => this.gating.delete(flowId))
         .then(() => { this.notify(); return this.pump(flowId); }));
     } catch (e) { report(e); }
+  }
+
+  /** 把主分支同步进集成分支（阶段边界自动执行；/flow sync 手动执行）。合并进行中返回 null。 */
+  async sync(flowId: string): Promise<SyncResult | null> {
+    const r = await this.mergeQueue.syncMain(flowId);
+    if (r) {
+      this.d.onSync?.(flowId, r);
+      if (r.kind === 'merge_fix') await this.promote(flowId);
+      this.notify();
+    }
+    return r;
   }
 
   /** /flow gate：闸门失败后由用户手动重跑 */

@@ -126,6 +126,10 @@ export function actionsNeeded(store: StateStore, config: FlowConfig): Action[] {
         out.push({ key: `${flow.id}:gatefail:${gate.seq}`, text: `阶段检查未通过：${short(gate.reason ?? '')}`, command: '修复后执行 /flow gate' });
       }
     }
+    if (flow.sync?.status === 'conflict') {
+      out.push({ key: `${flow.id}:sync:${flow.sync.main_sha}`, text: `把 ${config.raw.main_branch} 同步进集成分支时冲突，已暂停派发新任务：${short(flow.sync.reason ?? '')}`,
+        command: `在 ${flow.integration_branch} 上合并 ${config.raw.main_branch} 并解决冲突后执行 /flow sync` });
+    }
     for (const t of tasks.filter((x) => x.status === 'blocked')) {
       out.push({ key: `${flow.id}:blocked:${t.id}:${t.version}`, text: `${t.id}「${short(t.title, 40)}」阻塞：${short(t.blocked_reason ?? '')}`, command: `/flow answer ${t.id}` });
     }
