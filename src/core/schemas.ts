@@ -189,6 +189,8 @@ export const RunFile = Type.Object({
   escalated: Type.Optional(Type.Boolean()),
   /** 审查 run 的方式：light 低风险便宜审查，full 普通审查（审查者自己的模型），strong 高风险强模型审查 */
   review_mode: Type.Optional(Type.Union([Type.Literal('full'), Type.Literal('light'), Type.Literal('strong')])),
+  /** 模型回复的轮数（assistant 消息数；fork 的 run 只计本次） */
+  turns: Type.Optional(Type.Integer({ minimum: 0 })),
   /** 接着哪次 run 的对话继续（返工时 fork 上一次的会话） */
   forked_from: Type.Optional(Type.String()),
   /** 子进程会话留档目录（<项目>.worktrees/.sessions/<run>/）与结束后找到的会话文件 */

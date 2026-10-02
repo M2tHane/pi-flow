@@ -223,6 +223,10 @@
         }
       ]
     },
+    "turns": {
+      "type": "integer",
+      "minimum": 0
+    },
     "forked_from": {
       "type": "string"
     },

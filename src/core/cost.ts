@@ -12,6 +12,9 @@ export interface CostRow {
   /** token 字段缺失（null）的 run 数，不估算 */
   missing: number;
   duration_ms: number;
+  /** 有轮数记录的 run 的轮数合计与次数（旧记录没有轮数） */
+  turns: number;
+  turnRuns: number;
 }
 
 export interface Rework { flow: string; task: string; title: string; review_reject: number; verify_fail: number; merge_fail: number; run_failed: number; total: number }
@@ -27,7 +30,7 @@ export interface CostReport {
 }
 
 function emptyRow(key: string): CostRow {
-  return { key, runs: 0, tokens: { input: null, output: null, cache_read: null, cache_write: null }, missing: 0, duration_ms: 0 };
+  return { key, runs: 0, tokens: { input: null, output: null, cache_read: null, cache_write: null }, missing: 0, duration_ms: 0, turns: 0, turnRuns: 0 };
 }
 
 function add(row: CostRow, r: RunFile): void {
@@ -40,6 +43,7 @@ function add(row: CostRow, r: RunFile): void {
   }
   if (miss) row.missing++;
   if (r.ended_at) row.duration_ms += Math.max(0, Date.parse(r.ended_at) - Date.parse(r.started_at));
+  if (typeof r.turns === 'number') { row.turns += r.turns; row.turnRuns++; }
 }
 
 function group(runs: RunFile[], keyOf: (r: RunFile) => string): CostRow[] {
@@ -87,7 +91,7 @@ const fmtN = (n: number | null) => (n === null ? '—' : n >= 10_000 ? `${(n / 1
 const fmtT = (ms: number) => (ms >= 60_000 ? `${(ms / 60_000).toFixed(1)} 分钟` : `${Math.round(ms / 1000)} 秒`);
 
 export function formatRow(r: CostRow): string {
-  return `${r.key}：${r.runs} 次运行，输入 ${fmtN(r.tokens.input)}，输出 ${fmtN(r.tokens.output)}，缓存读 ${fmtN(r.tokens.cache_read)}，缓存写 ${fmtN(r.tokens.cache_write)}，耗时 ${fmtT(r.duration_ms)}${r.missing ? `（${r.missing} 次运行缺少 token 数据）` : ''}`;
+  return `${r.key}：${r.runs} 次运行，输入 ${fmtN(r.tokens.input)}，输出 ${fmtN(r.tokens.output)}，缓存读 ${fmtN(r.tokens.cache_read)}，缓存写 ${fmtN(r.tokens.cache_write)}，耗时 ${fmtT(r.duration_ms)}${r.turnRuns ? `，平均 ${(r.turns / r.turnRuns).toFixed(1)} 轮` : ''}${r.missing ? `（${r.missing} 次运行缺少 token 数据）` : ''}`;
 }
 
 export function formatCost(c: CostReport, fixLogs: string[] = []): string {

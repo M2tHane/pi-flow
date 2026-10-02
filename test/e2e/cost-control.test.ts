@@ -113,6 +113,11 @@ test('失败后升级模型：第 2 次失败后的派发使用升级模型并�
     assert.match(reviews[1]!, /## 第 2 轮审查：先核对上次打回的问题[\s\S]*a\.ts:1：不对；期望：改对[\s\S]*git diff [0-9a-f]{40} HEAD[\s\S]*只为两类问题打回/);
     assert.match(reviews[2]!, /## 第 3 轮审查/);
     assert.doesNotMatch(reviews[2]!, /审查轮次上限/, '默认不设上限');
+    // 第三轮后续 4：审查提示直接附 diff（第二轮起是上次审查之后的改动）；run 记录轮数，成本统计显示平均轮数
+    assert.match(reviews[0]!, /## 本任务的全部改动（已附 diff[\s\S]*```diff[\s\S]*src\/server\/t-001\/a\.ts/);
+    assert.match(reviews[1]!, /## 上次审查（[0-9a-f]{12}）之后的改动（已附 diff/);
+    assert.ok(p.store.listRuns().every((r) => typeof r.turns === 'number'));
+    assert.match(await runFlowCommand('status --cost', env(p, engine)), /## 按角色[\s\S]*reviewer：\d+ 次运行[^\n]*平均 [\d.]+ 轮/);
 
     // 超预算：不再派发新任务；提示用户；orchestrator 只能报告
     assert.deepEqual(await engine.next(p.flowId), []);

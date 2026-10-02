@@ -33,6 +33,8 @@ import type { ModelPause } from './schemas.ts';
 export const REVIEWER_ROLE = 'reviewer';
 /** 会话文件超过这个大小就不再接着（上下文太长，每轮重发的成本超过重新读代码） */
 export const MAX_FORK_BYTES = 1_500_000;
+/** diff 不超过这么多字符时直接放进审查提示 */
+export const INLINE_DIFF_MAX = 20_000;
 
 export class DispatchError extends Error {
   constructor(message: string) {
@@ -303,6 +305,15 @@ export class Engine {
     const diffStat = mode === 'review' && task.worktree && task.base_sha
       ? git(task.worktree, ['diff', '--stat', task.base_sha, 'HEAD']) : undefined;
     const previousReview = mode === 'review' ? previousReviewOf(store, flowId, task, reviewPolicy(config).maxRounds) : null;
+    // 改动不大时把 diff 直接放进审查提示，省掉审查者自己 git diff 的一轮（第二轮起只附上次审查之后的改动）
+    let inlineDiff: string | undefined;
+    if (mode === 'review' && task.worktree && task.base_sha) {
+      const from = previousReview?.head ?? task.base_sha;
+      try {
+        const d = git(task.worktree, ['diff', from, 'HEAD']);
+        if (d.length <= INLINE_DIFF_MAX) inlineDiff = d;
+      } catch { /* 上次审查的提交已不存在 */ }
+    }
     // 重新派发时告诉实施者 worktree 里已有的改动（含未提交的），避免重做或覆盖
     let existingWork: string | undefined;
     if (mode === 'impl' && task.worktree && task.base_sha) {
@@ -333,6 +344,7 @@ export class Engine {
       }),
       ...(diffStat !== undefined ? { diffStat } : {}),
       ...(previousReview ? { previousReview } : {}),
+      ...(inlineDiff !== undefined ? { inlineDiff } : {}),
       ...(fork && mode === 'impl' ? { continuation: { run: fork.run_id } } : {}),
       ...(existingWork ? { existingWork } : {}),
     });
@@ -377,7 +389,7 @@ export class Engine {
     const outcome = prev.outcome ?? (leaseHeld ? (unavailable ? 'unavailable' : 'failed') : null);
     await store.updateRun(runId, {
       ended_at: this.now().toISOString(), tokens: r.tokens, model: r.model ?? prev.model, ...(outcome ? { outcome } : {}),
-      ...(r.cost !== undefined ? { cost: r.cost } : {}),
+      ...(r.cost !== undefined ? { cost: r.cost } : {}), turns: r.turns,
       ...(prev.session_dir ? { session_file: findSessionFile(prev.session_dir) } : {}),
     }, 'dispatcher', 'run 结束');
     if (unavailable && prev.model) {

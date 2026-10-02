@@ -91,6 +91,17 @@ test('第二轮起的审查：附上次打回的问题与之后的改动，只�
   assert.match(impl.user, /上次未通过的原因/);
 });
 
+test('审查提示直接附上 diff：第一轮是全部改动，第二轮起是上次审查之后的改动；没给时不出现', () => {
+  const agent = { name: 'reviewer', tier: 'medium', thinking: null, description: '', prompt: 'R' };
+  const base = { agent, rules: [], task: mkTask('T-001', { base_sha: 'abc123' }), flowId: 'B-001', handoff: '', mode: 'review' as const, commands: config.commands };
+  const first = assemblePrompt({ ...base, inlineDiff: 'diff --git a/x b/x\n+1\n' });
+  assert.match(first.user, /## 本任务的全部改动（已附 diff，不必再运行 git diff）\n```diff\ndiff --git a\/x b\/x\n\+1\n```/);
+  assert.ok(first.user.indexOf('```diff') < first.user.indexOf('开始：审查'));
+  const second = assemblePrompt({ ...base, inlineDiff: '', previousReview: { round: 2, issues: '1. x', head: 'def4567890abcdef' } });
+  assert.match(second.user, /## 上次审查（def4567890ab）之后的改动（已附 diff，不必再运行 git diff）\n（没有改动）/);
+  assert.doesNotMatch(assemblePrompt(base).user, /已附 diff/);
+});
+
 test('返工接着上一次的对话：用户消息只有续做说明，系统提示不变', () => {
   const agent = { name: 'backend-engineer', tier: 'medium', thinking: null, description: '', prompt: 'R' };
   const task = mkTask('T-001', { base_sha: 'abc123', last_failure: '审查前验证失败：test 退出码 1' });

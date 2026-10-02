@@ -66,6 +66,8 @@ export interface AssembleInput {
   evidenceDir?: string;
   /** 本 run 的临时目录（实施类角色） */
   scratchDir?: string;
+  /** 审查模式：直接附上的 diff（有上一轮审查时是上次审查之后的改动，否则是全部改动）；太大时不给 */
+  inlineDiff?: string;
   /** 实施模式：接着上一次运行（run）的对话继续，只给简短的续做说明 */
   continuation?: { run: string };
   /** 审查模式：上一轮审查打回的问题；有时本轮只核对这些问题 */
@@ -177,6 +179,10 @@ export function assemblePrompt(i: AssembleInput): AssembledPrompt {
   const pr = i.mode === 'review' ? i.previousReview : undefined;
   if (pr) parts.push(previousReviewSection(pr));
   else if (t.last_failure) parts.push(`## 上次未通过的原因（请先处理）\n${t.last_failure}`);
+  if (i.mode === 'review' && i.inlineDiff !== undefined) {
+    const what = pr?.head ? `上次审查（${pr.head.slice(0, 12)}）之后的改动` : '本任务的全部改动';
+    parts.push(`## ${what}（已附 diff，不必再运行 git diff）\n${i.inlineDiff.trim() ? `\`\`\`diff\n${i.inlineDiff.trim()}\n\`\`\`` : '（没有改动）'}`);
+  }
   parts.push(i.mode === 'review'
     ? '开始：审查上述改动，最后调用 flow_approve 给出结论。'
     : '开始：先调用 flow_claim，然后按工作流程完成任务，最后 flow_note 写 handoff 并 flow_submit。');

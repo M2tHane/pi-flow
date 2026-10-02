@@ -358,6 +358,12 @@
 
 94. **默认并发 2 → 3（第三轮后续 3）**：模板 `limits.max_parallel` 改为 3。核实调度代码：`selectDispatchable` 与转移表的并发只计 in_progress（实施）任务，审查另由 `review.max_parallel` 限制（模板为 2），两者本来就分开计数，不需要改代码。测试用配置（`test/helpers/config.ts` 的 `TEST_YAML`）保持 2，测试中的调度顺序不变。已有项目（包括冒烟的中型项目）的 `workflow.yaml` 不受影响。
 
+95. **减少重复发送的上下文（第三轮后续 4）**：
+    - 审查提示直接附 diff：`git diff <起点> HEAD` 不超过 `INLINE_DIFF_MAX`（2 万字符）时放进用户消息，起点是上次审查的提交（第二轮起）或 base_sha；写明"不必再运行 git diff"。超过时照旧只给 `--stat`。
+    - run 记录新增 `turns`（assistant 消息数；fork 的 run 只计本次）；成本统计每行显示"平均 N 轮"（旧记录没有轮数，不计入平均）。冒烟脚本的成本输出随之带上。
+    - 没做：按工具统计调用次数已在冒烟脚本里；其他减少轮数的办法等复跑数据（第 5、6 项暂缓，用户决定）。
+    - 验收：`test/unit/prompt-assembler.test.ts`；`test/e2e/cost-control.test.ts`（第一轮附全部改动、第二轮附上次审查之后的改动，run 都有轮数，`/flow status --cost` 按角色显示平均轮数）。
+
 ## 第三轮优化设计要点
 
 - **A 模型暂停**（第 88 条）。验收见该条。

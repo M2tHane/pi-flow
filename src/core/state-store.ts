@@ -672,7 +672,7 @@ export class StateStore {
   }
 
   /** 更新 run 记录（结束时间、token、模型、结果）。 */
-  async updateRun(id: string, patch: Partial<Pick<RunFile, 'ended_at' | 'tokens' | 'model' | 'outcome' | 'pid' | 'session_file' | 'cost'>>, actor: string, reason?: string): Promise<RunFile> {
+  async updateRun(id: string, patch: Partial<Pick<RunFile, 'ended_at' | 'tokens' | 'model' | 'outcome' | 'pid' | 'session_file' | 'cost' | 'turns'>>, actor: string, reason?: string): Promise<RunFile> {
     return this.transaction((tx) => {
       const run = tx.readJson<RunFile>(runRel(id));
       if (!run) throw new StateError(`run ${id} 不存在`);
