@@ -5,12 +5,38 @@ import type { Engine } from '../core/dispatcher.ts';
 import { TASK_STATUSES, type TaskFile } from '../core/schemas.ts';
 import { FlowToolError, type ToolResult } from './subagent-tools.ts';
 import { proposalSummary } from '../core/stages.ts';
+import type { FlowConfig } from '../core/config.ts';
+import { RevisionError, formatRevision, openReplan, startReplan } from '../core/revision.ts';
 
 export const DispatchParams = Type.Object({ task_id: Type.String({ pattern: '^T-[0-9]{3,}$' }) });
 export const WaitParams = Type.Object({
   task_id: Type.Optional(Type.String({ pattern: '^T-[0-9]{3,}$' })),
   timeout_s: Type.Optional(Type.Integer({ minimum: 1, maximum: 1800, default: 300 })),
 });
+
+export const ReplanParams = Type.Object({
+  reason: Type.String({ minLength: 1, maxLength: 2000, description: '用户提出的修订要求，尽量用用户的原话：要加什么、改什么、为什么' }),
+});
+
+/** 转达用户的修订要求：生成修订任务并派给 architect；修订需要用户 /flow approve 才生效 */
+export async function flowReplan(root: string, store: StateStore, config: FlowConfig, engine: Engine, p: Static<typeof ReplanParams>): Promise<ToolResult> {
+  const flowId = activeFlowId(store);
+  let id: string;
+  try {
+    id = await startReplan({ root, store, config }, flowId, p.reason, 'orchestrator');
+  } catch (e) {
+    if (e instanceof RevisionError) throw new FlowToolError(e.message);
+    throw e;
+  }
+  await engine.promote(flowId);
+  const after = 'architect 提交修订后，请用户查看并执行 /flow approve 批准（或 /flow reject "<意见>"）。';
+  try {
+    const d = await engine.dispatch(flowId, id);
+    return { text: `已生成修订任务 ${id} 并派给 ${d.role}（run ${d.run_id}）。${after}用 flow_wait 等待。`, details: { task: id, run_id: d.run_id } };
+  } catch (e) {
+    return { text: `已生成修订任务 ${id}，暂时无法派发（${(e as Error).message}），名额空出后用 flow_dispatch(${id}) 派发。${after}`, details: { task: id } };
+  }
+}
 
 export function activeFlowId(store: StateStore): string {
   const id = store.readState().active_flow;
@@ -35,13 +61,15 @@ export function statusText(store: StateStore, engine: Engine | null, flowId: str
   if (ready.length) lines.push(`可派发：${ready.map((t) => `${t.id} ${t.title}（${t.role}）`).join('；')}`);
   const blocked = tasks.filter((t) => t.status === 'blocked');
   if (blocked.length) lines.push(`阻塞，需要用户处理：\n${blocked.map((t) => `- ${t.id}：${one(t.blocked_reason ?? '')} → /flow unblock ${t.id}`).join('\n')}`);
-  const failing = tasks.filter((t) => t.last_failure && t.status !== 'blocked' && t.status !== 'done');
+  const failing = tasks.filter((t) => t.last_failure && !['blocked', 'done', 'cancelled'].includes(t.status));
   if (failing.length) lines.push(`最近失败：\n${failing.map((t) => `- ${t.id}（第 ${t.attempts} 次）：${one(t.last_failure!)}`).join('\n')}`);
   if (flow.stage_status === 'awaiting_human') {
     lines.push(`等待用户：阶段 ${flow.stage} 的闸门待批准 → /flow approve（或 /flow reject "<意见>"）`);
     const p = proposalSummary(store, flowId);
     if (p && ['S1', 'F1'].includes(flow.stage)) lines.push(p);
   }
+  const rev = openReplan(store, flowId)?.revision;
+  if (rev) lines.push(`等待用户：计划修订待批准 → /flow approve（或 /flow reject "<意见>"）\n${formatRevision(rev)}`);
   const gateFail = [...store.readEvents()].reverse().find((e) => e.flow === flowId && e.type === 'gate_result');
   if (gateFail && gateFail.to === 'active' && flow.stage_status === 'active') lines.push(`阶段闸门未通过：${one(gateFail.reason ?? '', 300)}（修复后执行 /flow gate 重跑）`);
   return lines.join('\n');
@@ -70,7 +98,7 @@ export async function flowWait(store: StateStore, engine: Engine, p: Static<type
   const before = snapshot();
   const deadline = Date.now() + (p.timeout_s ?? 300) * 1000;
   let changed: string[] = [];
-  const settled = (id: string) => ['done', 'blocked'].includes(store.readTask(flowId, id).status);
+  const settled = (id: string) => ['done', 'blocked', 'cancelled'].includes(store.readTask(flowId, id).status);
   if (p.task_id && settled(p.task_id)) return { text: `${p.task_id} 已是 ${store.readTask(flowId, p.task_id).status}。\n\n${statusText(store, engine, flowId)}`, details: { changed: [] } };
   while (Date.now() < deadline) {
     await engine.waitForChange(Math.min(5000, deadline - Date.now()));

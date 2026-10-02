@@ -3,6 +3,7 @@
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import type { FlowConfig } from './config.ts';
+import { isSettled } from './state-machine.ts';
 import type { StateStore } from './state-store.ts';
 import { git } from './git.ts';
 import { worktreesRoot, removeWorktree } from './worktree.ts';
@@ -26,7 +27,7 @@ export async function runStageGate(root: string, store: StateStore, config: Flow
   const needsHuman = !!def.gate.human || isLast;
   const reasons: string[] = [];
 
-  const open = store.listTasks(flowId).filter((t) => t.stage === flow.stage && t.status !== 'done');
+  const open = store.listTasks(flowId).filter((t) => t.stage === flow.stage && !isSettled(t));
   if (open.length) reasons.push(`本阶段还有未完成的任务：${open.map((t) => `${t.id}（${t.status}）`).join('、')}`);
   if (PROPOSAL_STAGES.has(flow.stage) && !store.readProposal(flowId)) reasons.push('架构阶段必须经 flow_propose_tasks 提交任务列表');
 

@@ -10,7 +10,7 @@ const TaskId = Type.String({ pattern: '^T-[0-9]{3,}$' });
 
 export const TASK_STATUSES = [
   'pending', 'ready', 'in_progress', 'review', 'verifying',
-  'queued_merge', 'merging', 'done', 'blocked',
+  'queued_merge', 'merging', 'done', 'blocked', 'cancelled',
 ] as const;
 export const TaskStatus = Type.Enum(TASK_STATUSES);
 export type TaskStatus = (typeof TASK_STATUSES)[number];
@@ -107,6 +107,8 @@ export const TaskFile = Type.Object({
   base_sha: Nullable(Type.String()),
   blocked_reason: Nullable(Type.String()),
   last_failure: Nullable(Type.String()),
+  /** 计划修订任务（只读 analysis，由 architect 提交修订）：用户提出的修订原因 */
+  replan: Type.Optional(Type.String({ minLength: 1 })),
   // scout（analysis 任务）提交的结构化结论（fix 模式）
   findings: Type.Optional(Type.Object({
     location: Type.String(),
@@ -284,6 +286,46 @@ export const ProposalFile = Type.Object({
 }, { additionalProperties: false });
 export type ProposalFile = Static<typeof ProposalFile>;
 
+// —— 执行中的计划修订：architect 经 flow_revise_plan 提交，用户 /flow approve 后由程序增删任务 ——
+
+/** 修订中新增的任务：临时编号 N-001 起；依赖可以指向现有任务（T-xxx）或本次新增的任务（N-xxx） */
+export const RevisionTask = Type.Object({
+  id: Type.String({ pattern: '^N-[0-9]{3,}$' }),
+  stage: Type.String({ minLength: 1 }),
+  kind: TaskKind,
+  title: Type.String({ minLength: 1, maxLength: 200 }),
+  role: Type.String({ minLength: 1 }),
+  scopes: Type.Array(Type.String()),
+  depends_on: Type.Array(Type.Object({
+    task: Type.String({ pattern: '^[TN]-[0-9]{3,}$' }),
+    type: Type.Union([Type.Literal('hard'), Type.Literal('soft')]),
+    reason: Type.Optional(Type.String()),
+  }, { additionalProperties: false })),
+  inputs: Type.Array(Type.String()),
+  writes: Type.Array(Type.String(), { minItems: 1 }),
+  acceptance: Type.Array(Type.String(), { minItems: 1 }),
+  verify: Type.Array(Type.String()),
+}, { additionalProperties: false });
+export type RevisionTask = Static<typeof RevisionTask>;
+
+export const RevisionFile = Type.Object({
+  /** 发起修订的任务（replan 任务）与原因 */
+  task: TaskId,
+  reason: Type.String(),
+  run: Type.String(),
+  created_at: IsoTime,
+  status: Type.Union([Type.Literal('proposed'), Type.Literal('approved'), Type.Literal('rejected')]),
+  add: Type.Array(RevisionTask),
+  /** 调整未开始任务的依赖（整体替换 depends_on） */
+  rewire: Type.Array(Type.Object({ task: TaskId, depends_on: Type.Array(Dependency) }, { additionalProperties: false })),
+  cancel: Type.Array(Type.Object({ task: TaskId, reason: Type.String({ minLength: 1 }) }, { additionalProperties: false })),
+  summary: Type.String(),
+  /** 批准时新增任务的编号映射 N-xxx → T-xxx */
+  mapping: Type.Optional(Type.Record(Type.String(), TaskId)),
+  version: Type.Integer({ minimum: 1 }),
+}, { additionalProperties: false });
+export type RevisionFile = Static<typeof RevisionFile>;
+
 // —— 需求访谈：开流程之前由主会话与用户访谈，程序保存摘要（.flow/brief.json，同一时间一份） ——
 
 export const BriefFile = Type.Object({
@@ -361,6 +403,7 @@ export const SCHEMAS = {
   proposal: ProposalFile,
   brief: BriefFile,
   knowledge: KnowledgeFile,
+  revision: RevisionFile,
 } as const;
 export type SchemaKind = keyof typeof SCHEMAS;
 

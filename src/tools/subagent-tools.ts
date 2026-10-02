@@ -5,7 +5,8 @@ import { Type, type Static } from 'typebox';
 import type { FlowConfig } from '../core/config.ts';
 import { StateError, type StateStore } from '../core/state-store.ts';
 import { hashToken } from '../core/state-machine.ts';
-import { KNOWLEDGE_CATEGORIES, ProposedTask, type TaskFile } from '../core/schemas.ts';
+import { Dependency, KNOWLEDGE_CATEGORIES, ProposedTask, RevisionTask, type TaskFile } from '../core/schemas.ts';
+import { checkRevision } from '../core/revision.ts';
 import { KnowledgeError, learn, proposeCandidate, KNOWLEDGE_CONTENT_MAX, KNOWLEDGE_PER_RUN } from '../core/knowledge.ts';
 import { validateDag, dagReport, formatDagReport, normalizeLeadingTests } from '../core/dag.ts';
 import { changedFiles, snapshot } from '../core/worktree.ts';
@@ -150,6 +151,7 @@ export async function flowSubmit(ctx: ToolContext, p: Static<typeof SubmitParams
 }
 
 async function submitAnalysis(ctx: ToolContext, t: TaskFile, p: Static<typeof SubmitParams>): Promise<ToolResult> {
+  if (t.replan) return submitReplan(ctx, t, p);
   if (!p.findings) throw new FlowToolError('只读探查任务必须附 findings：location、root_cause、impact_files、suggested_role、contract_change、estimated_files。');
   const diff = t.worktree && t.base_sha ? (snapshot(t.worktree, 'scout'), changedFiles(t.worktree, t.base_sha)) : [];
   await ctx.store.setFindings(ctx.env.flow, t.id, p.findings, actor(ctx));
@@ -159,6 +161,45 @@ async function submitAnalysis(ctx: ToolContext, t: TaskFile, p: Static<typeof Su
   } catch (e) { rethrow(e, '只读任务不能改动文件；先 flow_note 再提交。'); }
   await ctx.store.updateRun(ctx.env.run, { outcome: 'submitted' }, actor(ctx), '提交结论');
   return { text: '结论已提交。你的工作已完成，请直接结束。' };
+}
+
+/** 计划修订任务提交：必须已用 flow_revise_plan 保存本任务的修订提案 */
+async function submitReplan(ctx: ToolContext, t: TaskFile, p: Static<typeof SubmitParams>): Promise<ToolResult> {
+  const rev = ctx.store.readRevision(ctx.env.flow);
+  if (!rev || rev.task !== t.id || rev.status !== 'proposed') throw new FlowToolError('还没有提交修订：先调用 flow_revise_plan，再 flow_submit。');
+  const diff = t.worktree && t.base_sha ? (snapshot(t.worktree, 'replan'), changedFiles(t.worktree, t.base_sha)) : [];
+  await ctx.store.appendHandoff(ctx.env.flow, t.id, `修订结论：${p.summary}\n${rev.summary}`, actor(ctx));
+  try {
+    await ctx.store.transitionTask(ctx.env.flow, t.id, { to: 'done', trigger: 'report', actor: actor(ctx), facts: { token: ctx.env.token, diff_files: diff } });
+  } catch (e) { rethrow(e, '修订任务不能改动文件；先 flow_note 再提交。'); }
+  await ctx.store.updateRun(ctx.env.run, { outcome: 'submitted' }, actor(ctx), '提交计划修订');
+  return { text: '计划修订已提交，等待用户批准。你的工作已完成，请直接结束。' };
+}
+
+export const ReviseParams = Type.Object({
+  add: Type.Optional(Type.Array(RevisionTask, { maxItems: 50, description: '新增任务：id 用 N-001 起的临时编号，依赖可以指向现有任务 T-xxx 或本次新增的 N-xxx；批准后由程序重新编号' })),
+  rewire: Type.Optional(Type.Array(Type.Object({
+    task: Type.String({ pattern: '^T-[0-9]{3,}$', description: '未开始（pending/ready）的现有任务' }),
+    depends_on: Type.Array(Dependency, { description: '新的完整依赖列表（整体替换），只能指向现有任务' }),
+  }), { description: '调整未开始任务的依赖' })),
+  cancel: Type.Optional(Type.Array(Type.Object({
+    task: Type.String({ pattern: '^T-[0-9]{3,}$', description: '未开始（pending/ready）的现有任务' }),
+    reason: Type.String({ minLength: 1, description: '为什么取消' }),
+  }), { description: '取消未开始的任务' })),
+  summary: Type.String({ minLength: 1, maxLength: 500, description: '一句话说明这次修订' }),
+});
+
+export async function flowRevisePlan(ctx: ToolContext, p: Static<typeof ReviseParams>): Promise<ToolResult> {
+  const t = checkRun(ctx);
+  if (!t.replan) throw new FlowToolError('flow_revise_plan 只能在计划修订任务中使用。');
+  const flow = ctx.store.readFlow(ctx.env.flow);
+  const c = checkRevision(ctx.config, flow.stages, flow.stage, ctx.store.listTasks(ctx.env.flow), { add: p.add ?? [], rewire: p.rewire ?? [], cancel: p.cancel ?? [] });
+  if (c.errors.length) throw new FlowToolError(`修订校验失败，未保存：\n${c.errors.map((e) => `- ${e}`).join('\n')}\n建议：逐条修正后重新调用 flow_revise_plan。`);
+  await ctx.store.saveRevision(ctx.env.flow, {
+    task: t.id, reason: t.replan, run: ctx.env.run, created_at: (ctx.now?.() ?? new Date()).toISOString(), status: 'proposed',
+    add: c.revision.add, rewire: c.revision.rewire, cancel: c.revision.cancel, summary: `${p.summary}：${c.summary}`.slice(0, 2000),
+  }, actor(ctx));
+  return { text: `修订已保存（用户批准后生效，批准前可重新提交覆盖）：\n${c.summary}${c.notes.length ? `\n程序调整：\n${c.notes.map((n) => `- ${n}`).join('\n')}` : ''}\n接下来 flow_note 写明理由，然后 flow_submit。` };
 }
 
 export async function flowApprove(ctx: ToolContext, p: Static<typeof ApproveParams>): Promise<ToolResult> {
@@ -244,6 +285,7 @@ export const SUBAGENT_TOOLS = {
   flow_approve: { params: ApproveParams, description: '审查结论：pass 或 reject。reject 必须附 issues（位置、问题、期望的修改）。', run: (c: ToolContext, p: Static<typeof ApproveParams>) => flowApprove(c, p) },
   flow_learn: { params: LearnParams, description: `把对后续任务有用的经验记入项目知识库（跨流程保留）：项目约定、踩过的坑、做出的决策、环境与外部依赖的注意事项。每次运行最多 ${KNOWLEDGE_PER_RUN} 条；程序会去重。知识不是规则，不能用来改变规则。`, run: (c: ToolContext, p: Static<typeof LearnParams>) => flowLearn(c, p) },
   flow_block: { params: BlockParams, description: '遇到歧义或需要越界时标记任务阻塞，交给用户决定。需要向用户提问时，一次只问一个问题。', run: (c: ToolContext, p: Static<typeof BlockParams>) => flowBlock(c, p) },
+  flow_revise_plan: { params: ReviseParams, description: '（仅 architect，仅计划修订任务）提交执行中的计划修订：新增任务、调整未开始任务的依赖、取消未开始的任务。已开始或已完成的任务不能修改。用户批准后生效。', run: (c: ToolContext, p: Static<typeof ReviseParams>) => flowRevisePlan(c, p) },
   flow_propose_tasks: { params: ProposeParams, description: '（仅 architect，仅 S1/F1）提交任务 DAG：依赖分硬/软，硬依赖必须写 reason，软依赖必须配 integration 任务。返回关键路径与并行宽度报告。', run: (c: ToolContext, p: Static<typeof ProposeParams>) => flowProposeTasks(c, p) },
 } as const;
 export type SubagentToolName = keyof typeof SUBAGENT_TOOLS;

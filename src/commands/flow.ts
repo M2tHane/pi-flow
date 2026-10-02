@@ -18,6 +18,7 @@ import { costReport, formatCost } from '../core/cost.ts';
 import { renderStatus } from '../core/status-view.ts';
 import { applyDrafts, formatDrafts, listDrafts, type Draft } from '../core/rules-draft.ts';
 import { findSessionFile, formatRunDetail, summarizeSession } from '../core/session-log.ts';
+import { RevisionError, approveRevision, rejectRevision, startReplan } from '../core/revision.ts';
 import { KnowledgeError, acceptCandidate, formatKnowledgeList, markPromoted, promoteToDraft, retireEntries, searchKnowledge } from '../core/knowledge.ts';
 import { loadConfig } from '../core/config.ts';
 import { git } from '../core/git.ts';
@@ -68,6 +69,7 @@ export const FLOW_USAGE = [
   '  /flow unblock <任务> ["<回答>"] [--attempts N]   解除阻塞（无界面时用它回答）',
   '  /flow gate              闸门失败并修复后，重跑当前阶段闸门',
   '  /flow rules [apply [all|<草案文件>...]]   查看或应用规则与命令草案（docs/rules-draft/，来自架构师或知识提升）',
+  '  /flow replan "<要改什么>"   执行中修订计划：architect 起草（新增任务、调整或取消未开始的任务），你批准后生效',
   '  /flow sync              把主分支同步进集成分支（每个阶段开始时自动执行）',
   '  /flow run [<run_id>]    某次子进程运行的工具调用摘要与最后的回复（会话留档）；不给 id 时列出最近的运行',
   '  /flow knowledge [...]   项目知识库：列出、搜索、确认候选、废弃、提升为规则草案（/flow knowledge help）',
@@ -180,6 +182,13 @@ export async function runFlowCommand(args: string, env: CommandEnv): Promise<str
         if (env.waitForIdle) await h.engine.idle();
         return `${text}\n\n${renderStatus(h.store, h.config)}`;
       }
+      if (h.store.readRevision(flowId)?.status === 'proposed') {
+        const text = await approveRevision({ root: env.root, store: h.store, config: h.config }, flowId);
+        await h.engine.pump(flowId);
+        const d = await h.engine.next(flowId);
+        if (env.waitForIdle) await h.engine.idle();
+        return `${text}${d.length ? `\n已派发：${d.map((x) => `${x.task} → ${x.role}`).join('；')}` : ''}\n\n${renderStatus(h.store, h.config)}`;
+      }
       const flow = h.store.readFlow(flowId);
       if (flow.stage === flow.stages.at(-1) && flow.stage_status === 'awaiting_human' && !argv.includes('--yes')) {
         const msg = `批准阶段 ${flow.stage} 将把 ${flow.integration_branch} 合入 ${h.config.raw.main_branch}，流程随之结束。`;
@@ -201,6 +210,13 @@ export async function runFlowCommand(args: string, env: CommandEnv): Promise<str
     case 'reject': {
       const h = env.engine();
       const flowId = activeFlowId(h.store);
+      if (h.store.readRevision(flowId)?.status === 'proposed') {
+        const text = await rejectRevision({ root: env.root, store: h.store, config: h.config }, flowId, argv.slice(1).join(' '));
+        await h.engine.pump(flowId);
+        await h.engine.next(flowId);
+        if (env.waitForIdle) await h.engine.idle();
+        return text;
+      }
       const text = await rejectStage({ root: env.root, store: h.store, config: h.config }, flowId, argv.slice(1).join(' '));
       await h.engine.pump(flowId);
       return text;
@@ -243,6 +259,20 @@ export async function runFlowCommand(args: string, env: CommandEnv): Promise<str
       const chosen = !picks.length || picks.includes('all') ? drafts : drafts.filter((d) => picks.includes(d.file) || picks.includes(path.basename(d.file)));
       if (!chosen.length) throw new Error(`没有匹配的草案。可用：${drafts.map((d) => d.file).join('、') || '无'}`);
       return applyAndReport(env, h, flowId, chosen);
+    }
+    case 'replan': {
+      const h = env.engine();
+      const flowId = activeFlowId(h.store);
+      try {
+        const id = await startReplan({ root: env.root, store: h.store, config: h.config }, flowId, argv.slice(1).join(' '), 'human');
+        await h.engine.pump(flowId);
+        await h.engine.next(flowId);
+        if (env.waitForIdle) await h.engine.idle();
+        return `已生成修订任务 ${id}，交给 architect 起草计划修订。提交后用 /flow approve 批准，或 /flow reject "<意见>" 打回。`;
+      } catch (e) {
+        if (e instanceof RevisionError) return `未发起：${e.message}`;
+        throw e;
+      }
     }
     case 'sync': {
       const h = env.engine();

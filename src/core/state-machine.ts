@@ -8,7 +8,7 @@ import { isProtected, matchesAny } from './paths.ts';
 export type Trigger =
   | 'schedule' | 'dispatch' | 'submit' | 'review_pass' | 'review_reject'
   | 'verify_pass' | 'verify_fail' | 'merge_start' | 'merge_done' | 'merge_verify_fail'
-  | 'merge_blocked' | 'merge_requeue' | 'block' | 'unblock' | 'lease_expired' | 'run_failed' | 'run_interrupted' | 'report' | 'repro_confirmed';
+  | 'merge_blocked' | 'merge_requeue' | 'block' | 'unblock' | 'lease_expired' | 'run_failed' | 'run_interrupted' | 'report' | 'repro_confirmed' | 'cancel';
 
 /** 同一任务连续会话中断达到此次数转 blocked，防止无限重来 */
 export const MAX_INTERRUPTIONS = 5;
@@ -57,6 +57,8 @@ interface Rule {
 }
 
 export const IN_FLIGHT: readonly TaskStatus[] = ['in_progress', 'review', 'verifying', 'queued_merge', 'merging'];
+/** 已结束：完成或被计划修订取消（阶段完成的判断以此为准） */
+export const isSettled = (t: { status: TaskStatus }) => t.status === 'done' || t.status === 'cancelled';
 
 export const hashToken = (token: string) => createHash('sha256').update(token).digest('hex');
 
@@ -188,7 +190,7 @@ export const TRANSITIONS: readonly Rule[] = [
       ...need(t.kind === 'analysis', '只有 analysis 任务可以直接提交结论'),
       ...need((f.diff_files ?? []).length === 0, `只读任务不得有改动：${(f.diff_files ?? []).join('、')}`),
       ...need(f.handoff_written, '尚未写 handoff，请先调用 flow_note'),
-      ...need(!!t.findings, '缺少结构化结论（findings）'),
+      ...need(!!t.findings || !!t.replan, '缺少结构化结论（findings）'),
     ],
     effect: (t) => { t.impl_run = t.lease!.run_id; t.lease = null; t.worktree = null; },
   },
@@ -203,6 +205,12 @@ export const TRANSITIONS: readonly Rule[] = [
         ...need(f.evidence_saved, 'evidence 未保存'),
       ];
     },
+  },
+  {
+    // 偏离（第二轮 G）：用户批准的计划修订取消未开始的任务；已开始或已完成的任务不能取消
+    from: ['pending', 'ready'], to: 'cancelled', trigger: 'cancel',
+    check: (_t, f) => [...need(f.actor === 'human', '只有用户批准的计划修订可以取消任务'), ...reasonRequired(f)],
+    effect: (t) => { t.lease = null; },
   },
   {
     // 偏离：子进程未提交就退出（崩溃、放弃）。保留 worktree，清空租约，计一次失败；由引擎重新派发

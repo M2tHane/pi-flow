@@ -7,15 +7,15 @@ export const BUILTIN_READ_TOOLS = ['read', 'grep', 'find', 'ls'] as const;
 export const BUILTIN_WRITE_TOOLS = ['write', 'edit'] as const;
 export const FLOW_TOOLS = [
   'flow_status', 'flow_dispatch', 'flow_wait', 'flow_claim', 'flow_note', 'flow_submit',
-  'flow_approve', 'flow_propose_tasks', 'flow_block', 'flow_learn',
+  'flow_approve', 'flow_propose_tasks', 'flow_block', 'flow_learn', 'flow_revise_plan', 'flow_replan',
 ] as const;
 /** 虚拟工具：实际启用 Pi 的 bash，由 guard 施加只读白名单 */
 export const BASH_READONLY = 'bash_readonly';
 
 /** 只能出现在特定角色上的工具 */
-const ROLE_EXCLUSIVE: Record<string, string> = { flow_approve: 'reviewer', flow_propose_tasks: 'architect' };
+const ROLE_EXCLUSIVE: Record<string, string> = { flow_approve: 'reviewer', flow_propose_tasks: 'architect', flow_revise_plan: 'architect', flow_replan: 'orchestrator' };
 /** orchestrator 只允许这些工具（第 20 节） */
-const ORCHESTRATOR_ALLOWED = new Set(['read', 'flow_status', 'flow_dispatch', 'flow_wait']);
+const ORCHESTRATOR_ALLOWED = new Set(['read', 'flow_status', 'flow_dispatch', 'flow_wait', 'flow_replan']);
 const WRITE_GROUP = 'serena_edit';
 const WEB_GROUP = 'web';
 
@@ -203,6 +203,9 @@ export function parseConfig(source: string): FlowConfig {
     if (name !== 'orchestrator' && !toolList.includes('flow_block')) toolList.push('flow_block');
     // 偏离：所有 subagent 角色都隐式拥有 flow_learn（项目知识库，第二轮 C 项）
     if (name !== 'orchestrator' && !toolList.includes('flow_learn')) toolList.push('flow_learn');
+    // 偏离（第二轮 G）：能提交任务 DAG 的角色隐式拥有 flow_revise_plan；orchestrator 隐式拥有 flow_replan（转达用户的修订要求）
+    if (toolList.includes('flow_propose_tasks') && !toolList.includes('flow_revise_plan')) toolList.push('flow_revise_plan');
+    if (name === 'orchestrator' && !toolList.includes('flow_replan')) toolList.push('flow_replan');
     // 偏离：有 flow_submit 的角色隐式拥有 flow_claim（角色提示要求先 claim；第 8 节模板对 architect、researcher、scout 漏写）
     if (toolList.includes('flow_submit') && !toolList.includes('flow_claim')) toolList.push('flow_claim');
     const unique = [...new Set(toolList)];

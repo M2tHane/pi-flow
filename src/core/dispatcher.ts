@@ -7,7 +7,7 @@ import type { FlowConfig } from './config.ts';
 import type { StateStore } from './state-store.ts';
 import type { RoleSettingsFile, TaskFile, ThinkingLevel } from './schemas.ts';
 import type { RunOutcome, SubagentHandle, SubagentLauncher, SubagentSpec } from './launcher.ts';
-import { hashToken } from './state-machine.ts';
+import { hashToken, isSettled } from './state-machine.ts';
 import { resolveRoleModel } from './role-settings.ts';
 import { loadAgent } from './agents.ts';
 import { assemblePrompt, ruleFilesFor } from './prompt-assembler.ts';
@@ -187,7 +187,7 @@ export class Engine {
       const stat = git(task.worktree, ['diff', '--stat', task.base_sha]).trim();
       if (status || stat) existingWork = [stat, status && `未提交：\n${status}`].filter(Boolean).join('\n\n');
     }
-    const skillNames = [...(STAGE_SKILLS[task.stage] ?? []), ...(mode === 'impl' ? ['write-handoff'] : [])];
+    const skillNames = task.replan ? ['revise-plan', 'decompose-dag'] : [...(STAGE_SKILLS[task.stage] ?? []), ...(mode === 'impl' ? ['write-handoff'] : [])];
     const skills = skillNames.map((n) => {
       const f = this.d.packageSkillsDir ? path.join(this.d.packageSkillsDir, n, 'SKILL.md') : '';
       return f && existsSync(f) ? { path: `skills/${n}`, content: readFileSync(f, 'utf8').replace(/^---[\s\S]*?---\s*/, '').trim() } : null;
@@ -339,7 +339,9 @@ export class Engine {
       const created = await ensureStageTasks(deps, flowId);
       if (created.length) { await this.promote(flowId); this.notify(); return; }
       const stageTasks = this.d.store.listTasks(flowId).filter((t) => t.stage === flow.stage);
-      if (!stageTasks.every((t) => t.status === 'done')) return;
+      if (!stageTasks.every(isSettled)) return;
+      // 计划修订待用户批准时不提交闸门（批准后可能新增本阶段的任务）
+      if (this.d.store.readRevision(flowId)?.status === 'proposed') return;
       if (!force && gateFailedWithoutChange(this.d.store, flowId, flow.stage)) return;
       await this.d.store.transitionStage(flowId, { to: 'awaiting_gate', trigger: 'submit_gate', actor: 'engine' });
       this.gating.add(flowId);

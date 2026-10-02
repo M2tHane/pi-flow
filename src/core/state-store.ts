@@ -7,7 +7,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import lockfile from 'proper-lockfile';
 import {
-  validate, type FlowFile, type MergeQueueFile, type RunFile, type ProposalFile, type BriefFile, type KnowledgeFile, type SchemaKind, type StageStatus, type StateFile,
+  validate, type FlowFile, type MergeQueueFile, type RunFile, type ProposalFile, type BriefFile, type KnowledgeFile, type RevisionFile, type SchemaKind, type StageStatus, type StateFile,
   type TaskFile, type TaskStatus, type FlowEvent,
 } from './schemas.ts';
 import {
@@ -60,6 +60,7 @@ export const handoffRel = (flow: string, task: string) => `flows/${flow}/handoff
 export const evidenceRel = (flow: string, task: string) => `flows/${flow}/evidence/${task}`;
 export const runRel = (run: string) => `runs/${run}.json`;
 export const proposalRel = (flow: string) => `flows/${flow}/proposal.json`;
+export const revisionRel = (flow: string) => `flows/${flow}/revision.json`;
 export const stageEvidenceRel = (flow: string, stage: string) => `flows/${flow}/evidence/stage-${stage}`;
 const MQ_REL = 'merge-queue.json';
 export const KNOWLEDGE_REL = 'knowledge.json';
@@ -70,6 +71,7 @@ export function schemaKindOf(rel: string): SchemaKind | null {
   if (/^flows\/[^/]+\/tasks\/[^/]+\.json$/.test(rel)) return 'task';
   if (/^runs\/[^/]+\.json$/.test(rel)) return 'run';
   if (/^flows\/[^/]+\/proposal\.json$/.test(rel)) return 'proposal';
+  if (/^flows\/[^/]+\/revision\.json$/.test(rel)) return 'revision';
   if (rel === 'brief.json') return 'brief';
   if (rel === KNOWLEDGE_REL) return 'knowledge';
   return null;
@@ -158,7 +160,7 @@ export interface CreateFlowInput {
 }
 
 export type TaskInput = Pick<TaskFile, 'id' | 'stage' | 'kind' | 'title' | 'role' | 'scopes' | 'depends_on' | 'inputs'
-  | 'writes' | 'acceptance' | 'verify'> & Partial<Pick<TaskFile, 'merge_fix_for' | 'conflict_files' | 'worktree' | 'branch' | 'base_sha' | 'sync_main'>>;
+  | 'writes' | 'acceptance' | 'verify'> & Partial<Pick<TaskFile, 'merge_fix_for' | 'conflict_files' | 'worktree' | 'branch' | 'base_sha' | 'sync_main' | 'replan'>>;
 
 export type Findings = NonNullable<TaskFile['findings']>;
 
@@ -469,6 +471,7 @@ export class StateStore {
           ...(t.merge_fix_for ? { merge_fix_for: t.merge_fix_for } : {}),
           ...(t.conflict_files ? { conflict_files: [...t.conflict_files] } : {}),
           ...(t.sync_main ? { sync_main: t.sync_main } : {}),
+          ...(t.replan ? { replan: t.replan } : {}),
         };
         return tx.putTask(flow, task);
       });
@@ -802,6 +805,70 @@ export class StateStore {
   }
 
   /** 当前阶段 done 后进入下一阶段；最后一个阶段完成时流程结束，清除活动流程指针。 */
+  readRevision(flow: string): RevisionFile | null {
+    return this.readJsonRel<RevisionFile>(revisionRel(flow));
+  }
+
+  /** 保存（或替换）计划修订提案；已批准或已打回的会被新的提案覆盖 */
+  async saveRevision(flow: string, rev: Omit<RevisionFile, 'version'>, actor: string): Promise<RevisionFile> {
+    return this.transaction((tx) => {
+      tx.readFlow(flow);
+      const cur = tx.readJson<RevisionFile>(revisionRel(flow));
+      const saved = tx.putJson(revisionRel(flow), 'revision', { ...rev, version: cur?.version ?? 1 });
+      tx.event({ flow, task: rev.task, actor, type: 'note', reason: `计划修订提案：${rev.summary}`.slice(0, 500),
+        data: { add: rev.add.length, rewire: rev.rewire.length, cancel: rev.cancel.length } });
+      return saved;
+    });
+  }
+
+  /** 打回计划修订（仅用户） */
+  async rejectRevision(flow: string, note: string): Promise<RevisionFile> {
+    return this.transaction((tx) => {
+      const cur = tx.readJson<RevisionFile>(revisionRel(flow));
+      if (!cur || cur.status !== 'proposed') throw new StateError('没有待批准的计划修订');
+      const saved = tx.putJson(revisionRel(flow), 'revision', { ...cur, status: 'rejected' as const });
+      tx.event({ flow, task: cur.task, actor: 'human', type: 'approval', reason: `打回计划修订：${note}`.slice(0, 500), data: { revision: 'rejected' } });
+      return saved;
+    });
+  }
+
+  /**
+   * 批准并落地计划修订（仅用户），一个事务内完成：新增任务、整体替换未开始任务的依赖、取消未开始的任务（经转移表 cancel）。
+   * 调用方（core/revision.ts）负责编号映射与 DAG 校验；这里再次确认被改动的任务都未开始。
+   */
+  async applyRevision(flow: string, input: { add: TaskInput[]; rewire: RevisionFile['rewire']; cancel: RevisionFile['cancel']; mapping: Record<string, string> }): Promise<RevisionFile> {
+    return this.transaction((tx) => {
+      const cur = tx.readJson<RevisionFile>(revisionRel(flow));
+      if (!cur || cur.status !== 'proposed') throw new StateError('没有待批准的计划修订');
+      for (const t of input.add) {
+        if (tx.readJson(taskRel(flow, t.id))) throw new StateError(`任务 ${flow}/${t.id} 已存在`);
+        tx.putTask(flow, {
+          id: t.id, stage: t.stage, kind: t.kind, title: t.title, role: t.role, scopes: [...t.scopes],
+          depends_on: structuredClone(t.depends_on), inputs: [...t.inputs], writes: [...t.writes],
+          acceptance: [...t.acceptance], verify: [...t.verify], status: 'pending', attempts: 0, violations: 0,
+          lease_expirations: 0, lease: null, impl_run: null, branch: null, worktree: null, base_sha: null,
+          blocked_reason: null, last_failure: null, created_by: 'architect', version: 1,
+        });
+      }
+      for (const r of input.rewire) {
+        const t = tx.readTask(flow, r.task);
+        if (t.status !== 'pending' && t.status !== 'ready') throw new StateError(`任务 ${r.task} 当前是 ${t.status}，已开始的任务不能修改`);
+        tx.putTask(flow, { ...t, depends_on: structuredClone(r.depends_on) });
+      }
+      for (const c of input.cancel) {
+        const t = tx.readTask(flow, c.task);
+        const plan = planTransition(t, 'cancelled', 'cancel', { now: this.now(), limits: this.limits, actor: 'human', reason: c.reason });
+        if (!plan.ok) throw new StateError(`取消 ${c.task} 被拒`, plan.errors);
+        tx.putTask(flow, plan.task);
+        tx.event({ flow, actor: 'human', type: 'transition', task: c.task, from: t.status, to: 'cancelled', trigger: 'cancel', reason: c.reason });
+      }
+      const saved = tx.putJson(revisionRel(flow), 'revision', { ...cur, status: 'approved' as const, mapping: input.mapping });
+      tx.event({ flow, task: cur.task, actor: 'human', type: 'approval', reason: `批准计划修订：${cur.summary}`.slice(0, 500),
+        data: { revision: 'approved', added: input.add.map((t) => t.id), rewired: input.rewire.map((r) => r.task), cancelled: input.cancel.map((c) => c.task) } });
+      return saved;
+    });
+  }
+
   /** 记录主分支同步状态（不属于阶段状态机，只是流程上的标记） */
   async setFlowSync(flowId: string, sync: NonNullable<FlowFile['sync']>, actor: string, reason: string): Promise<FlowFile> {
     return this.transaction((tx) => {

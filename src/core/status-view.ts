@@ -95,7 +95,7 @@ export function taskActivity(t: TaskFile, failureKind: string | null, expectFail
         : t.status === 'queued_merge' || t.status === 'merging' ? '合入中'
           : t.status === 'ready' ? '待派发'
             : t.status === 'pending' ? '等待前置任务'
-              : t.status === 'blocked' ? '阻塞' : '已完成';
+              : t.status === 'blocked' ? '阻塞' : t.status === 'cancelled' ? '已取消' : '已完成';
   const retry = t.attempts > 0 && t.status !== 'done' && t.status !== 'blocked'
     ? `（第 ${t.attempts + 1} 次${failureKind ? `，上次：${failureKind}` : ''}）` : '';
   return base + retry;
@@ -125,6 +125,10 @@ export function actionsNeeded(store: StateStore, config: FlowConfig): Action[] {
       if (gate?.to === 'active' && gate.data?.['stage'] === flow.stage) {
         out.push({ key: `${flow.id}:gatefail:${gate.seq}`, text: `阶段检查未通过：${short(gate.reason ?? '')}`, command: '修复后执行 /flow gate' });
       }
+    }
+    const rev = store.readRevision(flow.id);
+    if (rev?.status === 'proposed') {
+      out.push({ key: `${flow.id}:revision:${rev.version}`, text: `计划修订等待你批准：${short(rev.summary, 200)}`, command: '/flow approve 批准，或 /flow reject "<意见>" 打回重做（详情：/flow status --detail）' });
     }
     if (flow.sync?.status === 'conflict') {
       out.push({ key: `${flow.id}:sync:${flow.sync.main_sha}`, text: `把 ${config.raw.main_branch} 同步进集成分支时冲突，已暂停派发新任务：${short(flow.sync.reason ?? '')}`,
@@ -165,7 +169,8 @@ export function renderFlow(store: StateStore, config: FlowConfig, flow: FlowFile
   lines.push(`${PHASE_LABEL[cur]}阶段：${GOALS[flow.mode][cur]}`);
   const inPhase = flow.mode === 'fix' || cur === 'done' ? tasks
     : tasks.filter((t) => phaseOfStage(config, flow.mode as 'build' | 'feature', t.stage) === cur);
-  lines.push(inPhase.length ? `进度：${inPhase.filter((t) => t.status === 'done').length} / ${inPhase.length} 个任务完成` : '进度：本阶段的任务尚未生成');
+  const counted = inPhase.filter((t) => t.status !== 'cancelled');
+  lines.push(counted.length ? `进度：${counted.filter((t) => t.status === 'done').length} / ${counted.length} 个任务完成` : '进度：本阶段的任务尚未生成');
   const active = tasks.filter((t) => INFLIGHT.has(t.status));
   lines.push('');
   lines.push(active.length

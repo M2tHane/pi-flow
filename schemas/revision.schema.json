@@ -1,0 +1,251 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pi-flow/revision.schema.json",
+  "type": "object",
+  "required": [
+    "task",
+    "reason",
+    "run",
+    "created_at",
+    "status",
+    "add",
+    "rewire",
+    "cancel",
+    "summary",
+    "version"
+  ],
+  "properties": {
+    "task": {
+      "type": "string",
+      "pattern": "^T-[0-9]{3,}$"
+    },
+    "reason": {
+      "type": "string"
+    },
+    "run": {
+      "type": "string"
+    },
+    "created_at": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "anyOf": [
+        {
+          "type": "string",
+          "const": "proposed"
+        },
+        {
+          "type": "string",
+          "const": "approved"
+        },
+        {
+          "type": "string",
+          "const": "rejected"
+        }
+      ]
+    },
+    "add": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "stage",
+          "kind",
+          "title",
+          "role",
+          "scopes",
+          "depends_on",
+          "inputs",
+          "writes",
+          "acceptance",
+          "verify"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^N-[0-9]{3,}$"
+          },
+          "stage": {
+            "type": "string",
+            "minLength": 1
+          },
+          "kind": {
+            "enum": [
+              "test",
+              "impl",
+              "doc",
+              "infra",
+              "integration",
+              "review-fix",
+              "merge-fix",
+              "analysis"
+            ]
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "role": {
+            "type": "string",
+            "minLength": 1
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "depends_on": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "task",
+                "type"
+              ],
+              "properties": {
+                "task": {
+                  "type": "string",
+                  "pattern": "^[TN]-[0-9]{3,}$"
+                },
+                "type": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "const": "hard"
+                    },
+                    {
+                      "type": "string",
+                      "const": "soft"
+                    }
+                  ]
+                },
+                "reason": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "inputs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "writes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1
+          },
+          "acceptance": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1
+          },
+          "verify": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "rewire": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "task",
+          "depends_on"
+        ],
+        "properties": {
+          "task": {
+            "type": "string",
+            "pattern": "^T-[0-9]{3,}$"
+          },
+          "depends_on": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "task",
+                "type"
+              ],
+              "properties": {
+                "task": {
+                  "type": "string",
+                  "pattern": "^T-[0-9]{3,}$"
+                },
+                "type": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "const": "hard"
+                    },
+                    {
+                      "type": "string",
+                      "const": "soft"
+                    }
+                  ]
+                },
+                "reason": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "cancel": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "task",
+          "reason"
+        ],
+        "properties": {
+          "task": {
+            "type": "string",
+            "pattern": "^T-[0-9]{3,}$"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "summary": {
+      "type": "string"
+    },
+    "mapping": {
+      "type": "object",
+      "patternProperties": {
+        "^.*$": {
+          "type": "string",
+          "pattern": "^T-[0-9]{3,}$"
+        }
+      }
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    }
+  },
+  "additionalProperties": false
+}

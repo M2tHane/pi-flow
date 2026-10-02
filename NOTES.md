@@ -226,6 +226,13 @@
     - 设计阶段生成任务时不把同步产生的 merge-fix 当作本阶段已有任务。
     - 新增 `flow.sync`（stage、status、main_sha、at、task、files、reason）与任务字段 `sync_main`。
 
+76. **执行中修订计划（第二轮 G）**：
+    - 发起：orchestrator 新工具 `flow_replan(reason)`（隐式拥有，转达用户原话，用户主要通过主 agent 沟通）或 `/flow replan "<原因>"`。只在 build/feature 的非设计阶段可用；设计阶段仍用 `/flow reject`。阶段等待审批时只有用户（`/flow replan`）能发起，程序把阶段经 `reject` 重新打开。同一时间只允许一个未结束的修订。
+    - 修订任务：kind=analysis、角色 architect、writes 为空（guard 下不能写任何文件）、新字段 `replan`（原因），handoff 附现有任务一览与阻塞原因；注入技能 `revise-plan` 与 `decompose-dag`。它经 `report` 直接完成（`report` 的检查放宽为 findings 或 replan），没有审查与合并。
+    - 新工具 `flow_revise_plan`（architect 独占；有 `flow_propose_tasks` 的角色隐式拥有）：`add`（临时编号 N-001 起，依赖可指向 T-xxx 或 N-xxx）、`rewire`（整体替换未开始任务的依赖，只能指向现有任务）、`cancel`（未开始的任务，写原因）。保存为 `flows/<id>/revision.json`（schema `revision`，登记哈希）。校验（`core/revision.ts` 的 `checkRevision`）：被改动的任务必须是 pending/ready 且不是程序生成的；新增任务的阶段不早于当前阶段且不是设计阶段；剩余任务不得依赖被取消的任务；合并后的 DAG 用 `validateDag` 校验，只报告修订引入的新错误；先行验收测试按第 69 条规范化（必要时把现有未开始任务的依赖调整并入 rewire）。
+    - 闸门：修订待批准期间不提交阶段闸门；orchestrator 每轮注入"等待用户批准"；"需要你处理"列出修订。`/flow approve` 有待批准修订时先处理修订：按当前任务重新校验（批准前状态变化则拒绝并提示打回重做），重新编号，在一个事务内新增任务、改依赖、取消任务（`applyRevision`）。`/flow reject "<意见>"` 有待批准修订时打回修订并生成新的修订任务（原因附上意见与上一版）。
+    - **新增任务状态 `cancelled` 与转移 `cancel`（pending/ready → cancelled）**：只接受 actor=human（即用户批准的修订）。阶段完成、闸门、orchestrator 下一步的判断改为"done 或 cancelled 视为已结束"；进度不计已取消的任务。
+
 ## 第二轮优化设计要点
 
 - **A 先行验收测试先失败**（第 69、70 条）。验收：
@@ -236,6 +243,7 @@
   - `test/e2e/knowledge.test.ts`：agent 提交的知识出现在后续同 scope 任务的系统提示中，其他 scope 的不出现；下游提示含上游 handoff；重复与非法 scope 被拒；agent 写 `.flow/knowledge.json` 被拦；审查打回生成候选，确认前不注入；废弃；提升为规则草案并应用；跨流程保留；篡改知识库被完整性校验发现。
   - `test/unit/knowledge.test.ts`：校验、去重、选择与上限、提示位置、上游长度限制、提升目标。
 - **F 集成分支同步主分支**（第 75 条）。验收（`test/e2e/sync.test.ts`）：两阶段流程中，用户在实施期间向主分支提交一处无关改动与一处与任务冲突的改动；进入 S4 时主分支改动已进入集成分支（S4 任务的 worktree 可见），冲突生成 merge-fix（看到冲突标记）并合入，集成分支以主分支为祖先，最终合入主分支无冲突。契约冲突时暂停派发、提示用户，手动合并后 `/flow sync` 恢复派发。
+- **G 执行中修订计划**（第 76 条）。验收（`test/e2e/replan.test.ts`）：主 agent 经 `flow_replan` 发起，architect 收到原话与任务一览；取消进行中任务、取消仍被依赖的任务被拒；architect 不能写文件；待批准时阶段闸门不运行、主 agent 只能等待、agent 不能取消任务；用户批准后新增任务重新编号、依赖调整、任务取消，进行中任务的租约不变；第二次修订被打回后按意见重做再批准；最终含已取消任务的阶段照常通过闸门。`test/unit/revision.test.ts`：阶段、环、不存在的依赖、先行验收测试规范化与编号映射。
 - **D + E 租约续期与会话留档**（第 73、74 条）。验收（`test/e2e/lease-session.test.ts`）：持续调用工具时剩余不足一半才续租、超过最初 45 分钟不被杀、停止调用后按时过期、伪造 token 不能续租；run 记录会话目录，`/flow run` 显示工具调用与失败、最后的回复；doctor 按保留期提醒与清理。`test/e2e/pi-subprocess.test.ts` 用真实 pi 验证会话文件写入留档目录并能摘要出 flow_* 调用与被 guard 拦下的调用。
 
 ## M8 设计要点
@@ -335,4 +343,5 @@
 - 2026-10-01：新增 `agents/interviewer.md`（只用于主会话）；`agents/architect.md` 与 `skills/design-contract` 增加规则草案说明，architect 子进程的提示缓存失效一次。
 - 2026-10-01（第二轮 A）：`agents/test-engineer.md`、`skills/decompose-dag`、`rules/testing.md` 增加"先行验收测试必须先失败"的说明；test-engineer 与 architect（S1/F1）子进程提示缓存失效一次。新项目 `/flow init` 时复制的 `rules/testing.md` 随之变化，已有项目的 `rules/` 不受影响。
 - 2026-10-01（第二轮 B + C）：`skills/write-handoff`（所有实施角色）、`agents/reviewer.md`、`agents/scout.md` 增加 flow_learn 说明，`agents/interviewer.md`（主会话）增加读知识库的说明；所有子进程角色的工具声明多了 flow_learn。以上都会让提示缓存失效一次。此外项目知识新增条目时，系统提示末尾的知识部分变化，只影响其后的缓存。
+- 2026-10-01（第二轮 G）：新增技能 `skills/revise-plan`（只注入修订任务）；`agents/orchestrator.md`（主会话）增加 flow_replan 说明，orchestrator 的工具多了 flow_replan；architect 的工具声明多了 flow_revise_plan，architect 子进程提示缓存失效一次。
 - 以后修改 `agents/`、`rules/`、`skills/` 时，在此追加一条。

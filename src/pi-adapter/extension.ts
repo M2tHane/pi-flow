@@ -19,7 +19,7 @@ import { parseAgentFile } from '../core/agents.ts';
 import { runFlowConfig, type ModelOption } from '../commands/flow-config.ts';
 import { runFlowCommand, runFlowBuild, runFlowFix, FLOW_USAGE, type CommandEnv, type EngineHandle } from '../commands/flow.ts';
 import { activeBrief, interviewContext, updateBrief, CONFIRM_COMMAND, type InterviewMode } from '../modes/interview.ts';
-import { DispatchParams, WaitParams, activeFlowId, flowDispatch, flowWait, statusText } from '../tools/orchestrator-tools.ts';
+import { DispatchParams, ReplanParams, WaitParams, activeFlowId, flowDispatch, flowReplan, flowWait, statusText } from '../tools/orchestrator-tools.ts';
 import { PiLauncher } from './launcher.ts';
 import { lastFailureKind, notices, snapshotOf, visibleFlows } from '../core/status-view.ts';
 import { packageRoots, pluginExtensionsFor } from './plugins.ts';
@@ -27,7 +27,7 @@ import { packageRoots, pluginExtensionsFor } from './plugins.ts';
 export const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const TEMPLATE_WORKFLOW = path.join(PACKAGE_ROOT, 'templates', 'workflow.yaml');
 const SUBAGENT_EXTENSION = path.join(PACKAGE_ROOT, 'src', 'pi-adapter', 'subagent.ts');
-const ORCHESTRATOR_TOOLS = ['flow_status', 'flow_dispatch', 'flow_wait'];
+const ORCHESTRATOR_TOOLS = ['flow_status', 'flow_dispatch', 'flow_wait', 'flow_replan'];
 
 /** 用户级设置文件：~/.pi/agent/pi-flow.json（与 Pi 官方 preset 示例的全局配置位置一致） */
 export function roleSettingsPath(): string {
@@ -223,6 +223,15 @@ export default function piFlow(pi: ExtensionAPI): void {
       },
     });
     pi.registerTool({
+      name: 'flow_replan', label: 'flow_replan', description: '用户要求修改计划（漏了功能、要改需求、某个任务拆得不对）时调用：把用户的要求交给 architect 起草计划修订（新增任务、调整或取消未开始的任务）。修订需要用户 /flow approve 才生效；你不能自己改任务。',
+      parameters: ReplanParams,
+      async execute(_id, p, _s, _u, ctx) {
+        const h = engineFor(ctx.cwd);
+        const r = await flowReplan(ctx.cwd, h.store, h.config, h.engine, checked(ReplanParams, p, 'flow_replan'));
+        return toolResult(r.text, r.details);
+      },
+    });
+    pi.registerTool({
       name: 'flow_wait', label: 'flow_wait', description: '等待任务状态变化或超时，返回精简摘要（不含 subagent 的对话）。',
       parameters: WaitParams,
       async execute(_id, p, _s, _u, ctx) {
@@ -309,7 +318,7 @@ export default function piFlow(pi: ExtensionAPI): void {
 
   pi.registerCommand('flow', {
     description: 'pi-flow 管理：status、next、resume、approve、reject、unblock、gate、doctor、init',
-    getArgumentCompletions: (prefix) => ['status', 'next', 'resume', 'answer', 'rules', 'knowledge', 'run', 'sync', 'off', 'approve', 'reject', 'unblock', 'gate', 'abort', 'doctor', 'init', 'help']
+    getArgumentCompletions: (prefix) => ['status', 'next', 'resume', 'answer', 'rules', 'knowledge', 'run', 'sync', 'replan', 'off', 'approve', 'reject', 'unblock', 'gate', 'abort', 'doctor', 'init', 'help']
       .filter((x) => x.startsWith(prefix.trim())).map((x) => ({ value: x, label: x })),
     handler: async (args, ctx) => {
       try {
