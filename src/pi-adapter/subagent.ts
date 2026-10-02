@@ -6,6 +6,7 @@ import { loadConfig } from '../core/config.ts';
 import { StateStore } from '../core/state-store.ts';
 import { SubagentRuntime } from '../core/subagent-runtime.ts';
 import { SUBAGENT_TOOLS, runEnvFrom, type SubagentToolName } from '../tools/subagent-tools.ts';
+import { MISSING_TOOLS_REASON } from '../core/dependencies.ts';
 
 export default function piFlowSubagent(pi: ExtensionAPI): void {
   const env = runEnvFrom(process.env);
@@ -26,9 +27,15 @@ export default function piFlowSubagent(pi: ExtensionAPI): void {
     });
   }
 
-  pi.on('session_start', () => {
+  pi.on('session_start', async () => {
     const registered = new Set(pi.getAllTools().map((t) => t.name));
     pi.setActiveTools([...allowed].filter((t) => registered.has(t)));
+    // 角色配置了但没有注册的工具：插件未安装、版本不符或改了工具名。记一条事件，/flow doctor 会提示
+    const missing = [...allowed].filter((t) => !registered.has(t));
+    if (missing.length) {
+      await store.recordEvent({ flow: env.flow, task: env.task, actor: `run:${env.run}`, type: 'note', reason: MISSING_TOOLS_REASON,
+        data: { run: env.run, role: env.role, tools: missing } }).catch(() => {});
+    }
   });
 
   pi.on('tool_call', async (event, ctx) => {

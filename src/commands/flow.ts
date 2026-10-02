@@ -22,6 +22,7 @@ import { budgetState, formatBudget } from '../core/cost-control.ts';
 import { RevisionError, approveRevision, rejectRevision, startReplan } from '../core/revision.ts';
 import { KnowledgeError, acceptCandidate, formatKnowledgeList, markPromoted, promoteToDraft, retireEntries, searchKnowledge } from '../core/knowledge.ts';
 import { loadConfig } from '../core/config.ts';
+import { checkDependencies } from '../core/dependencies.ts';
 import { git } from '../core/git.ts';
 import type { StateStore as Store } from '../core/state-store.ts';
 import { existsSync } from 'node:fs';
@@ -53,6 +54,8 @@ export interface CommandEnv {
   deactivateOrchestrator?(): Promise<string> | string;
   /** 非交互模式：命令结束后进程退出，需要等待引擎跑完 */
   waitForIdle: boolean;
+  /** 当前 Pi 版本与 Pi 包的安装位置（用于依赖检查）；测试环境可不提供 */
+  dependencies?(): { piVersion: string; packageRoots: string[] };
 }
 
 export const FLOW_USAGE = [
@@ -121,13 +124,13 @@ export async function runFlowCommand(args: string, env: CommandEnv): Promise<str
   const sub = argv[0] ?? 'status';
   switch (sub) {
     case 'init': {
-      const r = await initProject(env.root, env.packageRoot);
+      const r = await initProject(env.root, env.packageRoot, env.dependencies?.());
       return `${formatInit(r)}\n\n前置条件：\n${formatPreflight(r.preflight)}\n\n下一步：执行 /flow-config 为各角色选择模型，然后 /flow-build 开始。`;
     }
     case 'doctor': {
       let days: number | undefined;
       try { days = loadConfig(path.join(env.root, 'workflow.yaml')).limits.session_retention_days; } catch { /* 配置错误由前置条件检查报告 */ }
-      const r = await doctor(env.root, env.store(), { fix: argv.includes('--fix'), preflight: { roleSettings: env.roleSettings(), availableModels: env.availableModels() },
+      const r = await doctor(env.root, env.store(), { fix: argv.includes('--fix'), preflight: { roleSettings: env.roleSettings(), availableModels: env.availableModels(), ...env.dependencies?.() },
         ...(days ? { sessionRetentionDays: days } : {}) });
       return formatDoctor(r);
     }
@@ -359,7 +362,7 @@ export const FIX_USAGE = [
 
 async function ensureInitialized(env: CommandEnv, lines: string[]): Promise<void> {
   if (!existsSync(path.join(env.root, '.flow', 'state.json')) || !existsSync(path.join(env.root, 'workflow.yaml'))) {
-    lines.push(formatInit(await initProject(env.root, env.packageRoot)));
+    lines.push(formatInit(await initProject(env.root, env.packageRoot, env.dependencies?.())));
   }
 }
 
@@ -423,8 +426,20 @@ export async function runFlowBuild(args: string, env: CommandEnv): Promise<strin
   return beginInterview(env, mode, description, lines);
 }
 
+/** 开流程前检查依赖：Pi 版本过低直接拒绝；插件缺失或版本未经验证只提醒 */
+function dependencyGate(env: CommandEnv, config: FlowConfig, lines: string[]): void {
+  const deps = env.dependencies?.();
+  if (!deps) return;
+  const items = checkDependencies({ config, ...deps });
+  const errors = items.filter((i) => i.level === 'error');
+  if (errors.length) throw new Error(`依赖检查未通过：\n${errors.map((i) => `✗ ${i.item}：${i.detail}`).join('\n')}`);
+  const warns = items.filter((i) => i.level === 'warn');
+  if (warns.length) lines.push(`依赖提醒（不影响开始，相关工具可能不可用；/flow doctor 查看）：\n${warns.map((i) => `! ${i.item}：${i.detail}`).join('\n')}`, '');
+}
+
 async function startBuildFlow(env: CommandEnv, mode: 'build' | 'feature', title: string, brief: string, lines: string[], confirmed?: BriefFile): Promise<string> {
   const h = env.engine();
+  dependencyGate(env, h.config, lines);
   const flow = await startFlow({ root: env.root, store: h.store, config: h.config }, mode, title);
   if (brief) await h.store.saveFlowBrief(flow.id, brief);
   if (confirmed) await markConfirmed(h.store, flow.id);
@@ -479,6 +494,7 @@ export async function runFlowFix(args: string, env: CommandEnv): Promise<string>
     }
   }
   const main = h.config.raw.main_branch;
+  dependencyGate(env, h.config, lines);
   const fix = await h.store.createFixFlow(description, main, git(env.root, ['rev-parse', main]).trim());
   if (brief) await h.store.saveFlowBrief(fix.id, brief);
   if (confirmed) await markConfirmed(h.store, fix.id);

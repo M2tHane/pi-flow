@@ -70,6 +70,8 @@ declare module '@earendil-works/pi-coding-agent' {
     on(event: 'tool_call', handler: (event: ToolCallEvent, ctx: ExtensionContext) => Promise<ToolCallEventResult | void> | ToolCallEventResult | void): () => void;
   }
   export function getAgentDir(): string;
+  /** 当前 Pi 的版本号 */
+  export const VERSION: string;
   export const CONFIG_DIR_NAME: string;
 }
 

@@ -303,6 +303,14 @@
     - 验证：升级前在临时目录安装 1.0.0，真实 pi 的端到端测试 7 个全部通过；真实模型 fix 演示两次 249 秒、232 秒（第二次缓存已热：提示 token 总量 209k，0.99.2 开 codemode 时为 243k）。升级后全量测试通过：单元 138、端到端 58，无跳过。
     - 同日发布的独立包 `@earendil-works/pi-durable`（持久化 agent 运行时：崩溃后从断点继续、任务与子任务、子 agent、工具调用钩子）评估后暂不引入：标注为实验性、API 随时变化；扩展与工具格式与 pi 命令行不同，serena、codegraph、web 插件无法加载；用户的交互依赖 pi 的终端界面。将来可作为 `SubagentLauncher` 的另一种实现，用于中断后从原对话续跑（第 68 条）与运行中插话。
 
+87. **依赖检查与版本范围**（用户要求）：
+    - 新增 `src/core/dependencies.ts`：验证过的版本集中登记（Pi 最低 0.99.0、验证 0.99.x – 1.x；pi-serena 0.9.x、pi-codegraph 0.1.x、pi-web-access 0.35.x；Serena 1.x；codegraph 命令行 1.x）。Pi 低于最低版本为错误；其余缺失或版本不在验证范围为提醒，附安装命令、npm 与 GitHub 链接、受影响的角色。插件只在 workflow.yaml 中有角色用到其工具组时才检查；Serena 按 pi-serena 的查找方式检测（`SERENA_PYTHON`、`uv tool dir` 下的 serena-agent）。
+    - 接入：`/flow init`、`/flow doctor` 的前置条件；`/flow-build`、`/flow-fix` 开流程前（Pi 过低拒绝开始，其余列出提醒后继续）。Pi 版本取自 Pi 导出的 `VERSION`（已核实 `dist/index.d.ts` 导出），插件位置用已有的 `packageRoots`（项目级优先）。
+    - 不在 package.json 中限定 Pi 版本：Pi 文档（docs/packages.md）要求宿主提供的包在 peerDependencies 中写 `"*"`，所以 Pi 版本只能在运行时检查。pi-flow 自己的运行时依赖仍是精确版本。
+    - 插件不兼容时的安全性：子进程只启用配置里列出的工具名，guard 对取不到路径的写操作一律阻断，所以工具名或参数变化只会让工具失效，不会放宽安全检查；因此只提醒、不拒绝。子进程启动时若角色配置的工具没有注册，记一条"子进程缺少工具"事件，`/flow doctor` 汇总提示。
+    - README 的安装一节重写为四步：基础环境 → pi-flow → 插件 → `/flow init` 自检。
+    - 崩溃恢复测试的等待上限 90 → 180 秒：全量并发运行时真实 pi 子进程首次启动偶尔很慢，导致误报超时。
+
 ## 第二轮优化设计要点
 
 - **A 先行验收测试先失败**（第 69、70 条）。验收：

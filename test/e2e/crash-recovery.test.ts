@@ -28,7 +28,7 @@ before(async () => {
 const drivers: ChildProcess[] = [];
 after(() => { for (const d of drivers) d.kill('SIGKILL'); return llm?.close(); });
 
-const until = async (cond: () => boolean, ms = 90_000) => {
+const until = async (cond: () => boolean, ms = 180_000) => {
   const end = Date.now() + ms;
   while (!cond()) { if (Date.now() > end) throw new Error('等待超时'); await new Promise((r) => setTimeout(r, 100)); }
 };

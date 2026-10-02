@@ -13,20 +13,46 @@
 
 ## 安装
 
-要求：Node 22 以上、git 2.30 以上、Pi 0.99 以上（已在 0.99.2 与 1.0.0 上验证）。
+按顺序做四步。每一步做完都可以用 `/flow doctor` 自检，它会逐项报告"已安装 / 未安装 / 版本未经验证"，并给出安装命令和链接。
+
+### 1. 基础环境
+
+| 依赖 | 要求 | 安装 |
+|---|---|---|
+| Node | 22 以上 | https://nodejs.org |
+| git | 2.30 以上（需要 worktree） | https://git-scm.com |
+| Pi | 0.99 以上，已验证 0.99.x – 1.x | `npm install -g @earendil-works/pi-coding-agent` |
+
+低于 0.99 时 `/flow-build`、`/flow-fix` 会拒绝开始；高于验证范围时只提醒。
+
+### 2. 安装 pi-flow
 
 ```bash
-# 从本地目录安装（全局）；加 -l 则只装到当前项目的 .pi/settings.json
-pi install /path/to/pi-flow
+pi install /path/to/pi-flow        # 全局
+pi install -l /path/to/pi-flow     # 只装到当前项目（写入 .pi/settings.json）
 ```
 
-可选插件（子进程按角色自动加载，未安装则对应工具不可用）：
+目前从本地目录安装，尚未发布到 npm。
 
-| 插件 | 用途 | 安装 |
-|---|---|---|
-| pi-serena | 符号级读取与编辑（实施、审查、探查角色） | `pi install npm:@bacnh85/pi-serena`（另需安装 Serena） |
-| pi-codegraph | 调用关系与影响面分析；合并后只跑受影响的测试 | `pi install npm:@vndv/pi-codegraph`，`npm i -g @colbymchenry/codegraph`，项目内 `codegraph init -i` |
-| pi-web-access | 联网调研（仅 researcher） | `pi install npm:pi-web-access` |
+### 3. 安装插件（按需）
+
+只有 `workflow.yaml` 中有角色用到的插件才会被检查；没装时对应工具不可用，流程照常运行（开始流程时会提醒）。
+
+| 插件 | 用途 | 已验证版本 | 安装 | 链接 |
+|---|---|---|---|---|
+| pi-serena | 符号级读取与编辑 | 0.9.x（0.9.20） | `pi install npm:@bacnh85/pi-serena` | [npm](https://www.npmjs.com/package/@bacnh85/pi-serena) · [GitHub](https://github.com/bacnh85/pi-extensions/tree/main/pi-serena) |
+| Serena（pi-serena 依赖） | 语义代码分析后端 | 1.x（1.7.0） | `uv tool install serena-agent`（先装 [uv](https://docs.astral.sh/uv/)） | [GitHub](https://github.com/oraios/serena) |
+| pi-codegraph | 调用关系与影响面分析 | 0.1.x（0.1.10） | `pi install npm:@vndv/pi-codegraph` | [npm](https://www.npmjs.com/package/@vndv/pi-codegraph) · [GitHub](https://github.com/vndv/pi-codegraph) |
+| codegraph 命令行 | 索引；合并后只跑受影响的测试 | 1.x（1.6.0） | `npm i -g @colbymchenry/codegraph`，项目内 `codegraph init -i` | [npm](https://www.npmjs.com/package/@colbymchenry/codegraph) |
+| pi-web-access | 联网调研（researcher） | 0.35.x（0.35.0） | `pi install npm:pi-web-access` | [npm](https://www.npmjs.com/package/pi-web-access) · [GitHub](https://github.com/nicobailon/pi-web-access) |
+
+版本不在验证范围时只提醒：pi-flow 只启用配置里列出的工具名，写操作取不到路径就阻断，所以插件改了工具名或参数时，相关工具会失效，但安全检查不会放宽。想用验证过的版本，在安装命令后加 `@版本号`（例如 `pi install npm:@vndv/pi-codegraph@0.1.10`）。子进程启动时如果发现角色配置的工具没有注册，会记一条事件，`/flow doctor` 会提示是哪个角色缺了哪些工具。
+
+### 4. 初始化项目
+
+在项目的 git 仓库里执行 `/flow init`：生成 `workflow.yaml`、规则与文档骨架，并运行上面所有检查。然后用 `/flow-config` 为各角色选择模型。
+
+验证过的版本登记在 `src/core/dependencies.ts`，升级依赖并验证后只改那里。
 
 ### 为各角色选择模型：`/flow-config`
 

@@ -1,4 +1,4 @@
-// 前置条件检查：git、node、仓库、workflow.yaml、规则文件、角色模型、codegraph。
+// 前置条件检查：git、node、仓库、workflow.yaml、规则文件、角色模型；Pi 版本、插件与其背后的程序（dependencies.ts）。
 import { existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
@@ -6,6 +6,7 @@ import { loadConfig, type FlowConfig } from './config.ts';
 import { resolveRoleModel } from './role-settings.ts';
 import type { RoleSettingsFile } from './schemas.ts';
 import { gitOk } from './git.ts';
+import { checkDependencies, type DependencyDeps } from './dependencies.ts';
 
 export interface PreflightItem { level: 'ok' | 'warn' | 'error'; item: string; detail: string }
 
@@ -15,6 +16,11 @@ export interface PreflightDeps {
   /** 可用模型（provider/id，小写比较）；不提供则不检查可用性 */
   availableModels?: string[];
   config?: FlowConfig;
+  /** 当前 Pi 版本（主会话中由 pi-adapter 提供） */
+  piVersion?: string;
+  /** Pi 包的安装位置（项目级优先），用于检查插件 */
+  packageRoots?: string[];
+  probe?: DependencyDeps['probe'];
 }
 
 const ver = (s: string) => (s.match(/(\d+)\.(\d+)/) ?? []).slice(1).map(Number);
@@ -81,10 +87,15 @@ export function preflight(d: PreflightDeps): PreflightItem[] {
     }
   }
 
-  const cg = cmd(process.env['PI_FLOW_CODEGRAPH_BIN'] ?? 'codegraph', ['--version']);
-  if (!cg) push('warn', 'codegraph', '未安装：合并后验证将运行全量测试。安装：npm i -g @colbymchenry/codegraph');
-  else if (!existsSync(path.join(d.root, '.codegraph'))) push('warn', 'codegraph', `${cg} 已安装但项目未索引，执行 codegraph init -i`);
-  else push('ok', 'codegraph', `${cg}，已索引`);
+  const deps = checkDependencies({ ...(config ? { config } : {}), ...(d.piVersion ? { piVersion: d.piVersion } : {}),
+    ...(d.packageRoots ? { packageRoots: d.packageRoots } : {}), ...(d.probe ? { probe: d.probe } : {}) });
+  for (const i of deps) {
+    if (i.item === 'codegraph' && i.level === 'ok' && !existsSync(path.join(d.root, '.codegraph'))) {
+      push('warn', 'codegraph', `${i.detail} 已安装但项目未索引，执行 codegraph init -i`);
+    } else {
+      push(i.level, i.item, i.item === 'codegraph' && i.level === 'ok' ? `${i.detail}，已索引` : i.detail);
+    }
+  }
   return out;
 }
 

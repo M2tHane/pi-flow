@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
-import { getAgentDir, type ExtensionAPI, type ExtensionContext, type PiModel } from '@earendil-works/pi-coding-agent';
+import { getAgentDir, VERSION, type ExtensionAPI, type ExtensionContext, type PiModel } from '@earendil-works/pi-coding-agent';
 import { getSupportedThinkingLevels } from '@earendil-works/pi-ai';
 import { loadConfig, type FlowConfig } from '../core/config.ts';
 import { ROLE_SETTINGS_FILENAME, loadRoleSettings, resolveRoleModel } from '../core/role-settings.ts';
@@ -219,6 +219,7 @@ export default function piFlow(pi: ExtensionAPI): void {
       },
       deactivateOrchestrator: () => (s.deactivate ? s.deactivate() : '当前不在调度模式。'),
       waitForIdle: !ctx.hasUI,
+      dependencies: () => ({ piVersion: VERSION, packageRoots: packageRoots(root, getAgentDir()) }),
     };
   };
 

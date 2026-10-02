@@ -30,7 +30,7 @@ export function skeleton(packageRoot: string, projectName: string): Map<string, 
   return files;
 }
 
-export async function initProject(root: string, packageRoot: string): Promise<InitReport> {
+export async function initProject(root: string, packageRoot: string, deps?: { piVersion: string; packageRoots: string[] }): Promise<InitReport> {
   if (!gitOk(root, ['rev-parse', '--git-dir'])) throw new Error(`${root} 不是 git 仓库，请先执行 git init`);
   const top = git(root, ['rev-parse', '--show-toplevel']).trim();
   if (realpathSync(top) !== realpathSync(root)) throw new Error(`请在仓库根目录 ${top} 执行 /flow init`);
@@ -75,7 +75,7 @@ export async function initProject(root: string, packageRoot: string): Promise<In
   } else {
     existing.push('.flow/');
   }
-  return { created, existing, differs, commit, preflight: preflight({ root }) };
+  return { created, existing, differs, commit, preflight: preflight({ root, ...deps }) };
 }
 
 export function formatInit(r: InitReport): string {

@@ -9,6 +9,7 @@ import { preflight, formatPreflight, type PreflightDeps } from './preflight.ts';
 import { readEngineLock } from './engine-lock.ts';
 import { IN_FLIGHT } from './state-machine.ts';
 import { cleanupSessions, DEFAULT_SESSION_RETENTION_DAYS } from './session-log.ts';
+import { MISSING_TOOLS_REASON } from './dependencies.ts';
 
 export interface DoctorReport { errors: string[]; warnings: string[]; fixed: string[]; preflight: string }
 
@@ -93,6 +94,16 @@ export async function doctor(root: string, store: StateStore, opts: { fix?: bool
         warnings.push(`${stale.length} 个已结束 run 的提示文件可清理（/flow doctor --fix）`);
       }
     }
+  }
+  // 最近的子进程报告缺少工具（插件未安装、版本不符或改了工具名）
+  const missingTools = new Map<string, Set<string>>();
+  for (const e of store.readEvents().slice(-500)) {
+    if (e.reason !== MISSING_TOOLS_REASON) continue;
+    const role = String(e.data?.['role'] ?? '?');
+    for (const t of (e.data?.['tools'] as string[] | undefined) ?? []) (missingTools.get(role) ?? missingTools.set(role, new Set()).get(role)!).add(t);
+  }
+  for (const [role, tools] of missingTools) {
+    warnings.push(`最近 ${role} 的子进程缺少工具：${[...tools].slice(0, 8).join('、')}${tools.size > 8 ? ' 等' : ''}（插件未安装或版本不兼容，见下方前置条件）`);
   }
   // 超过保留期的子进程会话留档
   const days = opts.sessionRetentionDays ?? DEFAULT_SESSION_RETENTION_DAYS;
