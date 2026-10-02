@@ -4,7 +4,7 @@ import { writeFileSync, readFileSync, existsSync, mkdirSync, rmSync, appendFileS
 import path from 'node:path';
 import { StateStore, StateError } from '../../src/core/state-store.ts';
 import { hashToken } from '../../src/core/state-machine.ts';
-import { readEvents } from '../../src/core/event-log.ts';
+import { appendEvents, buildEvent, readEvents } from '../../src/core/event-log.ts';
 import { tmpRepo } from '../helpers/repo.ts';
 import { mkTask, hard, soft } from '../helpers/tasks.ts';
 
@@ -65,7 +65,28 @@ test('init 生成骨架且可重复执行', async () => {
     const before = readFileSync(path.join(dir, '.flow/events.jsonl'), 'utf8');
     await StateStore.init(dir, { now });
     assert.equal(readFileSync(path.join(dir, '.flow/events.jsonl'), 'utf8'), before);
-    assert.match(git('log', '-1', '--format=%s'), /^flow-state:/);
+    // 状态提交在专用引用上，不进入分支历史
+    assert.match(git('log', '-1', '--format=%s', 'refs/pi-flow/state'), /^flow-state:/);
+    assert.doesNotMatch(git('log', '--format=%s', 'HEAD'), /flow-state:/);
+    assert.equal(git('ls-files', '--', '.flow'), '');
+  } finally { cleanup(); }
+});
+
+test('迁移：早期版本提交在分支上的 .flow/ 移出分支历史，之后状态只提交到专用引用', async () => {
+  const { dir, git, cleanup } = tmpRepo();
+  try {
+    await StateStore.init(dir, { now, git: false });
+    git('add', '-f', '.flow');
+    git('commit', '-q', '-m', '旧版本：状态提交在分支上');
+    const store = new StateStore(dir, { now });
+    await store.recordEvent({ flow: null, actor: 'engine', type: 'note', reason: '迁移后的第一次写入' });
+    assert.equal(git('ls-files', '--', '.flow'), '');
+    assert.match(git('log', '-1', '--format=%s', 'HEAD'), /移出分支历史/);
+    assert.match(git('log', '-1', '--format=%s', 'refs/pi-flow/state'), /迁移后的第一次写入/);
+    assert.equal(git('status', '--porcelain'), '', '.flow/ 已被本地排除，不显示为未跟踪');
+    assert.ok(git('ls-tree', '-r', '--name-only', 'refs/pi-flow/state').includes('.flow/events.jsonl'));
+    assert.ok(!git('ls-tree', '-r', '--name-only', 'refs/pi-flow/state').includes('tx.json'));
+    assert.deepEqual((await store.verifyIntegrity()).errors, []);
   } finally { cleanup(); }
 });
 
@@ -81,7 +102,8 @@ test('完整闭环：pending 到 done，合并队列同步，每次转移都提�
   const { dir, git, store, cleanup } = await setup();
   try {
     const flow = await flowWithTasks(store);
-    const commitsBefore = Number(git('rev-list', '--count', 'HEAD'));
+    const commitsBefore = Number(git('rev-list', '--count', 'refs/pi-flow/state'));
+    const headBefore = git('rev-parse', 'HEAD');
     await toInProgress(store, flow.id, 'T-001');
     await store.appendHandoff(flow.id, 'T-001', '做完了 A，下一步无', 'run:r-1');
     await store.transitionTask(flow.id, 'T-001', { to: 'review', trigger: 'submit', actor: 'run:r-1',
@@ -102,8 +124,9 @@ test('完整闭环：pending 到 done，合并队列同步，每次转移都提�
     const { events } = readEvents(path.join(dir, '.flow/events.jsonl'));
     assert.equal(store.readState().version, events.at(-1)!.seq);
     assert.equal(store.readState().events_head, events.at(-1)!.hash);
-    const commits = Number(git('rev-list', '--count', 'HEAD')) - commitsBefore;
+    const commits = Number(git('rev-list', '--count', 'refs/pi-flow/state')) - commitsBefore;
     assert.ok(commits >= 9, `提交数 ${commits}`);
+    assert.equal(git('rev-parse', 'HEAD'), headBefore, '主分支历史不变');
     assert.equal(git('status', '--porcelain', '--', '.flow'), '');
     assert.deepEqual((await store.verifyIntegrity()).errors, []);
 
@@ -345,5 +368,35 @@ test('并发取得租约：只有一个成功（防止重复派发审查或重�
     ]);
     assert.equal(results.filter((r) => r.status === 'fulfilled').length, 1);
     assert.match(String((results.find((r) => r.status === 'rejected') as PromiseRejectedResult).reason), /已有运行中的 run/);
+  } finally { cleanup(); }
+});
+
+test('性能：事件数上万时，单次转移的耗时不随事件数线性增长（只读日志末尾，读缓存）', async () => {
+  const { dir, cleanup } = tmpRepo();
+  try {
+    const store = await StateStore.init(dir, { now, git: false });
+    const avg = async (n: number) => {
+      const t0 = performance.now();
+      for (let i = 0; i < n; i++) await store.recordEvent({ flow: null, actor: 'engine', type: 'note', reason: `测量 ${i}` });
+      return (performance.now() - t0) / n;
+    };
+    await avg(20);
+    const small = await avg(30);
+    // 直接按哈希链追加 2 万条事件（绕过事务以节省时间），并同步 state.json
+    const file = path.join(dir, '.flow/events.jsonl');
+    let last = readEvents(file).events.at(-1)!;
+    const batch = [];
+    for (let i = 0; i < 20_000; i++) {
+      last = buildEvent(last, { ts: '2026-10-01T00:00:00Z', flow: null, actor: 'engine', type: 'note', reason: `填充 ${i}` });
+      batch.push(last);
+    }
+    appendEvents(file, batch);
+    const state = JSON.parse(readFileSync(path.join(dir, '.flow/state.json'), 'utf8'));
+    writeFileSync(path.join(dir, '.flow/state.json'), JSON.stringify({ ...state, version: last.seq, events_head: last.hash }, null, 2));
+    const large = await avg(30);
+    assert.ok(large < small * 1.5 + 2, `约 50 条时 ${small.toFixed(2)} ms/次，2 万条时 ${large.toFixed(2)} ms/次`);
+    // 增量读取与完整读取一致
+    assert.deepEqual(store.readEvents(), readEvents(file).events);
+    assert.deepEqual((await store.verifyIntegrity()).errors, []);
   } finally { cleanup(); }
 });

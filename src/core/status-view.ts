@@ -240,3 +240,25 @@ export function notices(prev: StatusSnapshot, next: StatusSnapshot, failureKind?
   }
   return out;
 }
+
+/**
+ * 状态栏一行（调度模式、终端界面）：流程、高层阶段、本阶段进度、正在进行的任务、需要用户处理的事项数。
+ * 没有可见流程时返回 null（清除状态栏）。
+ */
+export function statusLine(store: StateStore, config: FlowConfig): string | null {
+  const flows = visibleFlows(store);
+  if (!flows.length) return null;
+  const actions = actionsNeeded(store, config).length;
+  const parts = flows.map((flow) => {
+    const tasks = store.listTasks(flow.id);
+    const cur = currentPhase(config, flow, tasks);
+    const inPhase = (flow.mode === 'fix' || cur === 'done' ? tasks : tasks.filter((t) => phaseOfStage(config, flow.mode as 'build' | 'feature', t.stage) === cur))
+      .filter((t) => t.status !== 'cancelled');
+    const active = tasks.filter((t) => INFLIGHT.has(t.status));
+    const running = active.slice(0, 3).map((t) => `${t.id} ${taskActivity(t, null)}`).join('，');
+    const state = flow.stage_status === 'awaiting_human' ? '等待你审批' : flow.stage_status === 'awaiting_gate' ? '阶段检查中' : '';
+    return [`${flow.id} ${PHASE_LABEL[cur]}`, inPhase.length ? `${inPhase.filter((t) => t.status === 'done').length}/${inPhase.length}` : '',
+      running ? `进行中：${running}${active.length > 3 ? ` 等 ${active.length} 个` : ''}` : state].filter(Boolean).join(' · ');
+  });
+  return `pi-flow ${parts.join(' ｜ ')}${actions ? ` · 需要你处理 ${actions} 项` : ''}`;
+}

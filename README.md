@@ -168,6 +168,8 @@ B-001「做一个待办应用」
 
 高层阶段与底层阶段的对应写在 `workflow.yaml` 每个阶段的 `phase` 字段（discovery、planning、execution、acceptance），可以按需调整。pi-flow 只在进入新阶段、出现需要你处理的事、任务第一次未通过、流程结束时主动提醒你。
 
+调度模式下，终端底部的状态栏实时显示流程、当前阶段、本阶段进度、正在进行的任务和需要你处理的事项数，例如 `pi-flow B-001 实施 · 3/7 · 进行中：T-004 实现中，T-005 审查中`。
+
 开始流程或执行 `/flow resume` 后，当前会话进入**调度模式**：会话切换到你在 `/flow-config` 中为 orchestrator 设置的模型，只能查看状态、派发任务和等待结果，不能自己改代码；每轮开头会看到"当前状态与唯一允许的下一步"。流程结束、中止或执行 `/flow off` 后恢复原来的模型与工具。普通的 pi 会话不受影响。
 
 ---
@@ -179,7 +181,8 @@ workflow.yaml        命令、并发与失败上限、模型档位、阶段、sc
 rules/               按模块注入的规则（只有你修改）
 docs/                PRD、ARCHITECTURE、DESIGN、adr/、contracts/、features/、research/
 AGENTS.md            极简说明
-.flow/               运行时状态（程序维护，纳入 git，状态提交以 flow-state: 开头）
+.flow/               运行时状态（程序维护；不进入分支历史，每次状态变化提交到专用引用 refs/pi-flow/state，
+                     用 git log refs/pi-flow/state 查看；需要备份时 git push origin refs/pi-flow/state）
   knowledge.json     项目知识库（跨流程；只经 flow_learn 与 /flow knowledge 由程序写入）
 ../<项目>.worktrees/  每个任务的 worktree（在项目目录之外）
 ```

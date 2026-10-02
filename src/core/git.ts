@@ -17,12 +17,12 @@ export class GitError extends Error {
 
 const sleep = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
-export function git(cwd: string, args: string[], opts: { engineIdentity?: boolean; allowFail?: boolean } = {}): string {
+export function git(cwd: string, args: string[], opts: { engineIdentity?: boolean; allowFail?: boolean; env?: Record<string, string> } = {}): string {
   for (let attempt = 0; ; attempt++) {
     try {
       return execFileSync('git', args, {
         cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024,
-        env: { ...process.env, ...(opts.engineIdentity ? ENGINE_GIT_ENV : {}), GIT_TERMINAL_PROMPT: '0' },
+        env: { ...process.env, ...(opts.engineIdentity ? ENGINE_GIT_ENV : {}), ...opts.env, GIT_TERMINAL_PROMPT: '0' },
         stdio: ['ignore', 'pipe', 'pipe'],
       });
     } catch (e) {

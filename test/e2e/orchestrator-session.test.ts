@@ -32,7 +32,7 @@ test('调度模式：orchestrator 不能自己写代码，只能 dispatch/wait�
         '-e', provider, '-e', path.join(ROOT, 'src/pi-adapter/extension.ts'), '--model', 'fakellm/plain',
         '/flow resume', '开始调度', '/flow off', '你好'], {
         cwd: p.dir, stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env, PI_CODING_AGENT_DIR: agentDir, FAKE_LLM_URL: llm.url, FAKE_LLM_SCRIPTS: SCRIPTS, PI_FLOW_EXTRA_EXTENSIONS: provider },
+        env: { ...process.env, PI_OFFLINE: '1', PI_SKIP_VERSION_CHECK: '1', PI_CODING_AGENT_DIR: agentDir, FAKE_LLM_URL: llm.url, FAKE_LLM_SCRIPTS: SCRIPTS, PI_FLOW_EXTRA_EXTENSIONS: provider },
       });
       let stdout = '';
       let stderr = '';
@@ -85,7 +85,7 @@ test('真实 pi：空仓库执行 /flow-build 先访谈需求，确认后完成 
         '-e', provider, '-e', path.join(ROOT, 'src/pi-adapter/extension.ts'), '--model', 'fakellm/plain',
         '/flow-build "做一个待办应用"', '单用户网页端，其余按你的建议', '/flow-build --confirm'], {
         cwd: dir, stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env, PI_CODING_AGENT_DIR: agentDir, FAKE_LLM_URL: llm.url, FAKE_LLM_SCRIPTS: SCRIPTS, PI_FLOW_EXTRA_EXTENSIONS: provider },
+        env: { ...process.env, PI_OFFLINE: '1', PI_SKIP_VERSION_CHECK: '1', PI_CODING_AGENT_DIR: agentDir, FAKE_LLM_URL: llm.url, FAKE_LLM_SCRIPTS: SCRIPTS, PI_FLOW_EXTRA_EXTENSIONS: provider },
       });
       let text = '';
       c.stdout.on('data', (b) => { text += b; });

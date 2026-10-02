@@ -95,7 +95,7 @@
 24. **`/flow next` 在非交互模式（`pi -p`）下等待全部运行与程序步骤结束**再返回，否则进程退出会丢失后续步骤；交互模式立即返回。
 25. **orchestrator 工具只在项目已有 `.flow/` 时注册**，不影响普通 pi 会话。orchestrator 会话的 guard、工具收窄与每轮注入在 M5/M6 实现。
 26. **子进程加载第三方插件（serena、codegraph、web）尚未实现**：引擎预留 `extraExtensions(role)`，插件安装路径的解析放到 M6/M8；未加载的插件工具在 `--tools` 中被 Pi 忽略。
-27. **状态提交落在主工作区当前分支**（通常是 main），前缀 `flow-state:`。单个任务走完一轮约 13 个状态提交；如嫌多，后续可改为按阶段合并提交（需同时调整完整性校验）。
+27. **状态提交落在主工作区当前分支**（通常是 main），前缀 `flow-state:`。单个任务走完一轮约 13 个状态提交；如嫌多，后续可改为按阶段合并提交（需同时调整完整性校验）。**已由第 79 条修订：改为提交到 `refs/pi-flow/state`。**
 
 28. **merge-fix 的挂起方式**：字面上"原任务保持 merging"会一直占着唯一的合并名额，merge-fix 永远进不了合并，形成死锁。改为原任务状态仍是 merging，但让出名额，记入合并队列的 `suspended`。"同一时间只有一个 merging"指正在执行的合并。
 29. **merge-fix 合入即代表原任务合入**：merge-fix 的 worktree 由程序准备，基线是集成分支 HEAD 加上原任务的改动，冲突文件里保留冲突标记；它的 writes 就是冲突文件。merge-fix 合入后，原任务随之转 done（沿 `merge_fix_for` 链递归处理）。merge-fix 最终 blocked 时，原任务也转 blocked。merge-fix 由程序直接派发，不等 `/flow next`，仍受并发与互斥约束。
@@ -240,6 +240,20 @@
     - 金额：`UsageAccumulator` 累加 `usage.cost.total`，run 新增 `cost`（拿不到为 null，不估算）。
     - 预算：`budget.{tokens, cost, warn_ratio}`，流程级覆盖 `flow.budget`（`/flow budget tokens|cost <数值>`，仅用户）。tokens 计输入 + 输出（不含缓存读写）。用到 warn_ratio（默认 0.8）时"需要你处理"提醒；超出后 `next` 返回空、`dispatch` 拒绝 ready 任务（merge-fix 除外），orchestrator 下一步改为向用户报告；返工、审查、verify 与合并照常，避免任务卡在半途。`/flow status --cost` 附预算用量。fix 流程同样受预算约束。
 
+79. **状态存储的性能与提交位置（第二轮 J）**（用户要求连续完成，不再中途确认，方案由实现者决定并记录于此）：
+    - 事务前的一致性校验只读事件日志最后一条（`readLastEvent`，从文件尾部反向读，校验该条的 schema 与内容哈希），与 state.json 的 head/version 比较；重放事务日志时取末尾序号、检查末行是否完整也只读尾部。完整的哈希链、序号、登记文件校验仍在 `verifyIntegrity`（resume、doctor）中做。
+    - 读缓存：`readJsonRel` 按 inode + mtime + 大小缓存解析结果，返回深拷贝（写入都是临时文件 + rename，inode 必变）；`readEvents` 用 `EventCache` 增量解析（日志只追加，缓存字节偏移；inode 变化或文件变短时整体重读）。
+    - 通知检测节流：引擎 onChange 后最多每 300 ms 做一次快照比较（尾随执行一次，变化不会漏掉）。
+    - **状态提交移出分支历史**：`commitStateRef` 用独立索引文件（`<git-dir>/pi-flow-state.index`）read-tree 上一次状态提交 → `add -A -f .flow`（排除 `.lock`、`tx.json`、`*.tmp`）→ write-tree → commit-tree → `update-ref refs/pi-flow/state <新> <旧>`。仍满足"每次状态转移都 git commit"（原始需求第 2 节第 4 条），只是提交在专用引用上，不进入任何分支、默认不随 push 带出（需要时 `git push origin refs/pi-flow/state`）。并发安全依赖事务的文件锁（子进程的工具调用写状态也持有同一把锁）。
+    - 每次状态提交的 git 进程数控制在 4 个（add、write-tree、commit-tree、update-ref）：公共 git 目录按根目录缓存；引用直接读松散引用文件（被 gc 打包后退回 rev-parse）；索引旁记一个标记文件写明它对应的状态提交，相同则跳过 read-tree。残留的索引锁与引用锁（来自被强杀的进程）在持有 `.flow/` 文件锁时直接清除。最初的实现每次约 9 个 git 进程，全量测试下与其他测试并发时，真实 pi 子进程首次启动被拖慢到 30–60 秒，崩溃恢复测试超时；优化后全量端到端从 534 秒降到 322 秒，全部通过。
+    - 端到端测试中启动真实 pi 的进程设置 `PI_OFFLINE=1`、`PI_SKIP_VERSION_CHECK=1`（测试不需要联网；排查中发现网络不通时 `pi --list-models` 会卡约 60 秒）。生产环境的子进程未设置。
+    - `.flow/` 写入仓库本地的 `info/exclude`（`/.flow/`），不改用户的 `.gitignore`，主工作区 `git status` 不再显示它，用户的 `git add -A` 也不会带上它。
+    - 迁移：每个 StateStore 第一次提交前检查当前分支是否跟踪 `.flow/`；是则用临时索引从 HEAD 构造一个"删除 .flow/"的提交并 update-ref HEAD（不带上用户已暂存的其他改动；`git commit -- <路径>` 会重读工作区，不能用），再从真实索引中移除。之后新建的集成分支不再含 `.flow/`；迁移前建的集成分支仍含旧拷贝，合入主分支时随主分支的删除而删除，没有冲突。
+    - 恢复与完整性校验不依赖 git 历史（依赖事件哈希链与登记哈希），不受影响。
+    - 性能测试（`test/unit/state-store.test.ts`）：约 50 条事件与 2 万条事件时单次事务耗时相同（约 14 ms，不含 git）；改回整读日志后 2 万条时约 158 ms，测试失败。
+
+80. **实时进度（第二轮 L）**：调度模式下用 `ctx.ui.setStatus('pi-flow', <一行>)` 显示（API 依据 Pi 0.99.2 `dist/core/extensions/types.d.ts` 的 `ExtensionUIContext.setStatus` 与 docs/tui.md，已在 `pi-api.d.ts` 补声明）。只在 `ctx.mode === 'tui'` 时设置；文字由 `status-view.ts` 的 `statusLine` 生成（流程、高层阶段、本阶段进度、最多 3 个进行中的任务、需要处理的事项数）。刷新挂在引擎 onChange 上，与通知检测共用 300 ms 节流；退出调度模式（含流程结束自动退出）时清除。没有用 `setWidget`：一行状态足够，不占编辑区。未在真实终端界面中自动化验证（测试环境没有 TUI），只有 `statusLine` 的单元测试。
+
 ## 第二轮优化设计要点
 
 - **A 先行验收测试先失败**（第 69、70 条）。验收：
@@ -252,6 +266,8 @@
 - **F 集成分支同步主分支**（第 75 条）。验收（`test/e2e/sync.test.ts`）：两阶段流程中，用户在实施期间向主分支提交一处无关改动与一处与任务冲突的改动；进入 S4 时主分支改动已进入集成分支（S4 任务的 worktree 可见），冲突生成 merge-fix（看到冲突标记）并合入，集成分支以主分支为祖先，最终合入主分支无冲突。契约冲突时暂停派发、提示用户，手动合并后 `/flow sync` 恢复派发。
 - **G 执行中修订计划**（第 76 条）。验收（`test/e2e/replan.test.ts`）：主 agent 经 `flow_replan` 发起，architect 收到原话与任务一览；取消进行中任务、取消仍被依赖的任务被拒；architect 不能写文件；待批准时阶段闸门不运行、主 agent 只能等待、agent 不能取消任务；用户批准后新增任务重新编号、依赖调整、任务取消，进行中任务的租约不变；第二次修订被打回后按意见重做再批准；最终含已取消任务的阶段照常通过闸门。`test/unit/revision.test.ts`：阶段、环、不存在的依赖、先行验收测试规范化与编号映射。
 - **H + I 按风险审查、升级模型与预算**（第 77、78 条）。验收（`test/e2e/cost-control.test.ts`）：文档任务的审查 run 用便宜模型（review_mode light），代码任务用强模型；审查并发上限 1 时从未同时有两个审查；skip 模式下文档任务不派审查、由引擎 `review_skip` 后完成，agent 不能免审查；被打回两次后第三次实施使用升级模型并标记；超预算后不派发新任务、提示用户、orchestrator 只能报告，`/flow status --cost` 显示用量，`/flow budget` 提高后继续派发。`test/unit/cost-control.test.ts`：风险判定各条件、模型引用与升级优先级、配置校验。
+- **J 状态存储**（第 79 条）。验收：性能测试（事件数 2 万时单次事务耗时不变）；`git log HEAD` 中不再有 `flow-state:` 提交，状态提交在 `refs/pi-flow/state`；早期版本跟踪在分支上的 `.flow/` 自动迁移；完整性校验与全部恢复测试照常通过。
+- **L 实时进度**（第 80 条）。验收：`test/unit/status-view.test.ts` 中状态栏文字随任务开始、阻塞、流程结束变化，没有流程时清除。
 - **D + E 租约续期与会话留档**（第 73、74 条）。验收（`test/e2e/lease-session.test.ts`）：持续调用工具时剩余不足一半才续租、超过最初 45 分钟不被杀、停止调用后按时过期、伪造 token 不能续租；run 记录会话目录，`/flow run` 显示工具调用与失败、最后的回复；doctor 按保留期提醒与清理。`test/e2e/pi-subprocess.test.ts` 用真实 pi 验证会话文件写入留档目录并能摘要出 flow_* 调用与被 guard 拦下的调用。
 
 ## M8 设计要点
@@ -337,7 +353,7 @@
 
 ## M1 设计要点
 
-- **唯一写入口**：所有 `.flow/` 写入都经 `StateStore.transaction`。流程：取文件锁 → 重放未完成事务 → 校验 state.json 与事件日志头一致 → 执行回调暂存写入 → schema 校验 → 写事务日志 `tx.json` → 应用（临时文件 + rename）→ 追加事件 → 写 state.json → 删除事务日志 → `git commit`（前缀 `flow-state:`，只提交 `.flow/`，不影响用户已暂存的其他文件）。
+- **唯一写入口**：所有 `.flow/` 写入都经 `StateStore.transaction`。流程：取文件锁 → 重放未完成事务 → 校验 state.json 与事件日志头一致 → 执行回调暂存写入 → schema 校验 → 写事务日志 `tx.json` → 应用（临时文件 + rename）→ 追加事件 → 写 state.json → 删除事务日志 → `git commit`（前缀 `flow-state:`，只提交 `.flow/`，不影响用户已暂存的其他文件；第 79 条起提交到专用引用 `refs/pi-flow/state`）。
 - **事务必须附带事件**；无事件的写入被拒。
 - **完整性**：事件带哈希链（键排序的规范 JSON + sha256）；每个事务的最后一条事件记录本事务写入的所有文件哈希（`entities`），以及 `active_flow` 的变化。`verifyIntegrity` 校验：哈希链、序号连续、state.json 的 head/version/active_flow、每个登记文件的哈希与 schema、`.flow/` 下是否存在未登记文件、是否存在未重放的事务日志。
 - **facts 不采信调用方**：stage 是否 active、依赖状态、并发数、互斥、合并队列状态、handoff 与 evidence 是否存在、契约是否锁定，均由 StateStore 计算并覆盖调用方传入的同名字段。token、diff、verify 结果、rebase 结果等由程序内模块（M3/M4）提供。

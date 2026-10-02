@@ -13,6 +13,8 @@ declare module '@earendil-works/pi-coding-agent' {
     confirm(title: string, message: string): Promise<boolean>;
     input(title: string, placeholder?: string): Promise<string | undefined>;
     notify(message: string, type?: 'info' | 'warning' | 'error'): void;
+    /** 页脚状态栏文字；undefined 清除（只在终端界面显示） */
+    setStatus(key: string, text: string | undefined): void;
   }
   export interface ExtensionContext {
     ui: ExtensionUIContext;

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseConfig, ConfigError } from '../../src/core/config.ts';
-import { phaseOfStage, renderStatus, taskActivity, notices, snapshotOf, actionsNeeded } from '../../src/core/status-view.ts';
+import { phaseOfStage, renderStatus, taskActivity, notices, snapshotOf, actionsNeeded, statusLine } from '../../src/core/status-view.ts';
 import { hashToken } from '../../src/core/state-machine.ts';
 import { setupProject } from '../helpers/project.ts';
 import { TEST_YAML } from '../helpers/config.ts';
@@ -80,5 +80,19 @@ test('主动通知：只在进入新阶段、出现需要处理的事、首次�
     const s3 = snapshotOf(p.store, p.config);
     await p.store.advanceStage(p.flowId, 'human');
     assert.deepEqual(notices(s3, snapshotOf(p.store, p.config)), ['pi-flow：B-001 已结束。'], '流程结束时提醒一次');
+  } finally { p.cleanup(); }
+});
+
+test('状态栏一行：流程、高层阶段、进度、进行中的任务、需要处理的事项；没有流程时为 null', async () => {
+  const p = await setupProject({ tasks: [mkTask('T-001'), mkTask('T-002', { deps: [hard('T-001')] }), mkTask('T-003', { writes: ['src/server/t-003/**'] })] });
+  try {
+    await p.store.transitionTask(p.flowId, 'T-001', { to: 'ready', trigger: 'schedule', actor: 'scheduler' });
+    await p.store.transitionTask(p.flowId, 'T-001', { to: 'in_progress', trigger: 'dispatch', actor: 'dispatcher',
+      patch: { worktree: '/w', branch: 'b', base_sha: 'abc', lease: { run_id: 'r-1', role: 'backend-engineer', token_hash: hashToken('t'), acquired_at: '2026-10-01T00:00:00Z', expires_at: '2099-01-01T00:00:00Z' } } });
+    assert.equal(statusLine(p.store, p.config), 'pi-flow B-001 实施 · 0/3 · 进行中：T-001 实现中');
+    await p.store.transitionTask(p.flowId, 'T-001', { to: 'blocked', trigger: 'block', actor: 'run:r-1', facts: { token: 't', reason: '需要决定' } });
+    assert.match(statusLine(p.store, p.config)!, /需要你处理 1 项$/);
+    await p.store.transitionStage(p.flowId, { to: 'aborted', trigger: 'abort', actor: 'human' });
+    assert.equal(statusLine(p.store, p.config), null);
   } finally { p.cleanup(); }
 });

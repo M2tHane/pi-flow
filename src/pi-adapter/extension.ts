@@ -21,7 +21,7 @@ import { runFlowCommand, runFlowBuild, runFlowFix, FLOW_USAGE, type CommandEnv, 
 import { activeBrief, interviewContext, updateBrief, CONFIRM_COMMAND, type InterviewMode } from '../modes/interview.ts';
 import { DispatchParams, ReplanParams, WaitParams, activeFlowId, flowDispatch, flowReplan, flowWait, statusText } from '../tools/orchestrator-tools.ts';
 import { PiLauncher } from './launcher.ts';
-import { lastFailureKind, notices, snapshotOf, visibleFlows } from '../core/status-view.ts';
+import { lastFailureKind, notices, snapshotOf, statusLine, visibleFlows } from '../core/status-view.ts';
 import { packageRoots, pluginExtensionsFor } from './plugins.ts';
 
 export const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -82,13 +82,15 @@ interface RootSession {
   deactivate: (() => Promise<string>) | null;
   /** 需求访谈模式（开流程之前） */
   interview: InterviewMode | null;
+  /** 调度模式下的状态栏（只在终端界面设置）；null 表示不显示 */
+  status: ((text: string | undefined) => void) | null;
 }
 const sessions = new Map<string, RootSession>();
 
 function session(root: string): RootSession {
   let s = sessions.get(root);
   if (!s) {
-    s = { handle: null, orchestrator: false, driftBefore: null, notify: () => {}, saved: null, deactivate: null, interview: null };
+    s = { handle: null, orchestrator: false, driftBefore: null, notify: () => {}, saved: null, deactivate: null, interview: null, status: null };
     sessions.set(root, s);
   }
   return s;
@@ -119,17 +121,27 @@ export function engineFor(root: string): EngineHandle {
   s.handle = { store, engine, config };
   // 主动通知只在进入新阶段、出现需要你处理的事、任务首次失败重试时出现
   let prev = snapshotOf(store, config);
-  engine.onChange(() => {
+  const check = () => {
     try {
+      if (s.orchestrator && s.status) s.status(statusLine(store, config) ?? undefined);
       const next = snapshotOf(store, config);
       for (const n of notices(prev, next, (f, t) => lastFailureKind(store, f, t))) s.notify(n, n.includes('需要你处理') ? 'warning' : 'info');
       prev = next;
       // 没有进行中的流程与修复时自动退出调度模式
       if (s.orchestrator && s.deactivate && !visibleFlows(store).length) void s.deactivate().then((m) => s.notify(m));
     } catch { /* 通知失败不影响流程 */ }
+  };
+  // 通知检测节流：状态变化密集时（一次合并会有多次转移）最多每 NOTICE_THROTTLE_MS 检测一次，末尾一定再检测一次
+  let timer: NodeJS.Timeout | null = null;
+  engine.onChange(() => {
+    if (timer) return;
+    timer = setTimeout(() => { timer = null; check(); }, NOTICE_THROTTLE_MS);
+    timer.unref();
   });
   return s.handle;
 }
+
+const NOTICE_THROTTLE_MS = 300;
 
 function agentPrompt(root: string, name: string): string {
   const project = path.join(root, '.pi', 'agents', `${name}.md`);
@@ -145,6 +157,8 @@ export default function piFlow(pi: ExtensionAPI): void {
       if (!s.orchestrator && !s.interview) return '当前不在调度模式。';
       s.orchestrator = false;
       s.interview = null;
+      s.status?.(undefined);
+      s.status = null;
       const saved = s.saved;
       s.saved = null;
       if (!saved) return '已退出调度模式。';
@@ -188,6 +202,11 @@ export default function piFlow(pi: ExtensionAPI): void {
         const registered = new Set(pi.getAllTools().map((t) => t.name));
         pi.setActiveTools(config.activeTools('orchestrator').filter((t) => registered.has(t)));
         await applyOrchestratorModel(ctx, config);
+        // 实时进度：只在终端界面显示状态栏，随引擎状态变化（节流）刷新，退出调度模式时清除
+        if (ctx.mode === 'tui') {
+          s.status = (text) => ctx.ui.setStatus('pi-flow', text);
+          s.status(statusLine(engineFor(root).store, config) ?? undefined);
+        }
       },
       activateInterview: async (mode) => {
         const config = engineFor(root).config;

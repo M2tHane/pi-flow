@@ -20,6 +20,9 @@ try { execFileSync('pi', ['--version'], { stdio: 'ignore' }); } catch { piAvaila
 before(async () => {
   llm = await startFakeLlm({ scriptsDir: SCRIPTS });
   process.env['FAKE_LLM_URL'] = llm.url;
+  // 测试不需要联网：关闭模型目录刷新与版本检查（网络不通时 pi 启动会被拖慢约 60 秒）
+  process.env['PI_OFFLINE'] = '1';
+  process.env['PI_SKIP_VERSION_CHECK'] = '1';
   process.env['FAKE_LLM_SCRIPTS'] = SCRIPTS;
 });
 const drivers: ChildProcess[] = [];

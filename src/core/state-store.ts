@@ -1,7 +1,7 @@
 // .flow/ 的唯一读写入口：文件锁、schema 校验、转移校验、事务日志、事件追加、git 提交。
 import {
   closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync,
-  statSync, truncateSync, unlinkSync, writeFileSync,
+  readSync, statSync, truncateSync, unlinkSync, writeFileSync,
 } from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -14,7 +14,7 @@ import {
   IN_FLIGHT, planStageTransition, planTransition, type Facts, type StageTrigger, type TaskPatch, type Trigger,
 } from './state-machine.ts';
 import {
-  GENESIS_HASH, appendEvents, buildEvent, gitCommitPaths, readEvents, sha256, verifyChain, type EventInput,
+  EventCache, GENESIS_HASH, appendEvents, buildEvent, commitStateRef, readEvents, readLastEvent, sha256, untrackStateDir, verifyChain, type EventInput,
 } from './event-log.ts';
 import { conflictsWith } from './dag.ts';
 
@@ -186,6 +186,10 @@ export class StateStore {
   readonly limits: StoreLimits;
   readonly root: string;
   private readonly opts: StoreOptions;
+  /** 读缓存：按 inode、mtime、大小失效（写入都是临时文件 + rename，inode 必变） */
+  private readonly jsonCache = new Map<string, { ino: number; mtimeMs: number; size: number; value: unknown }>();
+  private readonly eventCache = new EventCache();
+  private migrated = false;
 
   constructor(root: string, opts: StoreOptions = {}) {
     this.root = root;
@@ -226,12 +230,18 @@ export class StateStore {
 
   readJsonRel<T>(rel: string): T | null {
     const abs = this.abs(rel);
-    if (!existsSync(abs)) return null;
+    let st;
+    try { st = statSync(abs); } catch { this.jsonCache.delete(rel); return null; }
+    const hit = this.jsonCache.get(rel);
+    if (hit && hit.ino === st.ino && hit.mtimeMs === st.mtimeMs && hit.size === st.size) return structuredClone(hit.value) as T;
+    let value: unknown;
     try {
-      return JSON.parse(readFileSync(abs, 'utf8')) as T;
+      value = JSON.parse(readFileSync(abs, 'utf8'));
     } catch {
       throw new StateError(`${FLOW_DIRNAME}/${rel} 不是合法 JSON，请执行 /flow doctor`);
     }
+    this.jsonCache.set(rel, { ino: st.ino, mtimeMs: st.mtimeMs, size: st.size, value });
+    return structuredClone(value) as T;
   }
 
   readState(): StateFile {
@@ -269,8 +279,9 @@ export class StateStore {
     const abs = this.abs(handoffRel(flow, task));
     return existsSync(abs) ? readFileSync(abs, 'utf8') : '';
   }
+  /** 全部事件（增量缓存：只解析新追加的部分） */
   readEvents(): FlowEvent[] {
-    return readEvents(this.abs('events.jsonl')).events;
+    return this.eventCache.read(this.abs('events.jsonl')).events;
   }
 
   // —— 事务 ——
@@ -315,14 +326,14 @@ export class StateStore {
     return true;
   }
 
+  /** 事务前校验：只读事件日志的最后一条，与 state.json 比较（耗时与事件数无关；完整校验见 verifyIntegrity） */
   private assertHeadConsistent() {
-    const { events, errors } = readEvents(this.abs('events.jsonl'));
+    const { event: last, error } = readLastEvent(this.abs('events.jsonl'));
     const state = this.readJsonRel<StateFile>('state.json');
-    const last = events.at(-1) ?? null;
     const head = last?.hash ?? GENESIS_HASH;
     const seq = last?.seq ?? 0;
-    const bad = errors.length > 0 || (state ? state.events_head !== head || state.version !== seq : events.length > 0);
-    if (bad) throw new StateError('状态完整性校验失败（state.json 与 events.jsonl 不一致），请执行 /flow doctor', errors);
+    const bad = !!error || (state ? state.events_head !== head || state.version !== seq : !!last);
+    if (bad) throw new StateError('状态完整性校验失败（state.json 与 events.jsonl 不一致），请执行 /flow doctor', error ? [error] : []);
     return { last, state };
   }
 
@@ -373,18 +384,24 @@ export class StateStore {
       if (fault && i === 0) throw new Error('fault injected: mid-apply');
     });
     const ep = this.abs('events.jsonl');
-    if (existsSync(ep)) {
-      // 去掉崩溃留下的不完整末行
+    if (existsSync(ep) && !endsWithNewline(ep)) {
+      // 去掉崩溃留下的不完整末行（少见，才读全文）
       const raw = readFileSync(ep, 'utf8');
-      if (raw.length && !raw.endsWith('\n')) truncateSync(ep, Buffer.byteLength(raw.slice(0, raw.lastIndexOf('\n') + 1)));
+      truncateSync(ep, Buffer.byteLength(raw.slice(0, raw.lastIndexOf('\n') + 1)));
     }
-    const lastSeq = readEvents(ep).events.at(-1)?.seq ?? 0;
+    const lastSeq = readLastEvent(ep).event?.seq ?? 0;
     appendEvents(ep, j.events.filter((e) => e.seq > lastSeq));
     atomicWrite(this.abs('state.json'), `${JSON.stringify(j.state, null, 2)}\n`);
   }
 
+  /** 状态提交到 refs/pi-flow/state，不进入主分支历史；早期版本留在分支上的 .flow/ 先迁移出去 */
   private gitCommit(message: string): void {
-    if (this.git) gitCommitPaths(this.root, [FLOW_DIRNAME], message);
+    if (!this.git) return;
+    if (!this.migrated) {
+      untrackStateDir(this.root, FLOW_DIRNAME);
+      this.migrated = true;
+    }
+    commitStateRef(this.root, FLOW_DIRNAME, message);
   }
 
   // —— 业务写入 ——
@@ -998,6 +1015,18 @@ function describe(events: FlowEvent[]): string {
   const e = events[0]!;
   const head = [e.flow, e.task, e.from && e.to ? `${e.from} -> ${e.to}` : e.type, e.reason].filter(Boolean).join(' ');
   return events.length > 1 ? `${head}（+${events.length - 1}）` : head;
+}
+
+/** 文件为空或以换行结尾（只读最后一个字节） */
+function endsWithNewline(file: string): boolean {
+  const size = statSync(file).size;
+  if (!size) return true;
+  const fd = openSync(file, 'r');
+  try {
+    const b = Buffer.alloc(1);
+    readSync(fd, b, 0, 1, size - 1);
+    return b[0] === 0x0a;
+  } finally { closeSync(fd); }
 }
 
 function atomicWrite(abs: string, content: string): void {
