@@ -4,6 +4,7 @@ import type { FlowConfig } from './config.ts';
 import type { StateStore } from './state-store.ts';
 import { isFinished } from './state-store.ts';
 import { isLeadingTest } from './dag.ts';
+import { budgetState, formatBudget } from './cost-control.ts';
 import { PHASES, type FlowFile, type Phase, type TaskFile } from './schemas.ts';
 
 export type PhaseOrDone = Phase | 'done';
@@ -125,6 +126,11 @@ export function actionsNeeded(store: StateStore, config: FlowConfig): Action[] {
       if (gate?.to === 'active' && gate.data?.['stage'] === flow.stage) {
         out.push({ key: `${flow.id}:gatefail:${gate.seq}`, text: `阶段检查未通过：${short(gate.reason ?? '')}`, command: '修复后执行 /flow gate' });
       }
+    }
+    const budget = budgetState(store, config, flow);
+    if (budget?.warn) {
+      out.push({ key: `${flow.id}:budget:${budget.exceeded ? 'over' : 'warn'}`, text: formatBudget(budget),
+        command: budget.exceeded ? '/flow budget tokens <数值> 或 /flow budget cost <金额> 提高预算后继续' : '/flow status --cost 查看用量；需要时 /flow budget 提高预算' });
     }
     const rev = store.readRevision(flow.id);
     if (rev?.status === 'proposed') {

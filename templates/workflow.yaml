@@ -20,6 +20,20 @@ models:                         # 档位到具体模型的映射，由用户填�
   strong: "<provider/model>"
   medium: "<provider/model>"
   cheap:  "<provider/model>"
+review:                         # 按风险审查（可选，以下为默认值）
+  max_parallel: 2               # 同时进行的审查数；默认等于 limits.max_parallel
+  low_risk:                     # 同时满足才算低风险：只改这些路径、文件数与行数不超限、不涉及契约与 shared
+    mode: cheap                 # cheap：用 model 指定的模型审查；skip：只做程序检查，不派审查
+    model: cheap                # 档位名或 provider/model；取不到时用 reviewer 原来的模型
+    max_files: 3
+    max_lines: 100
+    paths: ["docs/**", "**/*.md", "tests/**", "**/*.test.*", "**/*.spec.*"]
+escalation:                     # 同一任务失败 after_failures 次后，下一次实施换成升级模型
+  after_failures: 2             # 升级模型：/flow-config escalate > roles.<角色>.escalate_model > 上一档（cheap→medium→strong）
+# budget:                       # 每个流程的预算（可选；也可以用 /flow budget 为单个流程设置）
+#   tokens: 5000000             # 输入 + 输出，不含缓存
+#   cost: 20                    # 金额（Pi 报告的 cost）
+#   warn_ratio: 0.8             # 用到这个比例时提醒；超出后暂停派发新任务
 modes:
   build:
     stages:

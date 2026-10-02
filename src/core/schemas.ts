@@ -52,6 +52,11 @@ export const FlowFile = Type.Object({
   base_sha: Nullable(Type.String()),
   approvals: Type.Record(Type.String(), Approval),
   created_at: IsoTime,
+  /** 本流程的预算（/flow budget 设置，覆盖 workflow.yaml 的 budget） */
+  budget: Type.Optional(Type.Object({
+    tokens: Type.Optional(Type.Integer({ minimum: 1 })),
+    cost: Type.Optional(Type.Number({ exclusiveMinimum: 0 })),
+  }, { additionalProperties: false })),
   /** 最近一次把主分支同步进集成分支（阶段边界或 /flow sync）：ok 已同步；fixing 由 merge-fix 任务解决冲突；conflict 需要用户处理 */
   sync: Type.Optional(Type.Object({
     stage: Type.String({ minLength: 1 }),
@@ -174,6 +179,12 @@ export const RunFile = Type.Object({
   violations: Type.Integer({ minimum: 0 }),
   /** 子进程 pid（进程组 id）；用于恢复时清理残留进程 */
   pid: Type.Optional(Nullable(Type.Integer({ minimum: 1 }))),
+  /** Pi 报告的金额（usage.cost.total 累加）；拿不到时为 null */
+  cost: Type.Optional(Nullable(Type.Number({ minimum: 0 }))),
+  /** 失败后升级模型派发的 run */
+  escalated: Type.Optional(Type.Boolean()),
+  /** 审查 run 的方式：full 完整审查，light 低风险便宜审查 */
+  review_mode: Type.Optional(Type.Union([Type.Literal('full'), Type.Literal('light')])),
   /** 子进程会话留档目录（<项目>.worktrees/.sessions/<run>/）与结束后找到的会话文件 */
   session_dir: Type.Optional(Type.String()),
   session_file: Type.Optional(Nullable(Type.String())),
@@ -252,6 +263,36 @@ export const WorkflowFile = Type.Object({
     read_paths: Type.Optional(Type.Array(Type.String())),
     writes: Type.Optional(Type.Array(Type.String())),
     env: Type.Optional(Type.Record(Type.String(), Type.String())),
+    /** 失败后升级用的模型：档位名或 provider/model；不填时取上一档（cheap → medium → strong） */
+    escalate_model: Type.Optional(Type.String({ minLength: 1 })),
+  }, { additionalProperties: false })),
+  /** 按风险审查（第二轮 H）：低风险任务用便宜模型审查或只做程序检查；审查 run 的并发上限 */
+  review: Type.Optional(Type.Object({
+    max_parallel: Type.Optional(PosInt),
+    low_risk: Type.Optional(Type.Object({
+      enabled: Type.Optional(Type.Boolean()),
+      /** cheap：便宜模型审查（默认）；skip：只做程序检查，不派审查 */
+      mode: Type.Optional(Type.Union([Type.Literal('cheap'), Type.Literal('skip')])),
+      /** 便宜审查用的模型：档位名或 provider/model，默认档位 cheap；取不到时用审查者原来的模型 */
+      model: Type.Optional(Type.String({ minLength: 1 })),
+      max_files: Type.Optional(PosInt),
+      max_lines: Type.Optional(PosInt),
+      /** 改动文件都在这些路径内才算低风险 */
+      paths: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
+      /** 改动涉及这些路径一律高风险（契约与 shared scope 总是高风险） */
+      exclude: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
+    }, { additionalProperties: false })),
+  }, { additionalProperties: false })),
+  /** 失败后升级模型（第二轮 I）：同一任务失败 after_failures 次后，下一次派发换成升级模型 */
+  escalation: Type.Optional(Type.Object({
+    enabled: Type.Optional(Type.Boolean()),
+    after_failures: Type.Optional(PosInt),
+  }, { additionalProperties: false })),
+  /** 每个流程的成本预算（第二轮 I）：tokens 计输入 + 输出；cost 为 Pi 报告的金额。超出后暂停派发新任务 */
+  budget: Type.Optional(Type.Object({
+    tokens: Type.Optional(PosInt),
+    cost: Type.Optional(Type.Number({ exclusiveMinimum: 0 })),
+    warn_ratio: Type.Optional(Type.Number({ exclusiveMinimum: 0, maximum: 1 })),
   }, { additionalProperties: false })),
 }, { additionalProperties: false });
 export type WorkflowFile = Static<typeof WorkflowFile>;
@@ -386,6 +427,8 @@ export const RoleSettingsFile = Type.Object({
   roles: Type.Record(Type.String(), Type.Object({
     model: Type.Optional(Type.String({ pattern: '^[^/\\s]+/\\S+$' })),
     thinking: Type.Optional(ThinkingLevel),
+    /** 失败后升级用的模型（/flow-config 设置，优先于 workflow.yaml 的 escalate_model） */
+    escalate_model: Type.Optional(Type.String({ pattern: '^[^/\\s]+/\\S+$' })),
   }, { additionalProperties: false })),
   updated_at: Type.Optional(Type.String()),
 }, { additionalProperties: false });

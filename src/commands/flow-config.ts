@@ -3,8 +3,9 @@
 import { THINKING_LEVELS, type ThinkingLevel } from '../core/schemas.ts';
 import type { FlowConfig } from '../core/config.ts';
 import {
-  loadRoleSettings, resolveRoleModel, saveRoleSettings, setRole, unsetRole, type RoleSetting,
+  loadRoleSettings, resolveRoleModel, saveRoleSettings, setEscalation, setRole, unsetRole, type RoleSetting,
 } from '../core/role-settings.ts';
+import { escalationModel } from '../core/cost-control.ts';
 import { splitArgs } from './args.ts';
 
 export interface UiPort {
@@ -42,12 +43,14 @@ const USAGE = [
   '  /flow-config models                  列出可用模型及其支持的思考级别',
   '  /flow-config set <角色> <provider/model|default> [思考级别|default]',
   '  /flow-config unset <角色|all>        清除设置，回到 workflow.yaml 默认',
+  '  /flow-config escalate <角色> <provider/model|default>   同一任务失败多次后改用的模型（default：workflow.yaml 或上一档）',
   `思考级别：${THINKING_LEVELS.join('、')}`,
 ].join('\n');
 
 const MENU_SET = '设置各角色的模型与思考级别';
 const MENU_SHOW = '查看当前设置';
 const MENU_CLEAR = '清除所有角色设置';
+const MENU_ESCALATE = '设置失败后升级用的模型';
 const DONE = '完成';
 const USE_WORKFLOW = '使用 workflow.yaml 默认';
 const USE_DEFAULT = '使用默认';
@@ -64,6 +67,7 @@ export async function runFlowConfig(args: string, deps: FlowConfigDeps): Promise
     case 'models': return describeModels(deps);
     case 'set': return cmdSet(argv.slice(1), deps);
     case 'unset': return cmdUnset(argv.slice(1), deps);
+    case 'escalate': return cmdEscalate(argv.slice(1), deps);
     case 'help': case '-h': case '--help': return USAGE;
     default: throw new FlowConfigError(`未知子命令 ${sub}。\n${USAGE}`);
   }
@@ -95,7 +99,8 @@ function describeRole(deps: FlowConfigDeps, role: string): string {
   const thinkingText = r.thinking
     ? `思考 ${r.thinking}${r.thinkingSource === 'flow-config' ? '（/flow-config）' : '（workflow.yaml）'}`
     : '思考 默认';
-  return `${modelText}${unavailable} · ${thinkingText}`;
+  const esc = r.model ? escalationModel(deps.config, settings, role, r.model) : null;
+  return `${modelText}${unavailable} · ${thinkingText}${esc ? ` · 失败后升级 ${esc}` : ''}`;
 }
 
 function describeAll(deps: FlowConfigDeps): string {
@@ -151,6 +156,20 @@ function cmdSet(argv: string[], deps: FlowConfigDeps): string {
   return `已保存：${role} → ${describeRole(deps, role)}`;
 }
 
+function cmdEscalate(argv: string[], deps: FlowConfigDeps): string {
+  const [role, modelArg] = argv;
+  if (!role || !modelArg || argv.length > 2) throw new FlowConfigError(USAGE);
+  if (!deps.config.roles[role]) throw new FlowConfigError(`角色 ${role} 不存在。可选角色：${roles(deps).join('、')}`);
+  let model: string | undefined;
+  if (modelArg !== 'default') {
+    const m = findModel(deps, modelArg);
+    if (!m) throw new FlowConfigError(`模型 ${modelArg} 不可用。执行 /flow-config models 查看可用模型`);
+    model = m.ref;
+  }
+  saveRoleSettings(deps.settingsPath, setEscalation(loadRoleSettings(deps.settingsPath), role, model), deps.now?.());
+  return `已保存：${role} → ${describeRole(deps, role)}`;
+}
+
 function cmdUnset(argv: string[], deps: FlowConfigDeps): string {
   const [role] = argv;
   if (!role || argv.length > 1) throw new FlowConfigError(USAGE);
@@ -165,7 +184,7 @@ function cmdUnset(argv: string[], deps: FlowConfigDeps): string {
 
 async function interactive(deps: FlowConfigDeps, ui: UiPort): Promise<string> {
   for (;;) {
-    const choice = await ui.select('pi-flow 配置', [MENU_SET, MENU_SHOW, MENU_CLEAR, DONE]);
+    const choice = await ui.select('pi-flow 配置', [MENU_SET, MENU_ESCALATE, MENU_SHOW, MENU_CLEAR, DONE]);
     if (!choice || choice === DONE) return '已退出 /flow-config。';
     if (choice === MENU_SHOW) ui.notify(describeAll(deps), 'info');
     else if (choice === MENU_CLEAR) {
@@ -173,7 +192,25 @@ async function interactive(deps: FlowConfigDeps, ui: UiPort): Promise<string> {
       ui.notify('已清除所有角色设置。', 'info');
     } else if (choice === MENU_SET) {
       await editRoles(deps, ui);
+    } else if (choice === MENU_ESCALATE) {
+      await editEscalation(deps, ui);
     }
+  }
+}
+
+async function editEscalation(deps: FlowConfigDeps, ui: UiPort): Promise<void> {
+  for (;;) {
+    const labels = roles(deps).map((r) => `${r} · ${describeRole(deps, r)}`);
+    const pick = await ui.select('选择角色：同一任务失败多次后改用哪个模型', [DONE, ...labels]);
+    if (!pick || pick === DONE) return;
+    const role = roles(deps)[labels.indexOf(pick)];
+    if (!role) return;
+    const modelLabels = deps.models.map((m) => `${m.ref}  ${m.name}`);
+    const modelPick = await ui.select(`${role}：失败后升级用的模型`, [USE_WORKFLOW, ...modelLabels]);
+    if (!modelPick) continue;
+    const model = modelPick === USE_WORKFLOW ? undefined : deps.models[modelLabels.indexOf(modelPick)]?.ref;
+    saveRoleSettings(deps.settingsPath, setEscalation(loadRoleSettings(deps.settingsPath), role, model), deps.now?.());
+    ui.notify(`已保存：${role} → ${describeRole(deps, role)}`, 'info');
   }
 }
 

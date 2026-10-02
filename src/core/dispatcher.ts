@@ -14,6 +14,7 @@ import { assemblePrompt, ruleFilesFor } from './prompt-assembler.ts';
 import { formatEntry, selectKnowledge } from './knowledge.ts';
 import { findSessionFile, sessionDirOf } from './session-log.ts';
 import { heldByRevision } from './revision.ts';
+import { assessRisk, budgetState, diffNumstat, escalationModel, escalationPolicy, resolveModelRef, reviewPolicy } from './cost-control.ts';
 import { carriedTestOf, computeReady, isLeadingTest } from './dag.ts';
 import { selectDispatchable } from './scheduler.ts';
 import { createTaskWorktree, ensureLocalExcludes, worktreesRoot } from './worktree.ts';
@@ -99,6 +100,7 @@ export class Engine {
     await this.promote(flowId);
     const flow = this.d.store.readFlow(flowId);
     if (flow.sync?.status === 'conflict') return [];
+    if (budgetState(this.d.store, this.d.config, flow)?.exceeded) return [];
     const held = heldByRevision(this.d.store, flowId);
     const ids = selectDispatchable(this.d.store.listTasks(flowId).filter((t) => !held.has(t.id)), flow.stage, this.d.config.limits.max_parallel);
     const out: Dispatched[] = [];
@@ -113,7 +115,24 @@ export class Engine {
     const flow = store.readFlow(flowId);
     let task = store.readTask(flowId, taskId);
     const role = task.status === 'review' ? REVIEWER_ROLE : task.role;
-    const { model, thinking } = this.modelFor(role);
+    const base = this.modelFor(role);
+    const { thinking } = base;
+    let model = base.model;
+    // 按风险审查（H）：低风险任务用便宜模型审查（取不到便宜模型时用原来的审查模型）
+    let reviewMode: 'full' | 'light' | undefined;
+    if (role === REVIEWER_ROLE) {
+      const low = assessRisk(this.d.config, task, store.listTasks(flowId), diffNumstat(task)).low;
+      const policy = reviewPolicy(this.d.config).lowRisk;
+      reviewMode = low && policy.mode === 'cheap' ? 'light' : 'full';
+      if (reviewMode === 'light') model = resolveModelRef(this.d.config, policy.model) ?? model;
+    }
+    // 失败后升级模型（I）：同一任务失败达到次数后，实施换成升级模型
+    let escalated = false;
+    const esc = escalationPolicy(this.d.config);
+    if (role !== REVIEWER_ROLE && esc.enabled && task.attempts >= esc.afterFailures) {
+      const up = escalationModel(this.d.config, this.d.roleSettings(), role, model);
+      if (up) { model = up; escalated = true; }
+    }
     const runId = `r-${this.now().getTime().toString(36)}${randomBytes(3).toString('hex')}`;
     const token = randomBytes(24).toString('base64url');
     const lease = {
@@ -123,6 +142,9 @@ export class Engine {
 
     if (task.status === 'ready' && task.kind !== 'merge-fix' && flow.sync?.status === 'conflict') {
       throw new DispatchError(`同步 ${this.d.config.raw.main_branch} 到集成分支时冲突，需要你先处理（${flow.sync.reason ?? ''}），处理后执行 /flow sync`);
+    }
+    if (task.status === 'ready' && task.kind !== 'merge-fix' && budgetState(store, this.d.config, flow)?.exceeded) {
+      throw new DispatchError('本流程的预算已用完，暂停派发新任务：用 /flow budget 提高预算后继续');
     }
     if (task.status === 'ready' && heldByRevision(store, flowId).has(taskId)) {
       throw new DispatchError(`任务 ${taskId} 在待批准的计划修订中（将被调整或取消），用户批准或打回修订前暂停派发`);
@@ -151,7 +173,7 @@ export class Engine {
     await store.createRun({
       run_id: runId, flow: flowId, task: taskId, role, model, started_at: this.now().toISOString(), ended_at: null,
       tokens: { input: null, output: null, cache_read: null, cache_write: null }, outcome: null, token_hash: lease.token_hash, violations: 0,
-      session_dir: sessionDir,
+      session_dir: sessionDir, ...(escalated ? { escalated: true } : {}), ...(reviewMode ? { review_mode: reviewMode } : {}),
     });
 
     let handle: SubagentHandle;
@@ -169,6 +191,21 @@ export class Engine {
     })));
     this.notify();
     return { run_id: runId, task: taskId, role, model };
+  }
+
+  /** 待审查任务：低风险且配置为 skip 时只做程序检查直接进入 verify；否则在审查并发上限内派发审查 */
+  private async reviewStep(flowId: string, t: TaskFile): Promise<void> {
+    const policy = reviewPolicy(this.d.config);
+    const risk = assessRisk(this.d.config, t, this.d.store.listTasks(flowId), diffNumstat(t));
+    if (risk.low && policy.lowRisk.mode === 'skip') {
+      await this.d.store.transitionTask(flowId, t.id, { to: 'verifying', trigger: 'review_skip', actor: 'engine',
+        facts: { low_risk: true, reason: '低风险（只改文档或测试、改动小），按配置只做程序检查，免审查' } });
+      this.track(this.pump(flowId)); // 下一轮 pump 执行 verify（不能在本轮内等待，pump 是串行的）
+      return;
+    }
+    const reviewing = [...this.runs.values()].filter((r) => r.role === REVIEWER_ROLE).length;
+    if (reviewing >= policy.maxParallel) return; // 审查并发已满：有审查结束时 pump 会再来
+    await this.dispatch(flowId, t.id);
   }
 
   private modelFor(role: string): { model: string; thinking: ThinkingLevel | null } {
@@ -249,6 +286,7 @@ export class Engine {
     const outcome = prev.outcome ?? (leaseHeld ? 'failed' : null);
     await store.updateRun(runId, {
       ended_at: this.now().toISOString(), tokens: r.tokens, model: r.model ?? prev.model, ...(outcome ? { outcome } : {}),
+      ...(r.cost !== undefined ? { cost: r.cost } : {}),
       ...(prev.session_dir ? { session_file: findSessionFile(prev.session_dir) } : {}),
     }, 'dispatcher', 'run 结束');
     if (leaseHeld) {
@@ -284,7 +322,9 @@ export class Engine {
         // 循环中有 await，列表可能已过时（例如 verify 已结束并清除了 verifying 标记）：以最新状态为准
         const t = this.d.store.readTask(flowId, listed.id);
         if (t.lease) continue;
-        if (t.status === 'review' || t.status === 'in_progress') {
+        if (t.status === 'review') {
+          await this.reviewStep(flowId, t);
+        } else if (t.status === 'in_progress') {
           await this.dispatch(flowId, t.id);
         } else if (t.status === 'verifying' && !this.verifying.has(t.id)) {
           this.verifying.add(t.id);

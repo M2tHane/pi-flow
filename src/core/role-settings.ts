@@ -14,7 +14,7 @@ export class RoleSettingsError extends Error {
   }
 }
 
-export interface RoleSetting { model?: string; thinking?: ThinkingLevel }
+export interface RoleSetting { model?: string; thinking?: ThinkingLevel; escalate_model?: string }
 
 const empty = (): RoleSettingsFile => ({ version: 1, roles: {} });
 
@@ -51,8 +51,23 @@ export function setRole(settings: RoleSettingsFile, role: string, value: RoleSet
   const entry: RoleSetting = {};
   if (value.model !== undefined) entry.model = value.model;
   if (value.thinking !== undefined) entry.thinking = value.thinking;
+  // 升级模型单独设置（setEscalation），设置模型与思考级别时保留
+  const esc = settings.roles[role]?.escalate_model;
+  if (esc) entry.escalate_model = esc;
   const roles = { ...settings.roles };
   if (Object.keys(entry).length) roles[role] = entry;
+  else delete roles[role];
+  return { ...settings, roles };
+}
+
+/** 设置失败后升级用的模型；undefined 表示清除（回到 workflow.yaml 或上一档） */
+export function setEscalation(settings: RoleSettingsFile, role: string, model: string | undefined): RoleSettingsFile {
+  if (model !== undefined && !/^[^/\s]+\/\S+$/.test(model)) throw new RoleSettingsError(`模型必须写成 provider/model 形式（收到：${model}）`);
+  const cur = { ...(settings.roles[role] ?? {}) };
+  if (model) cur.escalate_model = model;
+  else delete cur.escalate_model;
+  const roles = { ...settings.roles };
+  if (Object.keys(cur).length) roles[role] = cur;
   else delete roles[role];
   return { ...settings, roles };
 }

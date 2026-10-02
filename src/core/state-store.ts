@@ -650,7 +650,7 @@ export class StateStore {
   }
 
   /** 更新 run 记录（结束时间、token、模型、结果）。 */
-  async updateRun(id: string, patch: Partial<Pick<RunFile, 'ended_at' | 'tokens' | 'model' | 'outcome' | 'pid' | 'session_file'>>, actor: string, reason?: string): Promise<RunFile> {
+  async updateRun(id: string, patch: Partial<Pick<RunFile, 'ended_at' | 'tokens' | 'model' | 'outcome' | 'pid' | 'session_file' | 'cost'>>, actor: string, reason?: string): Promise<RunFile> {
     return this.transaction((tx) => {
       const run = tx.readJson<RunFile>(runRel(id));
       if (!run) throw new StateError(`run ${id} 不存在`);
@@ -866,6 +866,16 @@ export class StateStore {
       tx.event({ flow, task: cur.task, actor: 'human', type: 'approval', reason: `批准计划修订：${cur.summary}`.slice(0, 500),
         data: { revision: 'approved', added: input.add.map((t) => t.id), rewired: input.rewire.map((r) => r.task), cancelled: input.cancel.map((c) => c.task) } });
       return saved;
+    });
+  }
+
+  /** 设置本流程的预算（仅用户；覆盖 workflow.yaml 的 budget） */
+  async setFlowBudget(flowId: string, budget: NonNullable<FlowFile['budget']>): Promise<FlowFile> {
+    return this.transaction((tx) => {
+      const flow = tx.readFlow(flowId);
+      const next = tx.putFlow({ ...flow, budget });
+      tx.event({ flow: flowId, actor: 'human', type: 'approval', reason: '设置流程预算', data: { budget } });
+      return next;
     });
   }
 

@@ -8,7 +8,7 @@ import { isProtected, matchesAny } from './paths.ts';
 export type Trigger =
   | 'schedule' | 'dispatch' | 'submit' | 'review_pass' | 'review_reject'
   | 'verify_pass' | 'verify_fail' | 'merge_start' | 'merge_done' | 'merge_verify_fail'
-  | 'merge_blocked' | 'merge_requeue' | 'block' | 'unblock' | 'lease_expired' | 'run_failed' | 'run_interrupted' | 'report' | 'repro_confirmed' | 'cancel';
+  | 'merge_blocked' | 'merge_requeue' | 'block' | 'unblock' | 'lease_expired' | 'run_failed' | 'run_interrupted' | 'report' | 'repro_confirmed' | 'cancel' | 'review_skip';
 
 /** 同一任务连续会话中断达到此次数转 blocked，防止无限重来 */
 export const MAX_INTERRUPTIONS = 5;
@@ -39,6 +39,8 @@ export interface Facts {
   fast_forwarded?: boolean;
   worktree_clean?: boolean;
   reason?: string;
+  /** 引擎按风险规则判定为低风险（review_skip） */
+  low_risk?: boolean;
   /** unblock 时由用户指定的 attempts，缺省清零 */
   attempts?: number;
 }
@@ -121,6 +123,16 @@ export const TRANSITIONS: readonly Rule[] = [
       ...need(!t.lease || t.lease.run_id !== t.impl_run, '审查 run 与实施 run 是同一个 run'),
     ],
     effect: (t) => { t.lease = null; },
+  },
+  {
+    // 偏离（第二轮 H）：低风险任务按 workflow.yaml 配置只做程序检查、免审查。只能由引擎在没有审查 run 时执行
+    from: ['review'], to: 'verifying', trigger: 'review_skip',
+    check: (t, f) => [
+      ...need(f.actor === 'engine', '只有引擎可以按风险规则免审查'),
+      ...need(!t.lease, '已有审查 run 在进行'),
+      ...need(f.low_risk === true, '任务不是低风险'),
+      ...reasonRequired(f),
+    ],
   },
   {
     from: ['review'], to: 'in_progress', trigger: 'review_reject', failure: true,

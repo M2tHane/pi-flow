@@ -234,6 +234,12 @@
     - 修订待批准期间，被点名调整依赖或取消的任务暂停派发（`heldByRevision`：`next`、`dispatch`、orchestrator 下一步都跳过），批准或打回后恢复，避免批准时它们已经开始（用户选择）。起草期间开始的任务由 `flow_revise_plan` 的校验拦下，architect 当场修正。
     - **新增任务状态 `cancelled` 与转移 `cancel`（pending/ready → cancelled）**：只接受 actor=human（即用户批准的修订）。阶段完成、闸门、orchestrator 下一步的判断改为"done 或 cancelled 视为已结束"；进度不计已取消的任务。
 
+77. **按风险审查（第二轮 H）**：`workflow.yaml` 新增可选 `review`（`max_parallel`、`low_risk.{enabled, mode, model, max_files, max_lines, paths, exclude}`），默认保守：启用、mode=cheap、model=cheap 档、3 个文件、100 行、路径限文档与测试。高风险条件：merge-fix、先行验收测试、之前失败过（attempts>0）、拿不到改动、超限、涉及契约/shared scope/exclude、有文档测试之外的改动（`cost-control.ts` 的 `assessRisk`，改动来自 `git diff --numstat base_sha HEAD`）。cheap 模式派审查时换便宜模型（`resolveModelRef`：档位或 provider/model，占位符视为取不到，回退审查者原模型），run 记 `review_mode`。skip 模式由引擎执行新增转移 **`review_skip`（review → verifying，只接受 actor=engine 且 low_risk、无审查 run）**，随后自动 verify。审查 run 的并发上限默认等于 `limits.max_parallel`，按本进程在跑的审查 run 计数，满时等下一次 pump。
+78. **失败后升级模型与预算（第二轮 I）**：
+    - 升级：`escalation.{enabled, after_failures}`（默认启用、2）。实施派发时 `attempts >= after_failures` 换成升级模型（`escalationModel`）：pi-flow.json 的 `escalate_model`（`/flow-config escalate` 或交互菜单）> `roles.<role>.escalate_model`（档位或 provider/model，配置校验档位存在）> 角色档位的上一档；取不到或与原模型相同则不升级。run 记 `escalated: true`。只作用于实施，不作用于审查。
+    - 金额：`UsageAccumulator` 累加 `usage.cost.total`，run 新增 `cost`（拿不到为 null，不估算）。
+    - 预算：`budget.{tokens, cost, warn_ratio}`，流程级覆盖 `flow.budget`（`/flow budget tokens|cost <数值>`，仅用户）。tokens 计输入 + 输出（不含缓存读写）。用到 warn_ratio（默认 0.8）时"需要你处理"提醒；超出后 `next` 返回空、`dispatch` 拒绝 ready 任务（merge-fix 除外），orchestrator 下一步改为向用户报告；返工、审查、verify 与合并照常，避免任务卡在半途。`/flow status --cost` 附预算用量。fix 流程同样受预算约束。
+
 ## 第二轮优化设计要点
 
 - **A 先行验收测试先失败**（第 69、70 条）。验收：
@@ -245,6 +251,7 @@
   - `test/unit/knowledge.test.ts`：校验、去重、选择与上限、提示位置、上游长度限制、提升目标。
 - **F 集成分支同步主分支**（第 75 条）。验收（`test/e2e/sync.test.ts`）：两阶段流程中，用户在实施期间向主分支提交一处无关改动与一处与任务冲突的改动；进入 S4 时主分支改动已进入集成分支（S4 任务的 worktree 可见），冲突生成 merge-fix（看到冲突标记）并合入，集成分支以主分支为祖先，最终合入主分支无冲突。契约冲突时暂停派发、提示用户，手动合并后 `/flow sync` 恢复派发。
 - **G 执行中修订计划**（第 76 条）。验收（`test/e2e/replan.test.ts`）：主 agent 经 `flow_replan` 发起，architect 收到原话与任务一览；取消进行中任务、取消仍被依赖的任务被拒；architect 不能写文件；待批准时阶段闸门不运行、主 agent 只能等待、agent 不能取消任务；用户批准后新增任务重新编号、依赖调整、任务取消，进行中任务的租约不变；第二次修订被打回后按意见重做再批准；最终含已取消任务的阶段照常通过闸门。`test/unit/revision.test.ts`：阶段、环、不存在的依赖、先行验收测试规范化与编号映射。
+- **H + I 按风险审查、升级模型与预算**（第 77、78 条）。验收（`test/e2e/cost-control.test.ts`）：文档任务的审查 run 用便宜模型（review_mode light），代码任务用强模型；审查并发上限 1 时从未同时有两个审查；skip 模式下文档任务不派审查、由引擎 `review_skip` 后完成，agent 不能免审查；被打回两次后第三次实施使用升级模型并标记；超预算后不派发新任务、提示用户、orchestrator 只能报告，`/flow status --cost` 显示用量，`/flow budget` 提高后继续派发。`test/unit/cost-control.test.ts`：风险判定各条件、模型引用与升级优先级、配置校验。
 - **D + E 租约续期与会话留档**（第 73、74 条）。验收（`test/e2e/lease-session.test.ts`）：持续调用工具时剩余不足一半才续租、超过最初 45 分钟不被杀、停止调用后按时过期、伪造 token 不能续租；run 记录会话目录，`/flow run` 显示工具调用与失败、最后的回复；doctor 按保留期提醒与清理。`test/e2e/pi-subprocess.test.ts` 用真实 pi 验证会话文件写入留档目录并能摘要出 flow_* 调用与被 guard 拦下的调用。
 
 ## M8 设计要点

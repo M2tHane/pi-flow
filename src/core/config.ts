@@ -231,6 +231,12 @@ export function parseConfig(source: string): FlowConfig {
     };
   }
   if (!roles['orchestrator']) errors.push('roles: 缺少 orchestrator 角色');
+  // 模型引用：档位名必须在 models 中；provider/model 原样使用
+  const modelRef = (ref: string | undefined, loc: (string | number)[]) => {
+    if (ref && !ref.includes('/') && !(ref in wf.models)) errors.push(`${at(loc)}: 模型档位 ${ref} 未在 models 中定义（也可以写 provider/model）`);
+  };
+  for (const [name, def] of Object.entries(wf.roles)) modelRef(def.escalate_model, ['roles', name, 'escalate_model']);
+  modelRef(wf.review?.low_risk?.model, ['review', 'low_risk', 'model']);
 
   if (errors.length) throw new ConfigError(errors);
   return new FlowConfig(wf, roles, kinds, warnings);

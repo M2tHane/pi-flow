@@ -15,9 +15,10 @@ import { readFileSync } from 'node:fs';
 import type { BriefFile } from '../core/schemas.ts';
 import { CHECKLISTS, CONFIRM_COMMAND, MODE_LABEL, activeBrief, cancelBrief, confirmBrief, markConfirmed, renderBrief, startBrief, type InterviewMode } from '../modes/interview.ts';
 import { costReport, formatCost } from '../core/cost.ts';
-import { renderStatus } from '../core/status-view.ts';
+import { renderStatus, visibleFlows } from '../core/status-view.ts';
 import { applyDrafts, formatDrafts, listDrafts, type Draft } from '../core/rules-draft.ts';
 import { findSessionFile, formatRunDetail, summarizeSession } from '../core/session-log.ts';
+import { budgetState, formatBudget } from '../core/cost-control.ts';
 import { RevisionError, approveRevision, rejectRevision, startReplan } from '../core/revision.ts';
 import { KnowledgeError, acceptCandidate, formatKnowledgeList, markPromoted, promoteToDraft, retireEntries, searchKnowledge } from '../core/knowledge.ts';
 import { loadConfig } from '../core/config.ts';
@@ -69,6 +70,7 @@ export const FLOW_USAGE = [
   '  /flow unblock <任务> ["<回答>"] [--attempts N]   解除阻塞（无界面时用它回答）',
   '  /flow gate              闸门失败并修复后，重跑当前阶段闸门',
   '  /flow rules [apply [all|<草案文件>...]]   查看或应用规则与命令草案（docs/rules-draft/，来自架构师或知识提升）',
+  '  /flow budget [tokens|cost <数值>]   查看或设置本流程的预算；超出后暂停派发新任务',
   '  /flow replan "<要改什么>"   执行中修订计划：architect 起草（新增任务、调整或取消未开始的任务），你批准后生效',
   '  /flow sync              把主分支同步进集成分支（每个阶段开始时自动执行）',
   '  /flow run [<run_id>]    某次子进程运行的工具调用摘要与最后的回复（会话留档）；不给 id 时列出最近的运行',
@@ -148,7 +150,11 @@ export async function runFlowCommand(args: string, env: CommandEnv): Promise<str
     }
     case 'status': {
       const store = env.store();
-      if (argv.includes('--cost')) return formatCost(costReport(store), store.listFixLogs());
+      if (argv.includes('--cost')) {
+        const config = loadConfig(path.join(env.root, 'workflow.yaml'));
+        const budgets = visibleFlows(store).flatMap((f) => { const b = budgetState(store, config, f); return b ? [`${f.id} ${formatBudget(b)}`] : []; });
+        return [formatCost(costReport(store), store.listFixLogs()), ...budgets].join('\n\n');
+      }
       if (argv.includes('--detail')) return fullStatus(store, null);
       return renderStatus(store, loadConfig(path.join(env.root, 'workflow.yaml')));
     }
@@ -259,6 +265,25 @@ export async function runFlowCommand(args: string, env: CommandEnv): Promise<str
       const chosen = !picks.length || picks.includes('all') ? drafts : drafts.filter((d) => picks.includes(d.file) || picks.includes(path.basename(d.file)));
       if (!chosen.length) throw new Error(`没有匹配的草案。可用：${drafts.map((d) => d.file).join('、') || '无'}`);
       return applyAndReport(env, h, flowId, chosen);
+    }
+    case 'budget': {
+      const h = env.engine();
+      const flowId = currentFlowId(h.store);
+      const kind = argv[1];
+      if (kind === 'tokens' || kind === 'cost') {
+        const v = Number(argv[2]);
+        if (!Number.isFinite(v) || v <= 0 || (kind === 'tokens' && !Number.isInteger(v))) return `用法：/flow budget tokens <正整数> 或 /flow budget cost <正数>`;
+        const cur = h.store.readFlow(flowId).budget ?? {};
+        await h.store.setFlowBudget(flowId, { ...cur, [kind]: v });
+        await h.engine.pump(flowId);
+        const d = await h.engine.next(flowId);
+        if (env.waitForIdle) await h.engine.idle();
+        const b = budgetState(h.store, h.config, h.store.readFlow(flowId));
+        return `已设置 ${flowId} 的预算。${b ? formatBudget(b) : ''}${d.length ? `\n已派发：${d.map((x) => `${x.task} → ${x.role}`).join('；')}` : ''}`;
+      }
+      if (kind) return '用法：/flow budget（查看）、/flow budget tokens <数值>、/flow budget cost <金额>';
+      const b = budgetState(h.store, h.config, h.store.readFlow(flowId));
+      return b ? `${flowId} ${formatBudget(b)}` : `${flowId} 没有设置预算（workflow.yaml 的 budget 或 /flow budget tokens|cost <数值>）。`;
     }
     case 'replan': {
       const h = env.engine();

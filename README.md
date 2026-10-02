@@ -111,6 +111,7 @@ pi install /path/to/pi-flow
 | `/flow unblock <任务> ["<回答>"] [--attempts N]` | 解除阻塞，任务回到 ready（没有交互界面时用它回答） |
 | `/flow gate` | 闸门失败并修复后重跑闸门 |
 | `/flow rules [apply [all\|<草案文件>...]]` | 查看或应用规则与命令草案（`docs/rules-draft/`，来自架构师或知识提升）；由程序写入 `rules/` 与 `workflow.yaml` 并提交 |
+| `/flow budget [tokens\|cost <数值>]` | 查看或设置本流程的预算；用到 80% 时提醒，超出后暂停派发新任务，提高预算后继续 |
 | `/flow replan "<要改什么>"` | 执行中修订计划：architect 起草新增任务、调整或取消未开始的任务，你用 `/flow approve` 批准（`/flow reject "<意见>"` 打回重做）。在调度模式下直接告诉主 agent 也可以 |
 | `/flow sync` | 把主分支同步进集成分支（每个阶段开始时自动执行）；同步冲突由你处理后用它恢复 |
 | `/flow run [<run_id>]` | 某次子进程运行的工具调用摘要（含被拦下的调用）与最后的回复；不给 id 时列出最近的运行。会话文件保存在 `<项目>.worktrees/.sessions/<run>/` |
@@ -138,6 +139,12 @@ B-001「做一个待办应用」
 
 阻塞：无
 ```
+
+### 成本控制
+
+- **按风险审查**：只改文档或测试、改动不超过 3 个文件和 100 行、不涉及契约与 shared 的任务算低风险，用便宜模型审查（`workflow.yaml` 的 `review.low_risk.model`，取不到时用原来的审查模型）；设 `mode: skip` 则只做程序检查、不派审查。先行验收测试、解决合并冲突、之前失败过的任务一律完整审查。同时进行的审查数受 `review.max_parallel` 限制。
+- **失败后升级模型**：同一任务失败 2 次后（`escalation.after_failures`），下一次实施换成升级模型：`/flow-config escalate <角色> <模型>` 或菜单"设置失败后升级用的模型" > `roles.<角色>.escalate_model` > 上一档（cheap → medium → strong）。run 记录标明升级。
+- **预算**：`workflow.yaml` 的 `budget`（tokens 计输入 + 输出、cost 计金额）或 `/flow budget` 为单个流程设置。用到 `warn_ratio`（默认 80%）时在"需要你处理"中提醒，超出后暂停派发新任务（返工与审查照常），提高预算后继续。`/flow status --cost` 显示用量。
 
 ### 执行中修订计划
 

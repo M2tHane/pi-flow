@@ -10,6 +10,8 @@ export interface RunMetrics {
   stopReason: string | null;
   error: string | null;
   lastText: string;
+  /** Pi 报告的金额（usage.cost.total 累加）；拿不到时为 null */
+  cost?: number | null;
 }
 
 const KEYS: [keyof Tokens, string][] = [['input', 'input'], ['output', 'output'], ['cache_read', 'cacheRead'], ['cache_write', 'cacheWrite']];
@@ -21,6 +23,7 @@ export class UsageAccumulator {
   private stopReason: string | null = null;
   private error: string | null = null;
   private lastText = '';
+  private cost: number | null = null;
   private buf = '';
 
   /** 喂入原始 stdout 字节（JSONL，按 LF 分帧；不能用 readline，见 Pi docs/json.md） */
@@ -50,6 +53,8 @@ export class UsageAccumulator {
       const v = m.usage?.[src];
       if (typeof v === 'number' && Number.isFinite(v)) this.tokens[k] = (this.tokens[k] ?? 0) + v;
     }
+    const c = (m.usage?.['cost'] as { total?: unknown } | undefined)?.total;
+    if (typeof c === 'number' && Number.isFinite(c)) this.cost = (this.cost ?? 0) + c;
     if (m.provider && m.model) this.model = `${m.provider}/${m.model}`;
     this.stopReason = m.stopReason ?? null;
     this.error = m.stopReason === 'error' || m.stopReason === 'aborted' ? (m.errorMessage ?? m.stopReason) : null;
@@ -58,6 +63,6 @@ export class UsageAccumulator {
   }
 
   result(): RunMetrics {
-    return { tokens: { ...this.tokens }, model: this.model, turns: this.turns, stopReason: this.stopReason, error: this.error, lastText: this.lastText };
+    return { tokens: { ...this.tokens }, model: this.model, turns: this.turns, stopReason: this.stopReason, error: this.error, lastText: this.lastText, cost: this.cost };
   }
 }
