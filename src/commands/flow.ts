@@ -600,9 +600,9 @@ async function offerDrafts(env: CommandEnv, h: EngineHandle, flowId: string, fla
   const list = `架构师提出了规则与命令草案：\n${formatDrafts(drafts)}`;
   if (flag === 'all') return `${list}\n${await applyAndReport(env, h, flowId, drafts)}`;
   if (flag === 'none') return `${list}\n未应用（之后可用 /flow rules apply）。`;
-  if (!env.ui) return `${list}\n应用：/flow rules apply all（或逐个指定文件）；暂不应用则忽略。`;
-  const pick = await env.ui.select(`${list}\n\n是否应用？`, ['全部应用', '逐个选择', '暂不应用']);
-  if (pick === '全部应用') return applyAndReport(env, h, flowId, drafts);
+  if (!env.ui) return `${list}\n建议应用：/flow rules apply all（或逐个指定文件）；不应用时实施与审查按通用规则，可能与架构设计冲突。`;
+  const pick = await env.ui.select(`${list}\n\n是否应用？草案是架构师按本项目技术栈写的，通常建议全部应用；不应用时实施与审查按通用规则，可能与架构设计冲突。`, ['全部应用（推荐）', '逐个选择', '暂不应用']);
+  if (pick === '全部应用（推荐）') return applyAndReport(env, h, flowId, drafts);
   if (pick !== '逐个选择') return '规则草案暂未应用（之后可用 /flow rules apply）。';
   const chosen: Draft[] = [];
   for (const d of drafts) {

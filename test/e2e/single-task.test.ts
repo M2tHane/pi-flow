@@ -209,7 +209,7 @@ test('违规达到上限：run 被终止，任务转 blocked', async () => {
   try {
     const { engine } = makeEngine(p, async (role, _n, a) => {
       if (role === 'reviewer') return approve(a);
-      for (let i = 0; i < 5; i++) await a.call('bash', { command: 'echo x > .flow/state.json' });
+      for (let i = 0; i < 7; i++) await a.call('bash', { command: 'echo x > .flow/state.json' });
     });
     await engine.next(p.flowId);
     await engine.idle();
@@ -217,7 +217,7 @@ test('违规达到上限：run 被终止，任务转 blocked', async () => {
     assert.equal(t.status, 'blocked');
     assert.match(t.blocked_reason ?? '', /违规/);
     assert.equal(p.store.listRuns()[0]!.outcome, 'killed');
-    assert.equal(p.store.readEvents().filter((e) => e.type === 'violation').length, 3);
+    assert.equal(p.store.readEvents().filter((e) => e.type === 'violation').length, 5, '默认上限 5');
     assert.deepEqual((await p.store.verifyIntegrity()).errors, []);
   } finally { p.cleanup(); }
 });

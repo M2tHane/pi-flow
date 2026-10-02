@@ -12,7 +12,7 @@ limits:
   max_parallel: 2
   max_attempts: 3
   lease_minutes: 45
-  max_violations_per_run: 3
+  max_violations_per_run: 5     # 每次运行被拦下的操作达到此数即终止（弱模型适当调大）
   max_task_files: 12
   fix_max_files: 5              # 超过则建议升级为 feature
   session_retention_days: 14    # 子进程会话留档保留天数，/flow doctor --fix 清理
@@ -56,7 +56,7 @@ scopes:
   ui:         { rules: [rules/ui.md],           writes: ["design/**", "src/web/components/base/**"] }
   shared:     { rules: [rules/shared-types.md], writes: ["src/shared/**"] }
   acceptance: { rules: [rules/testing.md],      writes: ["tests/acceptance/**", "tests/e2e/**"] }
-  docs:       { writes: ["docs/**"] }
+  docs:       { rules: [rules/docs.md],         writes: ["docs/**"] }
   research:   { writes: ["docs/research/**"] }
   infra:      { writes: ["package.json", "pnpm-lock.yaml", "tsconfig*.json", ".github/**"] }
 tool_groups:                    # 已核实：pi-serena 0.9.20、pi-codegraph 0.1.10、pi-web-access 0.35.0

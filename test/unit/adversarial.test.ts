@@ -10,8 +10,8 @@ import { TEST_YAML } from '../helpers/config.ts';
 import { tmpRepo } from '../helpers/repo.ts';
 import { mkTask } from '../helpers/tasks.ts';
 
-const config = parseConfig(TEST_YAML.replace('max_violations_per_run: 3', 'max_violations_per_run: 100'));
-const strict = parseConfig(TEST_YAML);
+const config = parseConfig(TEST_YAML.replace(/max_violations_per_run: \d+/, 'max_violations_per_run: 100'));
+const strict = parseConfig(TEST_YAML.replace(/max_violations_per_run: \d+/, 'max_violations_per_run: 3'));
 const now = () => new Date('2026-01-01T00:00:00Z');
 
 async function setup() {

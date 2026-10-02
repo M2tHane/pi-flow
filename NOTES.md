@@ -282,6 +282,12 @@
     - 已确认工作正常：PRD 与架构质量（gpt）；先行验收测试先失败的检查；失败后升级模型（第三次实施的 run 标为 escalated、模型为 gpt-6.1-sol）；按风险审查（PRD 审查为 light）；计划修订由 architect 正确起草（取消、新增、依赖）；会话留档与 `summarizeSession` 用于排查；完整性校验通过。
     - 审查打回自动提炼的知识候选内容都是具体某次打回的细节（6 条），作为长期知识价值不高。用户决定改为默认不提炼：新增可选配置 `knowledge.auto_candidates`（默认 false），修订第 72 条的"程序提炼候选"。agent 主动的 flow_learn 不受影响。
 
+83. **默认规则与违规上限（真实冒烟后，用户决定）**：
+    - `limits.max_violations_per_run` 模板默认值 3 → 5（弱模型的无害误操作较多）。
+    - 默认规则改为与技术栈无关，参考了用户提供的另一个项目的规则（`/Users/dade/Documents/Code/program/rules`），只取通用部分：不静默吞异常、外部调用处理失败并带上下文、只做需求范围内的功能、文件行数阈值（800 关注、1500 必拆）、文件按用途归位、不建空壳与总结文档、UTF-8 与乱码处理（global）；分层、参数绑定、避免 N+1、业务异常向上抛、不存在与无权限统一表现、REST 路径命名（backend）；迁移幂等与分批、布尔与时间列命名、避开保留字（database）；加载中/出错/空数据三态、不用 any（frontend）；新增 `rules/docs.md`（docs scope）。该项目特有的约定（多租户、雪花 ID、禁止外键、Python/FastAPI 等）没有照搬。
+    - 冒烟中引起冲突的条目（"错误统一使用 shared 中定义的错误类型"、"显式声明外键约束"）改为"以契约与 ARCHITECTURE.md 为准"；global 新增"通用规则与已批准的契约冲突时 flow_block 请用户决定"。`design-contract` 技能要求架构师把错误类型、主键生成、外键策略、响应格式写进 ARCHITECTURE.md 与规则草案。
+    - S1/F1 批准时的规则草案选项改为"全部应用（推荐）"，并说明不应用的后果。
+
 ## 第二轮优化设计要点
 
 - **A 先行验收测试先失败**（第 69、70 条）。验收：
@@ -398,4 +404,5 @@
 - 2026-10-01（第二轮 B + C）：`skills/write-handoff`（所有实施角色）、`agents/reviewer.md`、`agents/scout.md` 增加 flow_learn 说明，`agents/interviewer.md`（主会话）增加读知识库的说明；所有子进程角色的工具声明多了 flow_learn。以上都会让提示缓存失效一次。此外项目知识新增条目时，系统提示末尾的知识部分变化，只影响其后的缓存。
 - 2026-10-01（第二轮 G）：新增技能 `skills/revise-plan`（只注入修订任务）；`agents/orchestrator.md`（主会话）增加 flow_replan 说明，orchestrator 的工具多了 flow_replan；architect 的工具声明多了 flow_revise_plan，architect 子进程提示缓存失效一次。
 - 2026-10-02（真实模型冒烟后）：`agents/reviewer.md`、`agents/scout.md`、`skills/decompose-dag`、`skills/revise-plan` 修改；审查与实施提示新增临时目录、evidence 路径两节（在动态部分）。reviewer、scout、architect 子进程提示缓存失效一次。
+- 2026-10-02（默认规则更新）：`rules/` 全部重写并新增 `rules/docs.md`，`skills/design-contract` 修改。只影响之后 `/flow init` 的新项目（已有项目的 rules/ 不变）；architect 子进程提示缓存失效一次。
 - 以后修改 `agents/`、`rules/`、`skills/` 时，在此追加一条。
