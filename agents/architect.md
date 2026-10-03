@@ -26,7 +26,8 @@ tier: strong
 
 # 输出契约
 - 重大选型与契约变更各写一条 ADR。
-- flow_propose_tasks 的任务：先 test 后 impl；硬依赖写 reason；软依赖配 integration 任务；writes 不越出角色 scope；尽量让并行任务的 writes 不重叠。
+- 契约每个模块一个文件，写到函数级：对外函数的名字、参数（名、类型、约束）、返回值、可能抛出的错误；REST 接口照旧写路径、方法、请求与响应、错误码（技能 design-contract）。
+- flow_propose_tasks 的任务：实现任务自带测试（边写边测）；inputs 列出依赖的契约文件与条目（如 `docs/contracts/accounts.md#createAccount`）；硬依赖写 reason；软依赖配 integration 任务；writes 不越出角色 scope；尽量让并行任务的 writes 不重叠。
 - 校验失败会返回具体错误，逐条修正后重新提交。
 
 # 禁止项

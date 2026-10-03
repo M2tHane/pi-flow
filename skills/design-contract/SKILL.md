@@ -17,8 +17,21 @@ description: 先数据模型和模块边界，再功能；输出 schema 与 API 
 
 1. 先定数据模型：核心实体、字段、约束、关系。schema 只在一处定义（src/shared），类型与校验由它派生。
 2. 再定模块边界与依赖方向，写入 docs/ARCHITECTURE.md。
-3. 最后定接口：在 docs/contracts/ 中为每个模块写 API 契约（路径、方法、请求与响应 schema、错误码）。
+3. 最后定接口：在 docs/contracts/ 中**每个模块一个文件**（例如 docs/contracts/accounts.md），写到函数级：
+   - 模块的每个对外函数（被别的模块调用的）一个小节，标题就是函数名（`## createAccount`），写明：
+     参数（名、类型、约束，例如 `name: string，1–50 字，去首尾空格后非空`）、返回值（类型与含义）、
+     可能抛出的错误（错误名或错误码、在什么条件下抛出）。
+   - 模块对外的 REST 接口照旧写：路径、方法、请求与响应 schema、状态码与错误码。
+   - 只写模块之间、模块与外部之间的边界；模块内部的辅助函数不写（那是实现手段）。
+   - 例：
+     ```
+     ## createAccount
+     参数：input: { name: string（1–50 字，去首尾空格后非空）, currency: 'CNY' | 'USD' }
+     返回：Account（见 src/shared/schemas.ts）
+     错误：ValidationError（name 或 currency 不合法）；ConflictError（同名账户已存在）
+     ```
 4. 契约要能被测试直接引用：实现、实施者自己的测试与后面的联调测试都对着契约写，因此实现之间可以用软依赖并行。
+   拆任务时，每个任务的 inputs 列出它实现或调用的契约文件与条目（例如 `docs/contracts/accounts.md#createAccount`）。
 5. 每个重大选型（框架、数据库、鉴权方式等）写一条 ADR：背景、选项对比、建议、影响。不替用户拍板，在 ADR 中写"建议"。
 6. 契约在阶段批准后只读；运行中要改，走"修订计划"：由修订新增一个改契约的任务（见 revise-plan）。
 

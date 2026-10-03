@@ -53,4 +53,6 @@ description: 把需求拆成任务 DAG：垂直切片、实施者边写边测、
 
 ## 提交
 调用 flow_propose_tasks。id 用 T-001 起的临时编号；stage 取 S2（基础设施）、S3（切片）、S4（集成与端到端）。
+每个任务的 inputs 列出它实现或调用的契约文件与条目（例如 `docs/contracts/accounts.md#createAccount`、
+`docs/contracts/records.md#GET /records`），实施者按这些条目实现，审查也对照它们。
 校验失败会返回具体错误，修正后重新提交即可。

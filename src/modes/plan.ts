@@ -36,8 +36,8 @@ export function designTasks(mode: FlowMode, stage: string, description: string):
       inputs: ['docs/PRD.md'], acceptance: [
         'docs/ARCHITECTURE.md 写明模块边界、依赖方向与数据模型',
         '重大技术选型各写一条 ADR（docs/adr/），给出对比与建议，不替用户拍板',
-        'docs/contracts/ 中有数据模型 schema 与 API 契约（批准后只读）',
-        '经 flow_propose_tasks 提交覆盖 S2 至 S4 的任务 DAG：先 test 后 impl；硬依赖写 reason；软依赖配 integration 任务',
+        'docs/contracts/ 中有数据模型 schema，每个模块一个契约文件，写到函数级：对外函数的名字、参数（名、类型、约束）、返回值、可能的错误；REST 接口写路径、方法、请求与响应、错误码（批准后只读）',
+        '经 flow_propose_tasks 提交覆盖 S2 至 S4 的任务 DAG：实现任务自带测试；inputs 列出依赖的契约条目；硬依赖写 reason；软依赖配 integration 任务',
         '针对选定的技术栈，在 docs/rules-draft/ 写规则草案（与 rules/ 同名表示替换）；工具链与 workflow.yaml 的命令不符时写 docs/rules-draft/commands.yaml',
       ] }];
   }
@@ -55,7 +55,8 @@ export function designTasks(mode: FlowMode, stage: string, description: string):
       inputs: ['docs/features/', 'docs/ARCHITECTURE.md', 'docs/contracts/'], acceptance: [
         '用 codegraph 做影响面分析，结果写入功能说明的"受影响模块"',
         '复用现有架构与契约；需要改契约时先写 ADR',
-        '经 flow_propose_tasks 提交本功能的任务 DAG（S3、S4）：先 test 后 impl；S4 包含新功能的验收测试',
+        '新增或修改的对外函数与接口在契约中写到函数级（名字、参数、返回值、错误）',
+        '经 flow_propose_tasks 提交本功能的任务 DAG（S3、S4）：实现任务自带测试；inputs 列出依赖的契约条目；S4 包含新功能的联调测试',
         '本功能引入新的约定时，在 docs/rules-draft/ 写规则草案（可选）',
       ] }];
   }

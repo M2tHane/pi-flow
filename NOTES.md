@@ -175,6 +175,10 @@
      ② 契约不超出需求：提案用 `extras` 申报超出需求的设计，批准时列给用户确认，审查时未申报的按缺陷打回。
      ③ 运行中改 API 文档：修订必须附影响分析（`impact`）；可新增 `contract_change` 文档任务修改已锁定的契约（只有批准的修订能建）；受影响的未开始任务取消并换成依赖新文档的任务，进行中的做完再接修改任务，已完成的新增修改任务。
 
+**第四轮（2026-10-03 起，`docs/HANDOFF-4.md`）**
+
+101. 契约到函数级：每个模块一个契约文件，写对外函数的名字、参数、返回值、错误（REST 照旧）；任务 inputs 列出依赖的契约条目。只改技能与提示，程序不校验格式。
+
 ## 真实模型实验
 
 脚本：`scripts/real-build.ts`（pi-flow 全流程，`--desc`/`--desc-file`、`--feature-file`、`--dir` 续跑）、`scripts/baseline-build.ts`（原生 pi 对照）、`node scripts/demo.ts --real-fix`。日志在 `~/pi-flow-runs/`，评测用例与看板需求、隐藏测试也在那里（不进仓库）。pi-flow 一侧：architect、reviewer 用 gpt-6.1-sol（high），实施角色用本地 glm-5.3-flash（low），失败后升级到 gpt。
@@ -198,6 +202,7 @@
 
 修改 `agents/`、`rules/`、`skills/` 会改变子进程系统提示的稳定前缀，提供商的提示缓存失效一次；`rules/` 的改动只影响之后 `/flow init` 的新项目。改动时在此追加一行。
 
+- 10-03（第 101 条）：architect 角色提示；`design-contract`、`decompose-dag` 技能。
 - 10-03（第 100 条）：backend、frontend、db、test、reviewer 角色提示；`rules/testing.md`；`decompose-dag`、`revise-plan`（重写）、`design-contract` 技能。
 - 10-02（第 97 条）：`rules/testing.md` 增加四条。
 - 10-02（第 96 条）：`agents/orchestrator.md`（主会话）。
