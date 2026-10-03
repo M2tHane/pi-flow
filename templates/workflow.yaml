@@ -32,7 +32,7 @@ review:                         # 按风险审查（可选，以下为默认值�
     max_files: 3
     max_lines: 100
     paths: ["docs/**", "**/*.md", "tests/**", "**/*.test.*", "**/*.spec.*"]
-  high_risk:                    # 高风险任务用强模型审查：合并冲突、先行验收测试、契约与 shared、下列路径、改动超过 max_lines
+  high_risk:                    # 高风险任务用强模型审查：合并冲突、契约与 shared、下列路径、改动超过 max_lines
     model: strong               # 档位名或 provider/model；/flow-config escalate reviewer <模型> 优先
     max_lines: 400
     paths: []

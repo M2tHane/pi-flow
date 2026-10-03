@@ -33,7 +33,7 @@ test('高风险审查：合并冲突、先行验收测试、契约与 shared、�
   assert.match(high([{ path: 'docs/contracts/api.ts', lines: 1 }]).highReasons.join(), /契约/);
   assert.match(high([{ path: 'src/a.ts', lines: 1 }], mkTask('T-009', { kind: 'merge-fix' })).highReasons.join(), /合并冲突/);
   const lead = mkTask('T-002', { kind: 'test' });
-  assert.match(high([{ path: 'tests/a.test.ts', lines: 5 }], lead, [lead, mkTask('T-003', { deps: [hard('T-002')] })]).highReasons.join(), /先行验收测试/);
+  assert.equal(high([{ path: 'tests/a.test.ts', lines: 5 }], lead, [lead, mkTask('T-003', { deps: [hard('T-002')] })]).high, false, '先行验收测试不再算高风险（先失败由程序验证）');
   const custom = parseConfig(`${YAML}\nreview:\n  high_risk:\n    paths: ["src/auth/**"]\n    max_lines: 50\n    model: x/huge\n`);
   assert.match(high([{ path: 'src/auth/login.ts', lines: 1 }], t, [t], custom).highReasons.join(), /高风险路径/);
   assert.equal(high([{ path: 'src/server/a.ts', lines: 51 }], t, [t], custom).high, true);

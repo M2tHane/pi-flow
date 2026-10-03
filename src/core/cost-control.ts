@@ -87,12 +87,12 @@ export function assessRisk(config: FlowConfig, t: TaskFile, tasks: readonly Task
   if (risky.length) reasons.push(`涉及契约、shared 或排除路径：${risky.map((c) => c.path).join('、')}`);
   const outside = changes.filter((c) => !matchesAny(c.path, p.paths));
   if (outside.length) reasons.push(`改动不只是文档或测试：${outside.slice(0, 3).map((c) => c.path).join('、')}${outside.length > 3 ? ' 等' : ''}`);
-  // 高风险：合并冲突、先行验收测试、契约与 shared（及配置的路径）、大改动
+  // 高风险：合并冲突、契约与 shared（及配置的路径）、大改动。
+  // 先行验收测试不算：它"必须先失败"已由程序在审查前验证（真实冒烟中 16 次审查有 10 次是它，几乎全用了强模型）
   const h = policy.highRisk;
   const highReasons: string[] = [];
   if (h.enabled) {
     if (t.kind === 'merge-fix') highReasons.push('解决合并冲突');
-    if (isLeadingTest(t, tasks)) highReasons.push('先行验收测试');
     const core = changes.filter((c) => matchesAny(c.path, [CONTRACTS_PATH, ...shared, ...h.paths]));
     if (core.length) highReasons.push(`涉及契约、shared 或高风险路径：${core.slice(0, 3).map((c) => c.path).join('、')}${core.length > 3 ? ' 等' : ''}`);
     if (lines > h.maxLines) highReasons.push(`改动 ${lines} 行，超过 ${h.maxLines}`);

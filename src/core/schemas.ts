@@ -296,7 +296,7 @@ export const WorkflowFile = Type.Object({
       /** 改动涉及这些路径一律高风险（契约与 shared scope 总是高风险） */
       exclude: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
     }, { additionalProperties: false })),
-    /** 高风险任务用强模型审查（第三轮 C）：合并冲突、先行验收测试、契约与 shared、paths 中的路径、改动超过 max_lines */
+    /** 高风险任务用强模型审查（第三轮 C）：合并冲突、契约与 shared、paths 中的路径、改动超过 max_lines */
     high_risk: Type.Optional(Type.Object({
       enabled: Type.Optional(Type.Boolean()),
       /** 档位名或 provider/model；不填时用 /flow-config escalate reviewer、roles.reviewer.escalate_model 或上一档 */
