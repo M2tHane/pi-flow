@@ -1,0 +1,648 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pi-flow 上手演示：跟着一个示例项目走一遍</title>
+<!--
+  pi-flow 的交互式上手演示（自包含，不联网，直接用浏览器打开）。
+  用一个虚构的示例项目"待办清单 API"，按步骤演示：你输入什么、主 agent 怎么回、程序做了什么、
+  .flow/ 里的状态和 git 分支怎么变。数据是为教学编排的，结构与真实的 .flow/ 一致。
+  看真实项目的状态：node scripts/flow-view.ts <项目目录>
+-->
+<style>
+.viz-root {
+  color-scheme: light;
+  --page: #f9f9f7; --surface-1: #fcfcfb; --surface-2: #f3f2ee;
+  --text-primary: #0b0b0b; --text-secondary: #52514e; --text-muted: #898781;
+  --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,0.10);
+  --s-impl: #2a78d6; --s-review: #eb6834; --s-verify: #1baf7a;
+  --good: #0ca30c; --warning: #fab219; --serious: #ec835a; --critical: #d03b3b;
+  --idle: #c3c2b7; --hl: rgba(42,120,214,0.12); --you: #eef4fc;
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) .viz-root {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface-1: #1a1a19; --surface-2: #232321;
+    --text-primary: #ffffff; --text-secondary: #c3c2b7; --text-muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
+    --s-impl: #3987e5; --s-review: #d95926; --s-verify: #199e70; --idle: #4a4a46; --hl: rgba(57,135,229,0.18); --you: #1d2836;
+  }
+}
+:root[data-theme="dark"] .viz-root {
+  color-scheme: dark;
+  --page: #0d0d0d; --surface-1: #1a1a19; --surface-2: #232321;
+  --text-primary: #ffffff; --text-secondary: #c3c2b7; --text-muted: #898781;
+  --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
+  --s-impl: #3987e5; --s-review: #d95926; --s-verify: #199e70; --idle: #4a4a46; --hl: rgba(57,135,229,0.18); --you: #1d2836;
+}
+* { box-sizing: border-box; }
+body { margin: 0; }
+.viz-root { background: var(--page); color: var(--text-primary); font: 14px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; min-height: 100vh; }
+header { padding: 16px 24px 4px; display: flex; flex-wrap: wrap; gap: 6px 20px; align-items: baseline; }
+header h1 { font-size: 20px; margin: 0; }
+header .sub { color: var(--text-secondary); }
+header button { margin-left: auto; font: inherit; color: inherit; background: var(--surface-1); border: 1px solid var(--border); border-radius: 6px; padding: 2px 10px; cursor: pointer; }
+nav { display: flex; gap: 2px; padding: 0 24px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+nav button { font: inherit; background: none; border: none; color: var(--text-secondary); padding: 8px 14px; cursor: pointer; border-bottom: 2px solid transparent; }
+nav button[aria-selected="true"] { color: var(--text-primary); border-bottom-color: var(--text-primary); font-weight: 600; }
+main { padding: 16px 24px 48px; }
+.panel { display: none; } .panel.on { display: block; }
+.card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 12px 16px; }
+h2 { font-size: 15px; margin: 0 0 8px; }
+h3 { font-size: 13px; margin: 12px 0 4px; color: var(--text-secondary); }
+.hint { color: var(--text-muted); font-size: 12px; }
+code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
+code { background: var(--surface-2); padding: 0 4px; border-radius: 4px; }
+pre { background: var(--surface-2); border-radius: 6px; padding: 8px 10px; overflow: auto; font-size: 12px; margin: 4px 0; white-space: pre-wrap; word-break: break-all; }
+button.btn { font: inherit; color: inherit; background: var(--surface-1); border: 1px solid var(--border); border-radius: 6px; padding: 4px 12px; cursor: pointer; }
+button.btn.primary { background: var(--text-primary); color: var(--surface-1); border-color: transparent; }
+button.btn:disabled { opacity: .4; cursor: default; }
+/* —— 走一遍 —— */
+.walk { display: grid; grid-template-columns: minmax(300px, 1fr) minmax(420px, 1.35fr) minmax(320px, 1fr); gap: 14px; align-items: start; }
+@media (max-width: 1200px) { .walk { grid-template-columns: 1fr 1fr; } .walk > :last-child { grid-column: 1 / -1; } }
+@media (max-width: 800px) { .walk { grid-template-columns: 1fr; } }
+.controls { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+.progress { height: 4px; background: var(--grid); border-radius: 2px; margin: 4px 0 8px; }
+.progress > div { height: 4px; background: var(--s-impl); border-radius: 2px; transition: width .2s; }
+.chat { max-height: 62vh; overflow: auto; display: flex; flex-direction: column; gap: 8px; padding-right: 4px; }
+.msg { border-radius: 8px; padding: 6px 10px; font-size: 13px; border: 1px solid var(--border); }
+.msg .who { font-size: 11px; color: var(--text-muted); margin-bottom: 2px; }
+.msg.you { background: var(--you); align-self: flex-end; max-width: 92%; }
+.msg.agent { background: var(--surface-1); max-width: 92%; }
+.msg.sys { background: var(--surface-2); font-size: 12px; color: var(--text-secondary); }
+.msg.new { outline: 2px solid var(--s-impl); outline-offset: 1px; }
+.msg.old { opacity: .55; }
+.explain { border-left: 3px solid var(--s-impl); }
+.explain .step-title { font-size: 16px; font-weight: 600; margin: 0 0 6px; }
+.explain ul { margin: 4px 0; padding-left: 18px; }
+.phases { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 8px; align-items: center; }
+.phase { padding: 1px 10px; border-radius: 999px; font-size: 12px; color: var(--text-secondary); border: 1px solid var(--border); }
+.phase.done { color: var(--text-primary); }
+.phase.cur { background: var(--text-primary); color: var(--surface-1); font-weight: 600; border-color: transparent; }
+svg text { fill: var(--text-primary); font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+svg .muted { fill: var(--text-muted); } svg .sec { fill: var(--text-secondary); }
+.comp rect { fill: var(--surface-1); stroke: var(--axis); stroke-width: 1.5; transition: all .2s; }
+.comp.on rect { fill: var(--hl); stroke: var(--s-impl); stroke-width: 2.5; }
+.comp { cursor: pointer; }
+.flowline { stroke: var(--axis); stroke-width: 1.5; fill: none; }
+.flowline.on { stroke: var(--s-impl); stroke-width: 2.5; stroke-dasharray: 6 4; animation: dash 1s linear infinite; }
+@keyframes dash { to { stroke-dashoffset: -20; } }
+@media (prefers-reduced-motion: reduce) { .flowline.on { animation: none; } }
+.board { display: grid; gap: 6px; }
+.lane { display: flex; gap: 6px; align-items: stretch; flex-wrap: wrap; }
+.lane-label { width: 64px; flex: none; font-size: 12px; color: var(--text-secondary); padding-top: 6px; }
+.task { flex: 0 1 190px; min-width: 130px; border: 1px solid var(--border); border-left: 5px solid var(--idle); border-radius: 6px; padding: 4px 8px; background: var(--surface-1); font-size: 12px; cursor: pointer; transition: border-color .2s, background .2s; }
+.task.focus { background: var(--hl); }
+.task .tid { font-weight: 600; }
+.task .st { color: var(--text-secondary); }
+.chip { display: inline-flex; align-items: center; gap: 4px; padding: 0 8px; border-radius: 999px; font-size: 12px; border: 1px solid var(--border); white-space: nowrap; }
+.chip i { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--text-secondary); margin: 2px 0 8px; }
+.legend span { display: inline-flex; align-items: center; gap: 5px; }
+.sw { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+.itabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin-bottom: 8px; flex-wrap: wrap; }
+.itabs button { font: inherit; font-size: 13px; background: none; border: none; color: var(--text-secondary); padding: 4px 8px; cursor: pointer; border-bottom: 2px solid transparent; }
+.itabs button[aria-selected="true"] { color: var(--text-primary); border-bottom-color: var(--text-primary); font-weight: 600; }
+.ev { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; padding: 3px 6px; border-bottom: 1px solid var(--grid); }
+.ev.new { background: var(--hl); }
+.branch { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; padding: 2px 0; }
+.branch.new { color: var(--s-impl); font-weight: 600; }
+.branch.gone { color: var(--text-muted); text-decoration: line-through; }
+.need { border: 1px solid var(--warning); border-radius: 6px; padding: 6px 8px; margin: 4px 0; font-size: 13px; }
+/* —— 其他标签页 —— */
+.cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; }
+.gloss { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; }
+.gloss .card h2 { font-size: 14px; margin-bottom: 4px; }
+input[type=search] { font: inherit; color: inherit; background: var(--surface-1); border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; width: min(420px, 100%); margin-bottom: 10px; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--grid); vertical-align: top; }
+th { color: var(--text-secondary); font-weight: 600; }
+ol.steps > li { margin: 6px 0; }
+.arch-layout { display: grid; grid-template-columns: minmax(600px, 2fr) minmax(300px, 1fr); gap: 14px; align-items: start; }
+@media (max-width: 1000px) { .arch-layout { grid-template-columns: 1fr; } }
+.sm-node rect { transition: all .2s; }
+.sm-node { cursor: pointer; }
+.sm-node.on rect { stroke: var(--text-primary); stroke-width: 2.5; }
+kbd { border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; font-size: 12px; background: var(--surface-1); }
+</style>
+</head>
+<body>
+<div class="viz-root">
+<header>
+  <h1>pi-flow 上手演示</h1>
+  <span class="sub">跟着一个示例项目"待办清单 API"走一遍：你输入什么、主 agent 怎么回、程序做了什么、状态怎么变。</span>
+  <button id="theme" type="button">切换深浅色</button>
+</header>
+<nav role="tablist">
+  <button role="tab" data-tab="walk" aria-selected="true">① 跟着走一遍</button>
+  <button role="tab" data-tab="arch">② 架构：谁在做什么</button>
+  <button role="tab" data-tab="sm">③ 任务状态机</button>
+  <button role="tab" data-tab="gloss">④ 概念速查</button>
+  <button role="tab" data-tab="start">⑤ 上手清单</button>
+</nav>
+<main>
+<!-- ① 走一遍 -->
+<section class="panel on" id="p-walk">
+  <div class="walk">
+    <div class="card">
+      <div class="controls">
+        <button class="btn" id="prev" title="上一步（←）">← 上一步</button>
+        <button class="btn primary" id="next" title="下一步（→）">下一步 →</button>
+        <button class="btn" id="play" title="自动播放（空格）">▶ 自动播放</button>
+        <select id="jump" class="btn" aria-label="跳到某一步"></select>
+      </div>
+      <div class="progress"><div id="bar"></div></div>
+      <div class="hint" style="margin-bottom:6px">键盘 <kbd>←</kbd> <kbd>→</kbd> 切换步骤。左边是你在 pi 里看到的对话：蓝底是你输入的，白底是主 agent，灰底是程序的通知。</div>
+      <div class="chat" id="chat" aria-live="polite"></div>
+    </div>
+    <div style="display:grid;gap:14px">
+      <div class="card explain" id="explain"></div>
+      <div class="card">
+        <div class="phases" id="phases"></div>
+        <h2 style="margin-top:4px">谁在动（点击方块看说明）</h2>
+        <svg id="mini" viewBox="0 0 640 250" width="100%" role="img" aria-label="架构示意，当前步骤涉及的部分高亮"></svg>
+      </div>
+      <div class="card">
+        <h2>任务看板（点击任务看它的状态文件）</h2>
+        <div class="legend" id="legend"></div>
+        <div class="board" id="board"></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="itabs" role="tablist" id="itabs">
+        <button data-i="task" aria-selected="true">任务文件</button>
+        <button data-i="events" aria-selected="false">事件日志</button>
+        <button data-i="git" aria-selected="false">git 分支</button>
+        <button data-i="needs" aria-selected="false">需要你处理</button>
+      </div>
+      <div id="inspector"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ② 架构 -->
+<section class="panel" id="p-arch">
+  <div class="arch-layout">
+    <div class="card">
+      <h2>三层：你 · 主会话 · 程序（引擎） · 子进程角色</h2>
+      <div class="hint">核心原则：<b>调度、守卫、验收、合并全部由程序决定</b>，LLM 只负责和你沟通、完成分到的任务。状态只能由程序写入 <code>.flow/</code>。点击任意方块看它做什么、代码在哪。</div>
+      <svg id="archsvg" viewBox="0 -30 900 590" width="100%" role="img" aria-label="pi-flow 架构图"></svg>
+    </div>
+    <div class="card" id="archSide"><h2>点击左侧的方块</h2><div class="hint">每个部分都会说明它负责什么、不能做什么、对应的源码目录。</div></div>
+  </div>
+</section>
+
+<!-- ③ 状态机 -->
+<section class="panel" id="p-sm">
+  <div class="arch-layout">
+    <div class="card">
+      <h2>一个任务的一生</h2>
+      <div class="hint">每个任务都按转移表（<code>src/core/state-machine.ts</code>）推进，不在表中的转移一律被拒。实线是正常路径，虚线是失败退回（计一次失败，达到上限转为阻塞）。点击状态看说明。</div>
+      <svg id="smsvg" viewBox="0 0 1050 360" width="100%" role="img" aria-label="任务状态机"></svg>
+    </div>
+    <div class="card" id="smSide"><h2>点击左侧的状态</h2></div>
+  </div>
+  <div class="card" style="margin-top:14px">
+    <h2>阶段（流程级）</h2>
+    <table>
+      <tr><th>高层阶段</th><th>新项目（build）</th><th>加功能（feature）</th><th>闸门</th></tr>
+      <tr><td>需求</td><td>S0：architect 写 PRD</td><td>F0：功能说明</td><td><b>你批准</b></td></tr>
+      <tr><td>规划</td><td>S1：架构、契约、任务 DAG、规则草案</td><td>F1：影响面分析与本功能 DAG</td><td><b>你批准</b> + typecheck；批准后契约只读、任务创建</td></tr>
+      <tr><td>实施</td><td>S2 基础设施 → S3 功能切片</td><td>S3</td><td>程序跑命令（install、typecheck、lint、test）</td></tr>
+      <tr><td>验收</td><td>S4 联调与端到端 → S5 发布</td><td>S4 新功能验收 + 全量回归</td><td>程序跑 e2e；最后<b>你批准</b>合入主分支</td></tr>
+    </table>
+  </div>
+</section>
+
+<!-- ④ 概念 -->
+<section class="panel" id="p-gloss">
+  <input type="search" id="gq" placeholder="搜索概念，例如：租约、worktree、返工、闸门…">
+  <div class="gloss" id="gloss"></div>
+</section>
+
+<!-- ⑤ 上手 -->
+<section class="panel" id="p-start">
+  <div class="cols">
+    <div class="card">
+      <h2>1. 安装（只做一次）</h2>
+<pre>git clone &lt;pi-flow 仓库地址&gt; ~/tools/pi-flow
+cd ~/tools/pi-flow
+npm install --omit=dev        # 必须：Pi 不会替本地包装依赖
+pi install ~/tools/pi-flow    # 全局登记
+pi list                       # 确认有 pi-flow</pre>
+      <div class="hint">在 pi 里用 <code>/login</code> 或 <code>~/.pi/agent/models.json</code> 配好模型，然后 <code>/flow-config</code> 给各角色选模型（全局，只需一次）。插件（Serena、codegraph、联网搜索）按需装，<code>/flow doctor</code> 会告诉你缺什么。</div>
+      <h2 style="margin-top:12px">2. 在项目里开始</h2>
+<pre>cd ~/code/my-app     # git 仓库；新项目先 git init
+pi
+/flow-build "做一个……"            # 新项目（先访谈，--confirm 后开工）
+/flow-build --feature "……"        # 已有项目加功能
+/flow-fix "……"                    # 修 bug</pre>
+      <div class="hint">已有项目开工前，先把 <code>workflow.yaml</code> 的 <code>commands</code> 改成项目真实的命令（模板写的是 pnpm）。</div>
+    </div>
+    <div class="card">
+      <h2>3. 常用命令</h2>
+      <table id="cmds"></table>
+    </div>
+    <div class="card">
+      <h2>4. 设置文件</h2>
+      <table id="files"></table>
+      <h2 style="margin-top:12px">5. 出问题时</h2>
+      <ul style="margin:0;padding-left:18px">
+        <li><code>/flow status</code> 顶部的"需要你处理"永远是第一站。</li>
+        <li><code>/flow run &lt;run_id&gt;</code> 看某次子进程调用了哪些工具、最后说了什么。</li>
+        <li><code>/flow doctor</code> 检查状态完整性、依赖、残留 worktree。</li>
+        <li>在 pi-flow 仓库执行 <code>node scripts/flow-view.ts &lt;项目目录&gt;</code>，生成真实项目的交互视图（时间线、DAG、成本、事件）。</li>
+        <li>关掉 pi 不会丢进度：重新打开执行 <code>/flow resume</code>。</li>
+      </ul>
+    </div>
+  </div>
+</section>
+</main>
+</div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const NS = 'http://www.w3.org/2000/svg';
+const el = (tag, attrs = {}, parent) => { const e = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v); if (parent) parent.appendChild(e); return e; };
+
+// —— 主题与标签页 ——
+$('#theme').onclick = () => { const r = document.documentElement; const dark = r.dataset.theme ? r.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches; r.dataset.theme = dark ? 'light' : 'dark'; };
+const openTab = (t) => { for (const b of document.querySelectorAll('nav button')) b.setAttribute('aria-selected', String(b.dataset.tab === t)); for (const p of document.querySelectorAll('.panel')) p.classList.toggle('on', p.id === 'p-' + t); history.replaceState(null, '', '#tab=' + t); };
+for (const b of document.querySelectorAll('nav button')) b.onclick = () => openTab(b.dataset.tab);
+
+// —— 词表 ——
+const ST = {
+  pending: { l: '待前置', c: 'var(--idle)', i: '○' }, ready: { l: '可派发', c: 'var(--idle)', i: '◔' },
+  in_progress: { l: '实施中', c: 'var(--s-impl)', i: '●' }, review: { l: '审查中', c: 'var(--s-review)', i: '●' },
+  verifying: { l: '验证中', c: 'var(--s-verify)', i: '●' }, queued_merge: { l: '排队合并', c: 'var(--s-verify)', i: '●' },
+  merging: { l: '合并中', c: 'var(--s-verify)', i: '●' }, done: { l: '已完成', c: 'var(--good)', i: '✓' },
+  blocked: { l: '阻塞', c: 'var(--critical)', i: '⛔' }, cancelled: { l: '已取消', c: 'var(--idle)', i: '✕' },
+};
+const chip = (s) => `<span class="chip"><i style="background:${ST[s].c}"></i>${ST[s].i} ${ST[s].l}</span>`;
+$('#legend').innerHTML = ['pending', 'in_progress', 'review', 'verifying', 'done', 'blocked'].map((s) => `<span><i class="sw" style="background:${ST[s].c}"></i>${ST[s].i} ${ST[s].l}${s === 'verifying' ? '/合并' : ''}</span>`).join('');
+
+// —— 示例项目的任务 ——
+const TASKS = [
+  { id: 'T-001', stage: 'S0', kind: 'doc', role: 'architect', title: '撰写 PRD', writes: ['docs/PRD.md'], verify: [] },
+  { id: 'T-002', stage: 'S1', kind: 'doc', role: 'architect', title: '架构、契约与任务 DAG', writes: ['docs/**', 'src/shared/**'], verify: ['typecheck'] },
+  { id: 'T-003', stage: 'S2', kind: 'infra', role: 'infra-engineer', title: '项目骨架与命令', writes: ['package.json', 'src/server/app.mjs'], verify: ['install', 'test'] },
+  { id: 'T-004', stage: 'S3', kind: 'test', role: 'test-engineer', title: '验收测试：新增与列出', writes: ['tests/acceptance/todos-add.test.mjs'], verify: ['test'], deps: [] },
+  { id: 'T-005', stage: 'S3', kind: 'impl', role: 'backend-engineer', title: '实现：新增与列出', writes: ['src/server/todos/**'], verify: ['test'], deps: [['T-004', 'hard']] },
+  { id: 'T-006', stage: 'S3', kind: 'test', role: 'test-engineer', title: '验收测试：完成与删除', writes: ['tests/acceptance/todos-done.test.mjs'], verify: ['test'], deps: [] },
+  { id: 'T-007', stage: 'S3', kind: 'impl', role: 'backend-engineer', title: '实现：完成与删除', writes: ['src/server/todos-done/**'], verify: ['test'], deps: [['T-006', 'hard'], ['T-005', 'soft']] },
+  { id: 'T-008', stage: 'S4', kind: 'integration', role: 'test-engineer', title: '端到端联调', writes: ['tests/e2e/**'], verify: ['e2e'], deps: [['T-005', 'hard'], ['T-007', 'hard']] },
+];
+const STAGES = ['S0', 'S1', 'S2', 'S3', 'S4', 'S5'];
+const STAGE_NAME = { S0: '需求', S1: '规划', S2: '实施·基础', S3: '实施·功能', S4: '验收·联调', S5: '发布' };
+const PHASES = [['需求', ['S0']], ['规划', ['S1']], ['实施', ['S2', 'S3']], ['验收', ['S4', 'S5']]];
+
+// —— 架构小图的部件 ——
+const MINI = {
+  you: { x: 10, y: 10, w: 110, h: 46, t: '你', d: '在 pi 里输入命令、回答问题、批准闸门。只有你能批准阶段闸门。' },
+  orch: { x: 150, y: 10, w: 150, h: 46, t: '主 agent（调度模式）', d: '和你对话、汇报进度、转达修改要求。没有写代码的工具，不决定派发谁。' },
+  engine: { x: 330, y: 10, w: 300, h: 46, t: '引擎（程序）：调度 · 守卫 · 验证 · 合并', d: '选任务、颁发租约、拉起子进程、跑 verify、串行合并、推进阶段。全部是确定的代码。' },
+  flow: { x: 330, y: 80, w: 140, h: 40, t: '.flow/ 状态', d: '流程、任务、运行记录、哈希链事件日志。只有程序能写。' },
+  git: { x: 490, y: 80, w: 140, h: 40, t: 'git 分支', d: 'main、集成分支 flow/B-001/integration、每个任务一个分支与 worktree。' },
+  arch: { x: 10, y: 150, w: 112, h: 40, t: 'architect', d: '写 PRD、架构、契约，拆任务 DAG，起草规则。' },
+  test: { x: 132, y: 150, w: 112, h: 40, t: 'test-engineer', d: '写验收测试（必须先失败）、联调测试。' },
+  infra: { x: 254, y: 150, w: 112, h: 40, t: 'infra-engineer', d: '项目骨架、依赖、构建与测试配置。' },
+  back: { x: 376, y: 150, w: 124, h: 40, t: 'backend-engineer', d: '实现功能，只能写任务允许的文件。' },
+  rev: { x: 510, y: 150, w: 120, h: 40, t: 'reviewer', d: '只读审查：对照验收标准、契约和规则，通过或打回。' },
+  wt: { x: 10, y: 205, w: 620, h: 36, t: '每个子进程：独立 pi 进程 + 独立 git worktree + 只启用本角色的工具 + guard 拦截越权', d: '子进程看不到其他任务的改动；写到任务范围外、改受保护文件、危险命令都会被拦下并计违规。' },
+};
+function drawMini() {
+  const svg = $('#mini'); svg.innerHTML = '';
+  const line = (a, b, id) => { const A = MINI[a], B = MINI[b]; el('line', { x1: A.x + A.w / 2, y1: A.y + A.h, x2: B.x + B.w / 2, y2: B.y, class: 'flowline', id }, svg); };
+  el('line', { x1: 120, y1: 33, x2: 150, y2: 33, class: 'flowline', id: 'l-you-orch' }, svg);
+  el('line', { x1: 300, y1: 33, x2: 330, y2: 33, class: 'flowline', id: 'l-orch-engine' }, svg);
+  line('engine', 'flow', 'l-engine-flow'); line('engine', 'git', 'l-engine-git');
+  // 引擎到各角色走一条总线（y=136），不穿过 .flow/ 与 git 两个方块
+  for (const r of ['arch', 'test', 'infra', 'back', 'rev']) el('path', { d: `M480,56 V136 H${MINI[r].x + MINI[r].w / 2} V150`, class: 'flowline', id: 'l-engine-' + r }, svg);
+  for (const [k, c] of Object.entries(MINI)) {
+    const g = el('g', { class: 'comp', id: 'c-' + k, tabindex: 0, role: 'button', 'aria-label': c.t }, svg);
+    el('rect', { x: c.x, y: c.y, width: c.w, height: c.h, rx: 8 }, g);
+    const t = el('text', { x: c.x + c.w / 2, y: c.y + c.h / 2 + 4, 'text-anchor': 'middle', 'font-size': k === 'wt' ? 11 : 12, 'font-weight': k === 'wt' ? 400 : 600 }, g); t.textContent = c.t;
+    const show = () => { $('#explain').insertAdjacentHTML('beforeend', ''); popover(c); };
+    g.addEventListener('click', show); g.addEventListener('keydown', (e) => { if (e.key === 'Enter') show(); });
+  }
+}
+function popover(c) {
+  const ex = $('#explain');
+  const old = ex.querySelector('.pop'); if (old) old.remove();
+  ex.insertAdjacentHTML('beforeend', `<div class="pop" style="margin-top:8px;padding:6px 8px;background:var(--surface-2);border-radius:6px;font-size:13px"><b>${esc(c.t)}</b>：${esc(c.d)}</div>`);
+}
+
+// —— 步骤脚本 ——
+// 每一步：title, chat[], explain(html), on(高亮部件与连线), focus(任务), ops(对状态的修改)
+const R = (n) => `r-${n}`;
+const STEPS = [
+  { title: '开始之前：在一个空的 git 仓库里启动 pi', on: ['you'],
+    chat: [['sys', '$ mkdir todo-api && cd todo-api && git init\n$ pi']],
+    explain: `<p>pi-flow 是 Pi 的插件，装好后在任何 git 仓库里启动 <code>pi</code> 就能用。<b>在你执行 pi-flow 的命令之前，它不会接管会话</b>，pi 照常可以用来做小改动。</p><p>这个演示做的是一个虚构的小项目"待办清单 API"（Node、JSON 文件存储）。真实项目的步骤一样，只是任务更多。</p>`,
+    ops: () => {} },
+  { title: '你描述需求，主 agent 先访谈', on: ['you', 'orch'], lines: ['l-you-orch'],
+    chat: [['you', '/flow-build "做一个待办清单 API：新增、列出、完成、删除待办，数据存在 JSON 文件里"'],
+      ['agent', '先确认几件事，每次一个问题。第 1 个：只给你自己在本机用，不需要登录，对吗？（建议：是）'],
+      ['you', '对'],
+      ['agent', '第 2 个：列出待办时需要按完成状态筛选吗？（建议：支持 ?done=true/false）'],
+      ['you', '要'],
+      ['agent', '需求摘要已整理好（目标、非目标、验收标准）。确认无误请执行 /flow-build --confirm']],
+    explain: `<p>三个入口命令（<code>/flow-build</code>、<code>--feature</code>、<code>/flow-fix</code>）默认先<b>访谈</b>：一次一个问题，给出建议答案，最后整理成需求摘要。</p><ul><li>不想访谈：<code>--direct "描述"</code>；已有需求文档：<code>--from 文件</code>。</li><li>访谈期间会话只能读 <code>docs/</code>、记录需求，不能写代码。</li></ul>`,
+    ops: (s) => { s.needs = []; } },
+  { title: '确认开工：程序建流程、派出第一个任务', on: ['you', 'orch', 'engine', 'flow', 'git', 'arch'], lines: ['l-orch-engine', 'l-engine-flow', 'l-engine-git', 'l-engine-arch'], focus: 'T-001',
+    chat: [['you', '/flow-build --confirm'], ['sys', 'pi-flow：已创建流程 B-001，进入需求阶段。会话进入调度模式（主 agent 只负责沟通）。'], ['agent', '开始了。architect 正在写 PRD，有问题或写完时我会告诉你。']],
+    explain: `<p>这一步发生了很多事，<b>全部由程序完成</b>：</p><ul><li>在 <code>.flow/</code> 建流程 B-001，阶段 S0，创建任务 T-001。</li><li>建集成分支 <code>flow/B-001/integration</code>（所有任务先合到这里，最后才进 main）。</li><li>为 T-001 建任务分支和<b>独立 worktree</b>（在项目目录旁边的 <code>todo-api.worktrees/</code>）。</li><li>颁发 <b>token 与租约</b>（45 分钟，干活时自动续），拉起 architect 子进程。</li></ul><p>当前会话进入<b>调度模式</b>：主 agent 只能看状态和等待，没有写代码的工具。</p>`,
+    ops: (s) => { s.stage = 'S0'; s.stageStatus = 'active'; add(s, 'T-001'); set(s, 'T-001', 'in_progress', { lease: { run_id: R('a1'), role: 'architect', model: 'gpt（强）' } }); s.branches.push('flow/B-001/integration', 'flow/B-001/T-001'); ev(s, 'note', '', '创建流程 B-001'); ev(s, 'transition', 'T-001', 'schedule: pending → ready'); ev(s, 'transition', 'T-001', 'dispatch: ready → in_progress'); } },
+  { title: 'architect 遇到歧义：阻塞并提问', on: ['arch', 'engine', 'orch', 'you'], lines: ['l-engine-arch', 'l-orch-engine', 'l-you-orch'], focus: 'T-001',
+    chat: [['sys', 'pi-flow 需要你处理：T-001「撰写 PRD」阻塞：待办的标题最长允许多少字？建议 200 字以内。'], ['agent', 'architect 有个问题需要你回答：标题长度上限。它建议 200 字。用 /flow answer T-001 回答。'], ['you', '/flow answer T-001'], ['you', '（输入框）就按 200 字'], ['sys', '已回答，T-001 回到审查前的状态继续。']],
+    explain: `<p>角色遇到<b>需要你决定的事</b>时，不猜，而是调用 <code>flow_block</code>：任务转为<b>阻塞</b>，问题出现在"需要你处理"里，主 agent 转告你。</p><p>你回答后程序解除阻塞，<b>同一个任务带着你的回答继续</b>。所有阻塞都只能由你解除。</p>`,
+    ops: (s) => { set(s, 'T-001', 'blocked', { lease: null, blocked_reason: '待办标题最长允许多少字？建议 200 字以内' }); ev(s, 'transition', 'T-001', 'block: in_progress → blocked'); s.needs = ['T-001 阻塞：标题长度上限？ → /flow answer T-001']; } },
+  { title: 'PRD 写完 → 审查 → 合入 → 等你批准', on: ['arch', 'rev', 'engine', 'git', 'orch', 'you'], lines: ['l-engine-arch', 'l-engine-rev', 'l-engine-git', 'l-orch-engine', 'l-you-orch'], focus: 'T-001',
+    chat: [['sys', 'pi-flow：T-001 已合入集成分支。需求阶段的产出等待你审批。'], ['agent', 'PRD 写好了：4 个接口、9 条验收标准、非目标里写了"不做多用户与登录"。请看 docs/PRD.md，没问题就 /flow approve，要改就 /flow reject "意见"。']],
+    explain: `<p>一个任务的标准路径走了一遍：</p><ul><li>architect 用 <code>flow_note</code> 写交接笔记（handoff），再 <code>flow_submit</code>；程序检查改动没有越出可写范围。</li><li>文档改动小、风险低，用<b>便宜模型</b>审查（审查分三档：低风险、普通、高风险）。</li><li>审查通过 → 进入串行<b>合并队列</b>：squash、rebase 到集成分支、合并后验证、快进。任务分支与 worktree 随即回收。</li><li>S0 的任务都完成 → 程序跑闸门 → 这个阶段需要<b>你批准</b>。</li></ul>`,
+    ops: (s) => { set(s, 'T-001', 'done', { lease: null, blocked_reason: null }); ev(s, 'transition', 'T-001', 'unblock: blocked → ready（继续）'); ev(s, 'transition', 'T-001', 'submit: in_progress → review'); ev(s, 'transition', 'T-001', 'review_pass: review → verifying（审查档 light）'); ev(s, 'transition', 'T-001', 'verify_pass → queued_merge → merging'); ev(s, 'merge', 'T-001', 'merge_done: 快进集成分支'); gone(s, 'flow/B-001/T-001'); s.stageStatus = 'awaiting_human'; s.needs = ['需求阶段的产出等待你审批 → /flow approve 或 /flow reject "<意见>"']; ev(s, 'gate_result', '', 'S0 闸门通过，等待人工批准'); } },
+  { title: '你批准 → 规划阶段：架构、契约、拆任务', on: ['you', 'engine', 'arch', 'rev'], lines: ['l-you-orch', 'l-orch-engine', 'l-engine-arch', 'l-engine-rev'], focus: 'T-002',
+    chat: [['you', '/flow approve'], ['sys', 'pi-flow：B-001 进入规划阶段。'], ['agent', 'architect 在设计架构和接口契约，并把实施拆成任务。']],
+    explain: `<p>S1 的 architect（强模型）会产出：</p><ul><li><code>docs/ARCHITECTURE.md</code>、ADR、<code>docs/contracts/</code> 下的接口契约。</li><li>用 <code>flow_propose_tasks</code> 提交<b>任务 DAG</b>：程序校验（可写范围不越界、无环、验收测试对应实现……）并给出报告：任务数、关键路径、并行宽度。开头只能串行或关键路径太长时会提醒它调整。</li><li>针对选定技术栈的<b>规则与命令草案</b>（<code>docs/rules-draft/</code>）。</li></ul><p>改了契约属于<b>高风险</b>，用强模型审查。</p>`,
+    ops: (s) => { s.stage = 'S1'; s.stageStatus = 'active'; s.needs = []; add(s, 'T-002'); set(s, 'T-002', 'in_progress', { lease: { run_id: R('a2'), role: 'architect', model: 'gpt（强）' } }); s.branches.push('flow/B-001/T-002'); ev(s, 'approval', '', 'S0 approve（human）'); ev(s, 'transition', 'T-002', 'dispatch: ready → in_progress'); } },
+  { title: '提案等你批准：任务 DAG 与规则草案', on: ['engine', 'orch', 'you'], lines: ['l-orch-engine', 'l-you-orch'], focus: 'T-002',
+    chat: [['sys', 'pi-flow：规划阶段的产出等待你审批。'], ['agent', '拆成了 6 个实施任务（看下方看板）：关键路径 3、最多 2 个并行。两个功能各有"先写验收测试、再实现"一对，彼此对着契约并行开发。另有规则与命令草案（node --test 等），批准时可以一并应用。'], ['you', '/flow approve --rules all'], ['sys', '已批准：契约锁定为只读；6 个任务已创建；规则与命令已写入 rules/ 与 workflow.yaml。']],
+    explain: `<p>你批准之后：</p><ul><li><b>契约变为只读</b>，之后任何角色都不能改 <code>docs/contracts/</code>（真要改走"修订计划"，见概念速查）。</li><li>提案里的任务正式写入 <code>.flow/flows/B-001/tasks/</code>。</li><li>规则草案应用到 <code>rules/</code>，命令写进 <code>workflow.yaml</code>，之后的 verify 都用它们。</li></ul><p>看板里出现了 S2–S4 的任务，都在<b>待前置</b>：要等所属阶段开始、硬依赖完成。</p>`,
+    ops: (s) => { set(s, 'T-002', 'done', { lease: null }); gone(s, 'flow/B-001/T-002'); for (const id of ['T-003', 'T-004', 'T-005', 'T-006', 'T-007', 'T-008']) add(s, id); ev(s, 'note', 'T-002', 'flow_propose_tasks：6 个任务，关键路径 3'); ev(s, 'transition', 'T-002', 'review_pass（审查档 strong：改了契约）→ … → merge_done'); ev(s, 'approval', '', 'S1 approve（human，含规则草案）'); s.stage = 'S2'; s.stageStatus = 'active'; } },
+  { title: '基础设施：程序自动派发，审查前先跑 verify', on: ['engine', 'infra', 'rev', 'git'], lines: ['l-engine-infra', 'l-engine-rev', 'l-engine-git'], focus: 'T-003',
+    chat: [['sys', 'pi-flow：B-001 进入实施阶段。'], ['agent', '实施开始了。我会在任务完成或需要你处理时再告诉你。']],
+    explain: `<p>从这里起，<b>ready 的任务由程序自动派发</b>，主 agent 不再逐个派发，只在值得汇报时醒来（省掉大量主会话 token）。</p><p>T-003 提交后，<b>先由程序跑 verify</b>（install、test）：</p><ul><li>失败 → 直接退回实施，不浪费审查；</li><li>通过 → 再派审查。审查通过后代码没变，<b>沿用这次验证结果</b>，不重跑。</li></ul><p>S2 全部完成后，闸门由程序自动跑命令，不需要你批准。</p>`,
+    ops: (s) => { set(s, 'T-003', 'done'); ev(s, 'transition', 'T-003', 'schedule → dispatch（自动派发）'); ev(s, 'transition', 'T-003', 'submit → 审查前验证通过（install、test）'); ev(s, 'transition', 'T-003', 'review_pass → verify_pass（沿用审查前结果）→ merge_done'); ev(s, 'gate_result', '', 'S2 闸门通过（程序）'); s.stage = 'S3'; } },
+  { title: '功能阶段：两个验收测试同时开工', on: ['engine', 'test', 'git'], lines: ['l-engine-test', 'l-engine-git'], focus: 'T-004',
+    chat: [],
+    explain: `<p>两个功能互不依赖，<b>可写范围也不重叠</b>（程序据此判断能否并行），所以 T-004、T-006 同时派给两个 test-engineer 子进程，各自在自己的 worktree 里写测试。</p><p>并行数由 <code>workflow.yaml</code> 的 <code>limits.max_parallel</code> 控制（模板为 3），审查另有并发上限。</p><p>右侧"git 分支"能看到两个任务分支同时存在。</p>`,
+    ops: (s) => { set(s, 'T-004', 'in_progress', { lease: { run_id: R('t1'), role: 'test-engineer', model: 'glm（中）' } }); set(s, 'T-006', 'in_progress', { lease: { run_id: R('t2'), role: 'test-engineer', model: 'glm（中）' } }); s.branches.push('flow/B-001/T-004', 'flow/B-001/T-006'); ev(s, 'transition', 'T-004', 'dispatch: ready → in_progress'); ev(s, 'transition', 'T-006', 'dispatch: ready → in_progress'); } },
+  { title: '验收测试必须先失败："必然通过"的测试被退回', on: ['engine', 'test'], lines: ['l-engine-test'], focus: 'T-006',
+    chat: [['sys', 'pi-flow：T-006 第一次未通过（审查前验证失败），程序已自动重试。']],
+    explain: `<p>先于实现写的验收测试，程序要求它<b>在实现之前失败</b>——否则说明它什么也没验证。</p><ul><li>T-004 的测试按预期失败 ✓，进入审查，通过后"确认先失败"即完成；它<b>不单独合入</b>，等实现任务一起带进集成分支，集成分支不会因为没实现的测试变红。</li><li>T-006 的测试居然通过了（用了条件判断跳过断言）→ 退回重写，<b>计一次失败</b>，原因写进 <code>last_failure</code>。</li></ul><p>重新派发时，子进程<b>接着上一次的对话</b>继续，只收到"为什么没通过"，不用从头读任务。</p>`,
+    ops: (s) => { set(s, 'T-004', 'done', { lease: null }); ev(s, 'transition', 'T-004', 'submit → 审查前验证：测试失败（符合预期）'); ev(s, 'transition', 'T-004', 'review_pass → repro_confirmed（确认先失败，暂不合入）'); set(s, 'T-006', 'in_progress', { attempts: 1, last_failure: '审查前验证：验收测试没有失败（test 通过）：实现还不存在，测试必须失败。不要用跳过、条件判断让测试通过', lease: { run_id: R('t3'), role: 'test-engineer', model: 'glm（中）', forked_from: R('t2') } }); ev(s, 'transition', 'T-006', 'submit → precheck_fail: review → in_progress（计失败）'); ev(s, 'transition', 'T-006', 'dispatch（接着上次对话 ↻）'); } },
+  { title: '实现任务从测试分支开工，测试转绿后合入', on: ['engine', 'back', 'rev', 'git'], lines: ['l-engine-back', 'l-engine-rev', 'l-engine-git'], focus: 'T-005',
+    chat: [['sys', 'pi-flow：T-005「实现：新增与列出」已合入集成分支。']],
+    explain: `<p>T-005 硬依赖 T-004，是它的<b>承载者</b>：从测试分支末端开工，实施者看得到测试但<b>不能改</b>（测试不在它的可写范围）。</p><ul><li>提交后审查前验证：测试现在通过了 ✓ → 审查（普通档）→ 通过。</li><li>合并时<b>测试和实现两个提交一次快进</b>进入集成分支。</li></ul><p>同时，T-006 改好后测试按预期失败，也完成了；T-007 随之可以开工（软依赖 T-005 不用等）。</p>`,
+    ops: (s) => { set(s, 'T-005', 'done'); gone(s, 'flow/B-001/T-004'); ev(s, 'transition', 'T-005', 'dispatch（从 T-004 的测试分支开工）'); ev(s, 'transition', 'T-005', 'submit → 审查前验证通过 → review_pass → verify_pass → merge_done'); set(s, 'T-006', 'done', { lease: null }); ev(s, 'transition', 'T-006', 'submit → 审查前验证：测试失败（符合预期）→ repro_confirmed'); set(s, 'T-007', 'in_progress', { lease: { run_id: R('b2'), role: 'backend-engineer', model: 'glm（中）' } }); s.branches.push('flow/B-001/T-007'); ev(s, 'transition', 'T-007', 'dispatch: ready → in_progress'); } },
+  { title: '审查打回：意见具体到位置、问题、期望', on: ['rev', 'engine', 'back'], lines: ['l-engine-rev', 'l-engine-back'], focus: 'T-007',
+    chat: [['sys', 'pi-flow：T-007 第一次未通过（审查打回），程序已自动重试。']],
+    explain: `<p>审查者只读，依据 diff、验收标准、契约和规则审查。打回必须<b>每条写明位置、问题、期望的修改</b>：</p><pre>1. src/server/todos-done/service.mjs:18：删除不存在的 id 时返回 200；
+   期望：按契约返回 404。
+2. 缺少"重复完成同一待办"的测试；期望：补一条，返回 200 且不改变完成时间。</pre><p>打回计一次失败。实施者接着上次对话修改。<b>失败两次</b>后会自动换成更强的模型（升级）。</p>`,
+    ops: (s) => { set(s, 'T-007', 'in_progress', { attempts: 1, last_failure: '1. service.mjs:18：删除不存在的 id 返回 200；期望：按契约返回 404。2. 缺少重复完成的测试；期望：补一条', lease: { run_id: R('b3'), role: 'backend-engineer', model: 'glm（中）', forked_from: R('b2') } }); ev(s, 'transition', 'T-007', 'submit → 审查前验证通过 → review'); ev(s, 'transition', 'T-007', 'review_reject: review → in_progress（计失败）'); ev(s, 'transition', 'T-007', 'dispatch（接着上次对话 ↻）'); } },
+  { title: '第二轮审查只核对上次的问题', on: ['rev', 'engine', 'git'], lines: ['l-engine-rev', 'l-engine-git'], focus: 'T-007',
+    chat: [['sys', 'pi-flow：T-007「实现：完成与删除」已合入集成分支。']],
+    explain: `<p>第二轮审查的提示里附上<b>上次打回的问题清单</b>和<b>之后的改动</b>（diff），要求审查者：</p><ul><li>逐条核对上次的问题是否解决；</li><li>只为"没解决"或"新改动引入的明确缺陷"打回；</li><li>新的改进建议写进通过时的备注，<b>不再打回</b>。</li></ul><p>这样避免强模型每轮都挑出新问题、来回拉锯。通过后合入，S3 闸门（test）由程序跑，通过后进入 S4。</p>`,
+    ops: (s) => { set(s, 'T-007', 'done', { lease: null }); gone(s, 'flow/B-001/T-006'); gone(s, 'flow/B-001/T-007'); ev(s, 'transition', 'T-007', 'submit → review（第 2 轮：只核对上次的 2 个问题）→ review_pass'); ev(s, 'merge', 'T-007', 'merge_done'); ev(s, 'gate_result', '', 'S3 闸门通过（test）'); s.stage = 'S4'; } },
+  { title: '验收阶段：联调测试与端到端闸门', on: ['engine', 'test', 'rev', 'git'], lines: ['l-engine-test', 'l-engine-rev', 'l-engine-git'], focus: 'T-008',
+    chat: [['sys', 'pi-flow：B-001 进入验收阶段。'], ['sys', 'pi-flow：T-008「端到端联调」已合入集成分支。']],
+    explain: `<p>T-008 硬依赖两个实现，验证它们<b>真的接在一起</b>能工作（重启后数据还在、并发写不丢等）。</p><p>合并时如果发现和别的任务改动冲突，程序会：冲突在可写范围内 → 自动生成 <b>merge-fix</b> 任务解决；涉及契约 → 暂停并请你处理。</p><p>S4 闸门由程序跑 e2e 命令。</p>`,
+    ops: (s) => { set(s, 'T-008', 'done'); ev(s, 'transition', 'T-008', 'dispatch → submit → review_pass → verify_pass → merge_done'); ev(s, 'gate_result', '', 'S4 闸门通过（e2e）'); s.stage = 'S5'; s.stageStatus = 'awaiting_human'; s.needs = ['验收阶段的产出等待你审批（批准后合入主分支）→ /flow approve']; } },
+  { title: '最后一步：你批准，合入主分支', on: ['you', 'orch', 'engine', 'git'], lines: ['l-you-orch', 'l-orch-engine', 'l-engine-git'],
+    chat: [['agent', '全部 8 个任务完成，测试全绿。批准后集成分支会合入 main。'], ['you', '/flow approve'], ['sys', 'pi-flow：B-001 已完成，已合入 main。已退出调度模式。'], ['you', '/flow status --cost'], ['sys', '合计 19 次运行；审查打回 1 次，审查前验证失败 1 次；按角色、模型、任务的 token 与耗时……']],
+    explain: `<p>集成分支合入 <code>main</code>，流程结束，会话自动退出调度模式。</p><ul><li><code>/flow status --cost</code>：按角色、模型、任务的成本与返工统计。</li><li>在 pi-flow 仓库执行 <code>node scripts/flow-view.ts &lt;项目目录&gt;</code> 生成这个项目真实的交互视图。</li></ul><p><b>你一共做了什么</b>：描述需求、回答 3 个问题、批准 3 次。其余的派发、守卫、验证、审查、合并都是程序和各角色完成的。</p>`,
+    ops: (s) => { s.stageStatus = 'done'; s.needs = []; s.finished = true; ev(s, 'approval', '', 'S5 approve：集成分支合入 main'); for (const b of s.branches) if (!s.gone.includes(b) && b !== 'flow/B-001/integration') s.gone.push(b); } },
+];
+
+// —— 状态推导 ——
+function add(s, id) { const t = TASKS.find((x) => x.id === id); s.tasks[id] = { id, stage: t.stage, kind: t.kind, title: t.title, role: t.role, status: 'pending', attempts: 0, depends_on: (t.deps ?? []).map(([task, type]) => ({ task, type })), writes: t.writes, verify: t.verify, lease: null, worktree: null, last_failure: null, blocked_reason: null }; }
+function set(s, id, status, patch = {}) {
+  const t = s.tasks[id]; t.status = status; Object.assign(t, patch);
+  t.worktree = ['in_progress', 'review', 'verifying', 'queued_merge', 'merging'].includes(status) || (status === 'blocked') ? `../todo-api.worktrees/B-001-${id}` : null;
+  if (status === 'done') t.lease = null;
+}
+function ev(s, type, task, text) { s.events.push({ seq: s.events.length + 1, type, task, text, step: s.step }); }
+function gone(s, b) { if (!s.gone.includes(b)) s.gone.push(b); }
+const SNAP = [];
+{
+  let s = { step: 0, stage: null, stageStatus: null, tasks: {}, events: [], branches: ['main'], gone: [], needs: [], finished: false };
+  STEPS.forEach((st, i) => { s = structuredClone(s); s.step = i; st.ops(s); SNAP.push(s); });
+}
+
+// —— 渲染一步 ——
+let cur = 0, focus = null, itab = 'task', timer = null;
+const jump = $('#jump');
+STEPS.forEach((st, i) => jump.add(new Option(`${i + 1}. ${st.title}`, i)));
+jump.onchange = () => go(+jump.value);
+$('#prev').onclick = () => go(cur - 1);
+$('#next').onclick = () => go(cur + 1);
+$('#play').onclick = () => { if (timer) stop(); else { $('#play').textContent = '⏸ 暂停'; timer = setInterval(() => { if (cur >= STEPS.length - 1) stop(); else go(cur + 1); }, 4500); } };
+function stop() { clearInterval(timer); timer = null; $('#play').textContent = '▶ 自动播放'; }
+document.addEventListener('keydown', (e) => {
+  if (!$('#p-walk').classList.contains('on') || e.target.matches('input,select,textarea')) return;
+  if (e.key === 'ArrowRight') go(cur + 1); else if (e.key === 'ArrowLeft') go(cur - 1);
+});
+for (const b of document.querySelectorAll('#itabs button')) b.onclick = () => { itab = b.dataset.i; for (const x of document.querySelectorAll('#itabs button')) x.setAttribute('aria-selected', String(x === b)); renderInspector(); };
+
+function go(i) {
+  if (i < 0 || i >= STEPS.length) return;
+  cur = i; const st = STEPS[i];
+  // 当前步骤没指定焦点时，沿用最近一步的焦点（直接跳到某一步时也能看到任务文件）
+  { const f = STEPS.slice(0, i + 1).reverse().find((x) => x.focus); if (st.focus || !focus || !SNAP[i].tasks[focus]) focus = f?.focus ?? null; }
+  jump.value = i;
+  $('#prev').disabled = i === 0; $('#next').disabled = i === STEPS.length - 1;
+  $('#bar').style.width = `${(i + 1) / STEPS.length * 100}%`;
+  // 对话
+  const chat = $('#chat'); chat.innerHTML = '';
+  STEPS.slice(0, i + 1).forEach((s, k) => {
+    if (k < i - 3 && k > 0) return;
+    for (const [who, text] of s.chat) {
+      const d = document.createElement('div');
+      d.className = `msg ${who}${k === i ? ' new' : k < i ? ' old' : ''}`;
+      d.innerHTML = `<div class="who">${who === 'you' ? '你' : who === 'agent' ? '主 agent' : '程序'}</div>${esc(text).replace(/\n/g, '<br>')}`;
+      chat.appendChild(d);
+    }
+  });
+  if (!st.chat.length) chat.insertAdjacentHTML('beforeend', '<div class="msg sys new"><div class="who">程序</div>（这一步没有新的对话：后台在干活，主 agent 不会被打扰）</div>');
+  chat.scrollTop = chat.scrollHeight;
+  // 说明
+  $('#explain').innerHTML = `<div class="hint">第 ${i + 1} / ${STEPS.length} 步</div><p class="step-title">${esc(st.title)}</p>${st.explain}`;
+  // 架构高亮
+  for (const g of document.querySelectorAll('#mini .comp')) g.classList.toggle('on', st.on.includes(g.id.slice(2)));
+  for (const l of document.querySelectorAll('#mini .flowline')) l.classList.toggle('on', (st.lines ?? []).includes(l.id));
+  renderPhases(SNAP[i]); renderBoard(SNAP[i]); renderInspector();
+}
+
+function renderPhases(s) {
+  const idx = s.stage ? PHASES.findIndex(([, st]) => st.includes(s.stage)) : -1;
+  $('#phases').innerHTML = PHASES.map(([name], k) => `<span class="phase ${s.finished || k < idx ? 'done' : k === idx ? 'cur' : ''}">${name}${s.finished || k < idx ? ' ✓' : ''}</span>`).join('<span class="hint">→</span>') +
+    `<span class="hint">→</span><span class="phase ${s.finished ? 'cur' : ''}">完成</span>` +
+    (s.stage ? `<span class="hint" style="margin-left:8px">底层阶段 ${s.stage}（${STAGE_NAME[s.stage]}）· ${{ active: '进行中', awaiting_human: '等待你批准', done: '已完成' }[s.stageStatus] ?? ''}</span>` : '<span class="hint" style="margin-left:8px">尚未开始流程</span>');
+}
+
+function renderBoard(s) {
+  const b = $('#board');
+  const stages = STAGES.filter((st) => Object.values(s.tasks).some((t) => t.stage === st));
+  if (!stages.length) { b.innerHTML = '<div class="hint">还没有任务。</div>'; return; }
+  b.innerHTML = stages.map((st) => `<div class="lane"><div class="lane-label">${st}<br>${STAGE_NAME[st]}</div>${Object.values(s.tasks).filter((t) => t.stage === st).map((t) => `
+    <div class="task${focus === t.id ? ' focus' : ''}" data-id="${t.id}" tabindex="0" role="button" style="border-left-color:${ST[t.status].c}">
+      <div class="tid">${t.id} ${ST[t.status].i}</div><div>${esc(t.title)}</div>
+      <div class="st">${ST[t.status].l}${t.attempts ? ` · 返工 ${t.attempts}` : ''}${t.lease?.forked_from ? ' · ↻' : ''}</div>
+      <div class="hint">${esc(t.role)}${t.depends_on.length ? ' · 依赖 ' + t.depends_on.map((d) => d.task + (d.type === 'soft' ? '（软）' : '')).join('、') : ''}</div>
+    </div>`).join('')}</div>`).join('');
+  for (const n of b.querySelectorAll('.task')) {
+    const pick = () => { focus = n.dataset.id; itab = 'task'; for (const x of document.querySelectorAll('#itabs button')) x.setAttribute('aria-selected', String(x.dataset.i === 'task')); renderBoard(SNAP[cur]); renderInspector(); };
+    n.onclick = pick; n.onkeydown = (e) => { if (e.key === 'Enter') pick(); };
+  }
+}
+
+function renderInspector() {
+  const s = SNAP[cur], box = $('#inspector');
+  if (itab === 'task') {
+    const t = s.tasks[focus];
+    if (!t) { box.innerHTML = '<div class="hint">点击看板里的任务，查看它在 <code>.flow/flows/B-001/tasks/&lt;id&gt;.json</code> 里的状态。</div>'; return; }
+    const shown = { id: t.id, stage: t.stage, kind: t.kind, title: t.title, role: t.role, status: t.status, attempts: t.attempts, depends_on: t.depends_on, writes: t.writes, verify: t.verify, worktree: t.worktree, lease: t.lease, last_failure: t.last_failure, blocked_reason: t.blocked_reason };
+    box.innerHTML = `<div>${chip(t.status)} <b>${t.id}</b> ${esc(t.title)}</div>
+      <h3>.flow/flows/B-001/tasks/${t.id}.json（节选）</h3><pre>${esc(JSON.stringify(shown, null, 2))}</pre>
+      <div class="hint">· <b>status</b> 只能经转移表改变；<b>attempts</b> 是失败次数（达到上限转阻塞）；<b>lease</b> 是正在干活的 run 与它的租约；<b>writes</b> 是它能写的文件；<b>last_failure</b> 会带给下一次运行。</div>`;
+  } else if (itab === 'events') {
+    const evs = s.events.slice(-40).reverse();
+    box.innerHTML = `<h3>.flow/events.jsonl（最新在上，本步新增的高亮）</h3>` + (evs.map((e) => `<div class="ev${e.step === cur ? ' new' : ''}">#${e.seq} ${esc(e.type)}${e.task ? ' ' + e.task : ''} · ${esc(e.text)}</div>`).join('') || '<div class="hint">还没有事件。</div>') +
+      `<div class="hint" style="margin-top:6px">每条事件都带上一条的哈希（哈希链），手改 .flow/ 会被 <code>/flow doctor</code> 发现。状态提交在专用引用 <code>refs/pi-flow/state</code>，不进你的分支历史。</div>`;
+  } else if (itab === 'git') {
+    const prevB = cur ? SNAP[cur - 1].branches : [];
+    box.innerHTML = `<h3>分支</h3>` + s.branches.map((b) => `<div class="branch${s.gone.includes(b) ? ' gone' : !prevB.includes(b) ? ' new' : ''}">${b === 'main' ? '★ ' : ''}${esc(b)}${s.gone.includes(b) ? '（已合入并删除）' : ''}</div>`).join('') +
+      `<div class="hint" style="margin-top:8px">· <b>main</b>：流程结束、你最后批准时才合入。<br>· <b>flow/B-001/integration</b>：集成分支，任务逐个串行合到这里；每个阶段开始时程序把 main 的新提交同步进来。<br>· <b>flow/B-001/T-xxx</b>：每个任务一个分支 + 一个 worktree（项目旁边的 <code>todo-api.worktrees/</code>），合入后回收。</div>`;
+  } else {
+    box.innerHTML = `<h3>需要你处理（<code>/flow status</code> 顶部）</h3>` + (s.needs.length ? s.needs.map((n) => `<div class="need">⚠ ${esc(n)}</div>`).join('') : '<div class="hint">无。程序在后台推进，你可以去做别的事。</div>') +
+      '<div class="hint" style="margin-top:8px">只有这几类事需要你：回答阻塞的问题、批准阶段闸门、批准计划修订、处理涉及契约的冲突、预算用完、模型额度用完。主 agent 会主动提醒。</div>';
+  }
+}
+
+// —— ② 架构大图 ——
+const ARCH = [
+  { id: 'you', x: 20, y: 22, w: 160, h: 60, t: '你', d: '在 pi 里和主 agent 对话，执行 /flow 命令。<b>只有你能批准阶段闸门、回答阻塞、批准计划修订</b>；任何 agent 都没有批准的工具。', src: '' },
+  { id: 'orch', x: 230, y: 20, w: 220, h: 60, t: '主会话 · orchestrator', d: '你当前的 pi 会话进入调度模式后的角色：沟通、汇报、转达修改要求（flow_replan）。<b>只有</b> flow_status、flow_wait、flow_dispatch（兜底）、flow_replan 和只读 read；每轮被注入"当前状态与唯一允许的下一步"。', src: 'agents/orchestrator.md · src/core/context-injector.ts · src/tools/orchestrator-tools.ts' },
+  { id: 'cmd', x: 500, y: 20, w: 180, h: 60, t: '斜杠命令', d: '/flow-build、/flow-fix、/flow（status、approve、answer、resume…）、/flow-config。业务逻辑与 Pi 解耦。', src: 'src/commands/' },
+  { id: 'eng', x: 230, y: 130, w: 450, h: 150, t: '引擎（程序，确定性的代码）', d: '一切调度与推进都在这里：', src: 'src/core/' },
+  { id: 'sched', x: 245, y: 165, w: 130, h: 46, t: '调度器', d: '按 DAG、关键路径、并发上限、互斥（可写范围重叠）选任务；自动派发；返工时接着上次对话；按风险选审查模型，失败后升级模型。', src: 'src/core/dispatcher.ts · scheduler.ts · cost-control.ts' },
+  { id: 'sm', x: 390, y: 165, w: 130, h: 46, t: '状态机', d: '任务与阶段的转移表，不在表中的转移一律拒绝；失败计数、达到上限转阻塞。', src: 'src/core/state-machine.ts' },
+  { id: 'verify', x: 535, y: 165, w: 130, h: 46, t: '验证与闸门', d: '在 worktree 里跑 workflow.yaml 的命令：审查前验证、先行测试"必须先失败"、阶段闸门。', src: 'src/core/verify-runner.ts · gates.ts' },
+  { id: 'mq', x: 245, y: 222, w: 130, h: 46, t: '合并队列', d: '串行：squash、rebase 到集成分支、合并后只跑受影响的测试、快进；冲突生成 merge-fix 或请你处理。', src: 'src/core/merge-queue.ts' },
+  { id: 'store', x: 390, y: 222, w: 130, h: 46, t: '状态存储', d: '.flow/ 的唯一读写入口：文件锁、schema 校验、事务日志、哈希链事件、崩溃后重放。', src: 'src/core/state-store.ts · event-log.ts' },
+  { id: 'lease', x: 535, y: 222, w: 130, h: 46, t: '租约与恢复', d: '每个 run 一个 token 和租约，干活时续租，卡住到期结束；模型额度用完时暂停该模型；/flow resume 从 .flow/ 与 git 恢复。', src: 'src/core/resume.ts · model-pause.ts' },
+  { id: 'flow', x: 720, y: 140, w: 160, h: 60, t: '.flow/', d: '流程、任务、运行记录、知识库、模型暂停、合并队列、事件日志。<b>只有程序能写</b>，agent 只能通过 flow_* 工具提交申请。', src: 'schemas/*.json' },
+  { id: 'git', x: 720, y: 220, w: 160, h: 60, t: 'git', d: 'main ← 集成分支 ← 每个任务的分支与 worktree。状态提交在 refs/pi-flow/state，不污染你的分支。', src: 'src/core/worktree.ts · git.ts' },
+  { id: 'sub', x: 20, y: 330, w: 860, h: 120, t: '子进程角色：每个任务一个独立的 pi 进程 + 独立 worktree', d: '由引擎用 <code>pi --mode json -p</code> 拉起，只加载 pi-flow 的子进程扩展和本角色需要的插件，<b>只启用本角色的工具</b>。提示由角色说明 + 规则 + 技能 + 项目知识 + 任务说明组装。', src: 'agents/ · rules/ · skills/ · src/pi-adapter/subagent.ts · src/core/prompt-assembler.ts' },
+  { id: 'guard', x: 20, y: 480, w: 860, h: 60, t: 'guard（守卫，最后加载，拦截每一次工具调用）', d: '写操作只能落在任务的可写范围内；.flow/、.git/、workflow.yaml、rules/、已批准的契约对所有 agent 只读；危险命令（push、改历史、sed -i…）、读敏感文件一律拦下并计违规，达到上限结束运行；bash 有超时。', src: 'src/core/guard.ts · shell.ts · paths.ts' },
+];
+const ROLES = [['architect', 'PRD、架构、契约、拆任务、规则草案'], ['scout', '修复时只读定位问题'], ['test-engineer', '验收测试、联调测试'], ['backend 等', 'backend、frontend、db：实现功能'], ['infra-engineer', '骨架、依赖、构建'], ['reviewer', '只读审查，通过或打回']];
+function drawArch() {
+  const svg = $('#archsvg');
+  const arrow = el('defs', {}, svg); const mk = el('marker', { id: 'ah', viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto-start-reverse' }, arrow); el('path', { d: 'M0,0 L10,5 L0,10 z', fill: 'var(--text-muted)' }, mk);
+  const L = (x1, y1, x2, y2, label) => {
+    el('line', { x1, y1, x2, y2, stroke: 'var(--text-muted)', 'stroke-width': 1.5, 'marker-end': 'url(#ah)' }, svg);
+    if (!label) return;
+    const horiz = y1 === y2;
+    const t = el('text', { x: horiz ? (x1 + x2) / 2 : x1 + 6, y: horiz ? y1 - 6 : (y1 + y2) / 2 + 4, 'text-anchor': horiz ? 'middle' : 'start', 'font-size': 11, class: 'muted' }, svg); t.textContent = label;
+  };
+  L(180, 50, 228, 50, '对话'); L(340, 80, 340, 128, 'flow_*'); L(590, 80, 590, 128, '命令');
+  L(680, 170, 718, 170, '写'); L(680, 250, 718, 250, '合并');
+  el('path', { d: 'M100,22 C100,-16 590,-16 590,18', fill: 'none', stroke: 'var(--text-muted)', 'stroke-width': 1.5, 'marker-end': 'url(#ah)' }, svg);
+  { const t = el('text', { x: 345, y: -12, 'text-anchor': 'middle', 'font-size': 11, class: 'muted' }, svg); t.textContent = '也可以直接输入 /flow 命令'; }
+  L(455, 282, 455, 328, '派发 / 结束'); L(250, 328, 250, 284, 'flow_submit 等');
+  for (const c of ARCH) {
+    const g = el('g', { class: 'comp', tabindex: 0, role: 'button', 'aria-label': c.t }, svg);
+    el('rect', { x: c.x, y: c.y, width: c.w, height: c.h, rx: 10 }, g);
+    const big = ['eng', 'sub', 'guard'].includes(c.id);
+    const t = el('text', { x: big ? c.x + 12 : c.x + c.w / 2, y: big ? c.y + 20 : c.y + c.h / 2 + 5, 'text-anchor': big ? 'start' : 'middle', 'font-size': 13, 'font-weight': 600 }, g); t.textContent = c.t;
+    const show = () => { for (const x of svg.querySelectorAll('.comp')) x.classList.toggle('on', x === g); $('#archSide').innerHTML = `<h2>${esc(c.t)}</h2><p>${c.d}</p>${c.id === 'sub' ? `<table>${ROLES.map(([r, d]) => `<tr><td><b>${r}</b></td><td>${d}</td></tr>`).join('')}</table>` : ''}${c.src ? `<h3>代码</h3><div class="mono">${esc(c.src)}</div>` : ''}`; };
+    g.addEventListener('click', show); g.addEventListener('keydown', (e) => { if (e.key === 'Enter') show(); });
+    if (c.id === 'guard') { const s2 = el('text', { x: c.x + 12, y: c.y + 42, 'font-size': 12, class: 'sec' }, g); s2.textContent = '写路径限制 · 受保护文件只读 · 危险命令拦截 · 敏感文件不可读 · 违规计数 · bash 超时'; }
+    if (c.id === 'eng') { const s2 = el('text', { x: c.x + c.w - 12, y: c.y + 20, 'text-anchor': 'end', 'font-size': 11, class: 'muted' }, g); s2.textContent = 'LLM 不参与决策'; }
+    if (c.id === 'sub') ROLES.forEach(([r], k) => { const x = 40 + k * 140; el('rect', { x, y: 370, width: 128, height: 56, rx: 8, fill: 'var(--surface-2)', stroke: 'var(--border)' }, g); const tt = el('text', { x: x + 64, y: 402, 'text-anchor': 'middle', 'font-size': 12 }, g); tt.textContent = r; });
+  }
+}
+
+// —— ③ 状态机 ——
+const SMN = {
+  pending: [60, 90, '依赖还没完成，或所属阶段还没开始。'], ready: [215, 90, '可以派发。自动派发开启时程序会马上派出去。'],
+  in_progress: [370, 90, '实施子进程在 worktree 里干活（持有租约）。返工也回到这里，带着上次未通过的原因。'],
+  review: [525, 90, '已提交。程序先跑审查前验证，通过后派只读审查者。'],
+  verifying: [680, 90, '审查通过。代码没变时沿用审查前的验证结果；先行验收测试在这里确认"先失败"后直接完成。'],
+  merging: [835, 90, '排队合并 → 合并中：串行 squash、rebase、合并后验证、快进集成分支。'],
+  done: [990, 90, '已合入集成分支（或先行测试已确认，随实现一起合入）。'],
+  blocked: [525, 300, '需要你：agent 提问、失败次数达到上限、合并冲突涉及契约等。你回答或 /flow unblock 后继续。'],
+};
+const SME = [
+  ['pending', 'ready', '依赖完成'], ['ready', 'in_progress', '派发'], ['in_progress', 'review', 'flow_submit'], ['review', 'verifying', '审查通过'],
+  ['verifying', 'merging', '验证通过'], ['merging', 'done', '合入'],
+  ['review', 'in_progress', '审查前验证失败 / 审查打回', 1], ['verifying', 'in_progress', '验证失败', 1], ['merging', 'in_progress', '合并后验证失败', 1],
+  ['in_progress', 'blocked', 'flow_block / 失败达上限', 2], ['blocked', 'ready', '你回答后继续', 2],
+];
+function drawSM() {
+  const svg = $('#smsvg');
+  const defs = el('defs', {}, svg); const mk = el('marker', { id: 'ah2', viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto-start-reverse' }, defs); el('path', { d: 'M0,0 L10,5 L0,10 z', fill: 'var(--text-muted)' }, mk);
+  for (const [a, b, label, kind] of SME) {
+    const [x1, y1] = SMN[a], [x2, y2] = SMN[b];
+    let d, lx, ly;
+    if (!kind) { d = `M${x1 + 50},${y1} L${x2 - 52},${y2}`; lx = (x1 + x2) / 2; ly = y1 - 30; }
+    else if (kind === 1) { const h = 20 + (x1 - x2) / 6; d = `M${x1},${y1 + 22} C${x1},${y1 + 22 + h * 1.33} ${x2},${y2 + 22 + h * 1.33} ${x2},${y2 + 22}`; lx = (x1 + x2) / 2; ly = y1 + 22 + h + 14; }
+    else { d = a === 'blocked' ? `M${x1 - 50},${y1} C${x1 - 260},${y1} ${x2},${y2 + 140} ${x2},${y2 + 22}` : `M${x1 - 12},${y1 + 22} C${x1 - 12},${y1 + 190} ${x2 - 160},${y2} ${x2 - 52},${y2}`; lx = a === 'blocked' ? 250 : 400; ly = a === 'blocked' ? 290 : 345; }
+    el('path', { d, fill: 'none', stroke: 'var(--text-muted)', 'stroke-width': 1.5, 'stroke-dasharray': kind === 1 ? '5 3' : '', 'marker-end': 'url(#ah2)' }, svg);
+    const t = el('text', { x: lx, y: ly, 'text-anchor': 'middle', 'font-size': 11, class: 'sec' }, svg); t.textContent = label;
+  }
+  const map = { pending: 'pending', ready: 'ready', in_progress: 'in_progress', review: 'review', verifying: 'verifying', merging: 'merging', done: 'done', blocked: 'blocked' };
+  for (const [k, [x, y, d]] of Object.entries(SMN)) {
+    const g = el('g', { class: 'sm-node', tabindex: 0, role: 'button', 'aria-label': ST[map[k]].l }, svg);
+    el('rect', { x: x - 50, y: y - 22, width: 100, height: 44, rx: 8, fill: ST[map[k]].c, 'fill-opacity': ['pending', 'ready'].includes(k) ? 0.4 : 0.9, stroke: 'var(--surface-1)', 'stroke-width': 2 }, g);
+    const t = el('text', { x, y: y + 5, 'text-anchor': 'middle', 'font-size': 13, 'font-weight': 600 }, g); t.textContent = `${ST[map[k]].i} ${k === 'merging' ? '排队/合并' : ST[map[k]].l}`;
+    const show = () => { for (const n of svg.querySelectorAll('.sm-node')) n.classList.toggle('on', n === g); $('#smSide').innerHTML = `<h2>${chip(map[k])}</h2><p>${esc(d)}</p><div class="hint">在演示里看它：切到"① 跟着走一遍"，看看板上颜色的变化和右侧的任务文件。</div>`; };
+    g.addEventListener('click', show); g.addEventListener('keydown', (e) => { if (e.key === 'Enter') show(); });
+  }
+}
+
+// —— ④ 概念 ——
+const GLOSS = [
+  ['调度模式', '开始流程后当前会话的状态：主 agent 只能沟通和等待，写代码的是后台角色。/flow off 退出（流程不受影响），/flow resume 回来。'],
+  ['任务 DAG', '规划阶段 architect 拆出的任务及依赖。硬依赖：必须等前驱完成；软依赖：对着契约并行开发，最后由联调任务验证。'],
+  ['worktree', '每个任务一个独立的 git 工作区（在项目目录旁边的 <项目>.worktrees/），任务之间互不干扰，你的主工作区不会被改动。'],
+  ['可写范围（writes）', '任务能改的文件 glob。写到范围外会被 guard 拦下；提交时程序再检查一遍 diff。范围外、未被 git 跟踪的测试产物会在提交前自动清理。'],
+  ['租约与 token', '派发时颁发：只有持有 token 的那次运行能提交。干活时自动续租；卡住到期会被结束并计一次失败。'],
+  ['handoff', '每个任务的交接笔记（flow_note）：做了什么、约定、坑。下游任务和返工时都会看到。'],
+  ['先行验收测试', '先于实现写的测试，程序要求它在实现前失败。确认后不单独合入，由实现任务（承载者）从测试分支开工、一起合入。实现者不能改它。'],
+  ['审查前验证', '提交后程序先跑 verify，失败直接退回实施，不派审查；通过后审查，代码没变就沿用结果。'],
+  ['审查分档', '低风险（只改文档或测试且改动小）用便宜模型；普通用审查者自己的模型；高风险（契约、shared、合并冲突、大改动）用强模型。'],
+  ['多轮审查', '第二轮起只核对上次打回的问题和之后的改动；新的改进建议写进备注，不再打回。'],
+  ['返工接续对话', '被打回后，实施者复制上一次的对话接着改（pi --fork），只收到"为什么没通过"。会话太长（约 400 KB）或换了模型时从头开始。'],
+  ['失败与升级', '审查打回、验证失败、合并后验证失败都计一次失败。失败 2 次后换升级模型；被至少 3 个任务依赖的底座任务第一次就用升级模型；达到上限转阻塞。'],
+  ['阶段闸门', '阶段内任务都完成后程序跑闸门命令；需求、规划、发布还需要你 /flow approve。'],
+  ['集成分支', 'flow/<流程>/integration：任务逐个串行合到这里；每个阶段开始时同步 main 的新提交；最后由你批准合入 main。'],
+  ['merge-fix', '合并冲突在某个角色的可写范围内时，程序生成的专门解决冲突的任务；涉及契约时暂停并请你处理。'],
+  ['计划修订（replan）', '执行中发现漏了功能或拆得不对：直接告诉主 agent 或 /flow replan "<要改什么>"，architect 起草修订（新增、调整、取消未开始的任务），你批准后生效。'],
+  ['契约锁定', '规划阶段批准后 docs/contracts/ 对所有 agent 只读，避免实施中途改接口。'],
+  ['guard', '每次工具调用都经过它：限制写路径、受保护文件、危险命令、敏感读取，违规计数，超过上限结束运行。约束靠程序，不靠提示词。'],
+  ['自动派发', 'ready 的任务由程序直接派发，主 agent 不必逐个调用；flow_wait 只在任务完成、阻塞、需要你处理或阶段变化时返回。'],
+  ['模型暂停', '模型额度用完、限流或服务连不上时，不判任务失败，暂停这个模型；到点自动恢复，或 /flow models resume、/flow-config 换模型。'],
+  ['项目知识库', '跨流程积累的约定和坑（flow_learn、/flow knowledge），按 scope 注入给后续任务。'],
+  ['.flow/ 与完整性', '状态只由程序写入，事件带哈希链；手改会被 /flow doctor 发现。状态提交在 refs/pi-flow/state，不进你的分支历史。'],
+];
+function drawGloss() {
+  const draw = () => { const q = $('#gq').value.trim(); $('#gloss').innerHTML = GLOSS.filter(([k, v]) => !q || k.includes(q) || v.includes(q)).map(([k, v]) => `<div class="card"><h2>${esc(k)}</h2><div>${esc(v)}</div></div>`).join('') || '<div class="hint">没有匹配的概念。</div>'; };
+  $('#gq').oninput = draw; draw();
+}
+
+// —— ⑤ 命令与文件 ——
+const CMDS = [
+  ['/flow-build ["描述"]', '新项目（先访谈；--direct 跳过，--from 文件）'], ['/flow-build --feature ["描述"]', '已有项目加功能'], ['/flow-fix ["描述"]', '修 bug'],
+  ['/flow status', '进度与"需要你处理"（--detail 任务明细，--cost 成本）'], ['/flow answer [任务]', '回答阻塞任务的问题'], ['/flow approve / reject "意见"', '批准或打回阶段闸门、计划修订'],
+  ['/flow replan "要改什么"', '执行中修订计划'], ['/flow resume', '关掉 pi 后恢复并进入调度模式'], ['/flow off', '退出调度模式'],
+  ['/flow models', '查看与恢复被暂停的模型'], ['/flow run [run_id]', '某次子进程的工具调用与最后回复'], ['/flow doctor [--fix]', '完整性与依赖检查、清理残留'], ['/flow-config', '为各角色选模型与思考级别'],
+];
+const FILES = [
+  ['~/.pi/agent/pi-flow.json', '/flow-config', '各角色的模型、思考级别、升级模型（全局）'], ['~/.pi/agent/settings.json', 'pi install', 'Pi 加载哪些插件'],
+  ['workflow.yaml', '你', '命令、并发与上限、模型档位、审查与升级策略、阶段、角色与可写范围'], ['rules/*.md', '你 / 批准草案', '注入给各角色的编码规则'],
+  ['docs/、AGENTS.md', '各角色', 'PRD、架构、契约、功能说明'], ['.flow/', '只有程序', '流程状态与事件日志，不要手改'], ['<项目>.worktrees/', '只有程序', '任务 worktree、会话留档'],
+];
+$('#cmds').innerHTML = '<tr><th>命令</th><th>作用</th></tr>' + CMDS.map(([c, d]) => `<tr><td class="mono">${esc(c)}</td><td>${esc(d)}</td></tr>`).join('');
+$('#files').innerHTML = '<tr><th>文件</th><th>谁写</th><th>管什么</th></tr>' + FILES.map(([f, w, d]) => `<tr><td class="mono">${esc(f)}</td><td>${esc(w)}</td><td>${esc(d)}</td></tr>`).join('');
+
+drawMini(); drawArch(); drawSM(); drawGloss();
+{ const m = /^#tab=(\w+)(?:&step=(\d+))?$/.exec(location.hash); if (m) { openTab(m[1]); if (m[2]) cur = Math.min(+m[2] - 1, STEPS.length - 1); } }
+go(cur);
+</script>
+</body>
+</html>
