@@ -1,0 +1,565 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pi-flow 工作流视图</title>
+<style>
+.viz-root {
+  color-scheme: light;
+  --page: #f9f9f7; --surface-1: #fcfcfb; --surface-2: #f3f2ee;
+  --text-primary: #0b0b0b; --text-secondary: #52514e; --text-muted: #898781;
+  --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,0.10);
+  --s-impl: #2a78d6; --s-review: #eb6834; --s-verify: #1baf7a;
+  --good: #0ca30c; --warning: #fab219; --serious: #ec835a; --critical: #d03b3b;
+  --idle: #c3c2b7; --focus: #2a78d6;
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) .viz-root {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface-1: #1a1a19; --surface-2: #232321;
+    --text-primary: #ffffff; --text-secondary: #c3c2b7; --text-muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
+    --s-impl: #3987e5; --s-review: #d95926; --s-verify: #199e70; --idle: #4a4a46; --focus: #3987e5;
+  }
+}
+:root[data-theme="dark"] .viz-root {
+  color-scheme: dark;
+  --page: #0d0d0d; --surface-1: #1a1a19; --surface-2: #232321;
+  --text-primary: #ffffff; --text-secondary: #c3c2b7; --text-muted: #898781;
+  --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
+  --s-impl: #3987e5; --s-review: #d95926; --s-verify: #199e70; --idle: #4a4a46; --focus: #3987e5;
+}
+* { box-sizing: border-box; }
+body { margin: 0; }
+.viz-root { background: var(--page); color: var(--text-primary); font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; min-height: 100vh; }
+header { padding: 16px 24px 8px; display: flex; flex-wrap: wrap; gap: 8px 24px; align-items: baseline; }
+header h1 { font-size: 18px; margin: 0; font-weight: 600; }
+header .sub { color: var(--text-secondary); font-size: 13px; }
+header select, header button { font: inherit; color: inherit; background: var(--surface-1); border: 1px solid var(--border); border-radius: 6px; padding: 2px 8px; }
+.phases { display: flex; gap: 4px; padding: 0 24px 8px; flex-wrap: wrap; }
+.phase { padding: 2px 10px; border-radius: 999px; font-size: 13px; color: var(--text-secondary); border: 1px solid var(--border); }
+.phase.done { color: var(--text-primary); }
+.phase.cur { background: var(--text-primary); color: var(--surface-1); border-color: transparent; font-weight: 600; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); gap: 8px; padding: 0 24px 12px; }
+.tile { background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; }
+.tile .v { font-size: 20px; font-weight: 600; }
+.tile .k { color: var(--text-secondary); font-size: 12px; }
+nav { display: flex; gap: 2px; padding: 0 24px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+nav button { font: inherit; background: none; border: none; color: var(--text-secondary); padding: 8px 12px; cursor: pointer; border-bottom: 2px solid transparent; }
+nav button[aria-selected="true"] { color: var(--text-primary); border-bottom-color: var(--text-primary); font-weight: 600; }
+main { padding: 16px 24px 40px; }
+.panel { display: none; }
+.panel.on { display: block; }
+.row { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
+.card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; }
+.grow { flex: 1 1 640px; min-width: 0; overflow: auto; }
+.side { flex: 0 1 380px; min-width: 300px; max-height: 80vh; overflow: auto; }
+h2 { font-size: 15px; margin: 0 0 8px; font-weight: 600; }
+h3 { font-size: 13px; margin: 12px 0 4px; color: var(--text-secondary); font-weight: 600; }
+.hint { color: var(--text-muted); font-size: 12px; }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--text-secondary); margin: 4px 0 8px; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.sw { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+svg text { fill: var(--text-primary); font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+svg .muted { fill: var(--text-muted); }
+svg .sec { fill: var(--text-secondary); }
+.node { cursor: pointer; }
+.node rect { stroke: var(--surface-1); stroke-width: 2; }
+.node:hover rect, .node.sel rect { stroke: var(--text-primary); }
+.edge { fill: none; stroke: var(--axis); stroke-width: 1.5; }
+.edge.hot { stroke: var(--text-primary); stroke-width: 2.5; }
+.edge.fail { stroke-dasharray: 5 3; }
+.edge-hit { fill: none; stroke: transparent; stroke-width: 12; cursor: help; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--grid); vertical-align: top; }
+th { color: var(--text-secondary); font-weight: 600; position: sticky; top: 0; background: var(--surface-1); }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.chip { display: inline-flex; align-items: center; gap: 4px; padding: 0 8px; border-radius: 999px; font-size: 12px; border: 1px solid var(--border); white-space: nowrap; }
+.chip i { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+pre { background: var(--surface-2); border-radius: 6px; padding: 8px; overflow: auto; font-size: 12px; max-height: 360px; white-space: pre-wrap; word-break: break-all; }
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; font-size: 13px; }
+.kv dt { color: var(--text-secondary); }
+.kv dd { margin: 0; word-break: break-all; }
+#tip { position: fixed; pointer-events: none; background: var(--surface-1); color: var(--text-primary); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; font-size: 12px; box-shadow: 0 4px 16px rgba(0,0,0,.15); max-width: 360px; display: none; z-index: 10; white-space: pre-line; }
+input[type=search], select.f { font: inherit; color: inherit; background: var(--surface-1); border: 1px solid var(--border); border-radius: 6px; padding: 3px 8px; }
+.filters { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; align-items: center; }
+.bar-row { display: grid; grid-template-columns: 140px 1fr 90px; align-items: center; gap: 8px; font-size: 13px; margin: 4px 0; }
+.bar-track { height: 14px; }
+.bar { height: 14px; background: var(--s-impl); border-radius: 0 4px 4px 0; }
+details summary { cursor: pointer; color: var(--text-secondary); }
+.timeline-wrap { overflow-x: auto; }
+@media (forced-colors: active) { .bar, .sw, .chip i { forced-color-adjust: none; } }
+</style>
+</head>
+<body>
+<div class="viz-root">
+<header>
+  <h1 id="title">pi-flow</h1>
+  <span class="sub" id="sub"></span>
+  <label class="sub">流程 <select id="flowSel"></select></label>
+  <button id="theme" type="button">切换深浅色</button>
+</header>
+<div class="phases" id="phases"></div>
+<div class="tiles" id="tiles"></div>
+<nav role="tablist">
+  <button role="tab" data-tab="sm" aria-selected="true">工作流与状态机</button>
+  <button role="tab" data-tab="dag">任务 DAG</button>
+  <button role="tab" data-tab="tl">运行时间线</button>
+  <button role="tab" data-tab="cost">成本</button>
+  <button role="tab" data-tab="ev">事件日志</button>
+  <button role="tab" data-tab="raw">原始状态</button>
+</nav>
+<main>
+  <section class="panel on" id="p-sm">
+    <div class="row">
+      <div class="card grow">
+        <h2>任务的生命周期（转移表）</h2>
+        <div class="hint">每个任务都按这张表从"待前置"走到"已完成"；不在表中的转移一律被拒。节点上的数字是本流程当前处于该状态的任务数，连线上的数字是本流程实际发生的次数。点击状态查看进出的规则，悬停连线看说明。虚线是计一次失败的转移。</div>
+        <div class="legend" id="smLegend"></div>
+        <svg id="sm" viewBox="0 0 1260 450" width="100%" style="min-width:900px"></svg>
+      </div>
+      <div class="card side" id="smSide"><h2>点击左侧的状态</h2><div class="hint">会列出进入与离开这个状态的所有规则、触发者与次数，以及当前处于该状态的任务。</div></div>
+    </div>
+    <div class="card" style="margin-top:16px">
+      <h2>一个任务的标准路径</h2>
+      <ol id="pathSteps" style="margin:4px 0 0 18px; padding:0"></ol>
+    </div>
+  </section>
+  <section class="panel" id="p-dag">
+    <div class="row">
+      <div class="card grow">
+        <h2>任务 DAG</h2>
+        <div class="hint">按阶段分列，阶段内按硬依赖分层。实线是硬依赖（等前驱完成），虚线是软依赖（对着契约并行开发）。点击任务查看详情。</div>
+        <div class="legend" id="dagLegend"></div>
+        <div style="overflow:auto"><svg id="dag"></svg></div>
+      </div>
+      <div class="card side" id="dagSide"><h2>点击左侧的任务</h2></div>
+    </div>
+    <div class="card" style="margin-top:16px"><h2>任务表</h2><div style="max-height:420px;overflow:auto"><table id="taskTable"></table></div></div>
+  </section>
+  <section class="panel" id="p-tl">
+    <div class="card">
+      <h2>运行时间线</h2>
+      <div class="hint">每一行是一个角色，每一段是一次子进程运行（实施、审查等），颜色表示结果。竖线是阶段闸门。悬停查看模型、token、轮数。</div>
+      <div class="legend" id="tlLegend"></div>
+      <div class="timeline-wrap"><svg id="tl"></svg></div>
+    </div>
+    <div class="card" style="margin-top:16px"><h2>运行表</h2><div style="max-height:420px;overflow:auto"><table id="runTable"></table></div></div>
+  </section>
+  <section class="panel" id="p-cost">
+    <div class="row">
+      <div class="card grow"><h2>按角色：输入 + 输出 token（不含缓存）</h2><div id="costBars"></div></div>
+      <div class="card grow"><h2>按角色汇总</h2><table id="costTable"></table></div>
+    </div>
+    <div class="card" style="margin-top:16px"><h2>返工最多的任务</h2><table id="reworkTable"></table></div>
+  </section>
+  <section class="panel" id="p-ev">
+    <div class="card">
+      <div class="filters">
+        <input type="search" id="evQ" placeholder="搜索任务、原因、执行者…" size="30">
+        <select class="f" id="evType"><option value="">全部类型</option></select>
+        <label class="hint"><input type="checkbox" id="evHideNote" checked> 隐藏 note 与 dispatch（多为程序记账）</label>
+        <span class="hint" id="evCount"></span>
+      </div>
+      <div style="max-height:70vh;overflow:auto"><table id="evTable"></table></div>
+    </div>
+  </section>
+  <section class="panel" id="p-raw">
+    <div class="row">
+      <div class="card grow"><h2>flow.json</h2><pre id="rawFlow"></pre><h2>模型暂停 model-pauses.json</h2><pre id="rawPauses"></pre><h2>合并队列 merge-queue.json</h2><pre id="rawMq"></pre></div>
+      <div class="card grow"><h2>任务文件</h2><select class="f" id="rawTaskSel"></select><pre id="rawTask"></pre><h2>handoff（最近部分）</h2><pre id="rawHandoff"></pre></div>
+    </div>
+  </section>
+</main>
+<div id="tip" role="tooltip"></div>
+</div>
+<script>
+const D = /*__DATA__*/null;
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const NS = 'http://www.w3.org/2000/svg';
+const svgEl = (tag, attrs = {}, parent) => { const e = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v); if (parent) parent.appendChild(e); return e; };
+const fmtN = (n) => n == null ? '—' : n >= 1e6 ? (n / 1e6).toFixed(2) + 'M' : n >= 1e4 ? (n / 1e3).toFixed(1) + 'k' : String(n);
+const fmtDur = (ms) => ms >= 3600e3 ? (ms / 3600e3).toFixed(1) + ' 小时' : ms >= 60e3 ? Math.round(ms / 60e3) + ' 分钟' : Math.round(ms / 1e3) + ' 秒';
+const time = (iso) => iso ? new Date(iso).toLocaleString('zh-CN', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '—';
+
+// —— 词表 ——
+const ST = {
+  pending: { l: '待前置', c: 'var(--idle)', icon: '○' }, ready: { l: '可派发', c: 'var(--idle)', icon: '◔' },
+  in_progress: { l: '实施中', c: 'var(--s-impl)', icon: '●' }, review: { l: '审查中', c: 'var(--s-review)', icon: '●' },
+  verifying: { l: '验证中', c: 'var(--s-verify)', icon: '●' }, queued_merge: { l: '排队合并', c: 'var(--s-verify)', icon: '●' },
+  merging: { l: '合并中', c: 'var(--s-verify)', icon: '●' }, done: { l: '已完成', c: 'var(--good)', icon: '✓' },
+  blocked: { l: '阻塞', c: 'var(--critical)', icon: '⛔' }, cancelled: { l: '已取消', c: 'var(--idle)', icon: '✕' },
+};
+const TRIG = {
+  schedule: ['程序', '硬依赖都完成、所属阶段在进行中，任务变为可派发'],
+  dispatch: ['程序', '派发：建 worktree、颁发 token 与租约、拉起子进程'],
+  submit: ['实施者', 'flow_submit：程序检查 diff 不越出可写范围、已写 handoff'],
+  review_pass: ['审查者', 'flow_approve 通过'],
+  review_reject: ['审查者', 'flow_approve 打回：每条意见带位置、问题、期望（计一次失败）'],
+  review_skip: ['程序', '低风险任务按配置免审查，直接验证'],
+  precheck_fail: ['程序', '派审查前先跑 verify，失败直接退回实施（计一次失败）'],
+  verify_pass: ['程序', 'verify 命令全部通过（审查前已验证同一份代码时直接沿用）'],
+  verify_fail: ['程序', 'verify 失败，退回实施（计一次失败）'],
+  repro_confirmed: ['程序', '先行验收测试 / 复现测试确认先失败，完成（随实现一起合入）'],
+  merge_start: ['合并队列', '轮到队首，开始 squash、rebase'],
+  merge_done: ['合并队列', 'rebase 成功、合并后验证通过、快进集成分支'],
+  merge_verify_fail: ['合并队列', '合并后验证失败，退回实施（计一次失败）'],
+  merge_blocked: ['合并队列', '冲突无法自动处理（例如涉及契约）'],
+  merge_requeue: ['恢复', '崩溃恢复时把未完成的合并放回队首'],
+  block: ['agent', 'flow_block：遇到歧义或无法完成，交给用户'],
+  unblock: ['用户', '/flow answer、/flow unblock 回答后继续'],
+  lease_expired: ['程序', '租约到期且工作区干净，回到可派发（计一次失败）'],
+  run_failed: ['程序', '子进程没提交就结束（崩溃、放弃、超时被结束；计一次失败）'],
+  run_interrupted: ['恢复', '会话中断，只计中断次数'],
+  run_paused: ['程序', '模型额度用完或服务不可用：不计失败，暂停该模型'],
+  report: ['探查者', '只读探查任务提交结论，直接完成'],
+  cancel: ['用户', '批准的计划修订取消未开始的任务'],
+};
+// 运行结果：标签是具体结果，颜色按大类（图例按大类显示）
+const OUT = {
+  submitted: ['提交', 'var(--good)', '提交 / 审查通过'], approved: ['审查通过', 'var(--good)', '提交 / 审查通过'], noted: ['记录', 'var(--idle)', '记录（主会话）'],
+  rejected: ['审查打回', 'var(--serious)', '审查打回 / 阻塞求助'], blocked: ['阻塞求助', 'var(--serious)', '审查打回 / 阻塞求助'],
+  failed: ['失败', 'var(--critical)', '失败 / 被结束'], killed: ['被结束', 'var(--critical)', '失败 / 被结束'], lease_expired: ['租约过期', 'var(--critical)', '失败 / 被结束'],
+  unavailable: ['模型不可用', 'var(--warning)', '模型不可用（暂停）'], running: ['运行中', 'var(--s-impl)', '运行中'],
+};
+const PHASE = { discovery: '需求', planning: '规划', execution: '实施', acceptance: '验收' };
+const STAGE_PHASE = { S0: 'discovery', F0: 'discovery', S1: 'planning', F1: 'planning', S2: 'execution', S3: 'execution', S4: 'acceptance', S5: 'acceptance' };
+const chip = (status) => { const s = ST[status] || { l: status, c: 'var(--idle)', icon: '' }; return `<span class="chip"><i style="background:${s.c}"></i>${s.icon} ${esc(s.l)}</span>`; };
+const outcomeOf = (r) => r.outcome ?? (r.ended_at ? 'failed' : 'running');
+
+// —— 提示框 ——
+const tip = $('#tip');
+const showTip = (ev, text) => { tip.textContent = text; tip.style.display = 'block'; const x = Math.min(ev.clientX + 14, innerWidth - tip.offsetWidth - 8); const y = Math.min(ev.clientY + 14, innerHeight - tip.offsetHeight - 8); tip.style.left = x + 'px'; tip.style.top = y + 'px'; };
+const hideTip = () => { tip.style.display = 'none'; };
+const hover = (el, text) => { el.addEventListener('mousemove', (e) => showTip(e, typeof text === 'function' ? text() : text)); el.addEventListener('mouseleave', hideTip); };
+
+// —— 主题与标签页 ——
+$('#theme').onclick = () => { const r = document.documentElement; const dark = r.dataset.theme ? r.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches; r.dataset.theme = dark ? 'light' : 'dark'; };
+const openTab = (tab) => {
+  for (const x of document.querySelectorAll('nav button')) x.setAttribute('aria-selected', x.dataset.tab === tab ? 'true' : 'false');
+  for (const p of document.querySelectorAll('.panel')) p.classList.toggle('on', p.id === 'p-' + tab);
+  history.replaceState(null, '', '#tab=' + tab);
+};
+for (const b of document.querySelectorAll('nav button')) b.onclick = () => openTab(b.dataset.tab);
+{ const m = /^#tab=(\w+)$/.exec(location.hash); if (m && document.querySelector(`nav button[data-tab="${m[1]}"]`)) openTab(m[1]); }
+
+// —— 流程选择 ——
+const flowIds = D.flows.map((f) => f.flow.id);
+const sel = $('#flowSel');
+for (const id of flowIds) sel.add(new Option(`${id}「${D.flows.find((f) => f.flow.id === id).flow.title.slice(0, 20)}」`, id));
+sel.value = D.activeFlow && flowIds.includes(D.activeFlow) ? D.activeFlow : flowIds.at(-1);
+sel.onchange = render;
+$('#title').textContent = 'pi-flow 工作流视图';
+$('#sub').textContent = `${D.project} · 生成于 ${time(D.generatedAt)}`;
+
+function render() {
+  const F = D.flows.find((f) => f.flow.id === sel.value);
+  if (!F) return;
+  const flow = F.flow, tasks = F.tasks;
+  const runs = D.runs.filter((r) => r.flow === flow.id);
+  const evs = D.events.filter((e) => e.flow === flow.id);
+  renderHeader(flow, tasks, runs, evs);
+  renderSM(tasks, evs);
+  renderDAG(flow, tasks, runs, evs, F.handoffs);
+  renderTimeline(flow, runs, evs, tasks);
+  renderCost(runs, evs, tasks);
+  renderEvents(evs);
+  renderRaw(flow, tasks, F.handoffs);
+}
+
+function renderHeader(flow, tasks, runs, evs) {
+  const stages = flow.stages;
+  const phases = [...new Set(stages.map((s) => STAGE_PHASE[s] || 'execution'))];
+  const finished = flow.stage === stages.at(-1) && flow.stage_status === 'done';
+  const cur = STAGE_PHASE[flow.stage] || 'execution';
+  $('#phases').innerHTML = phases.map((p) => {
+    const i = phases.indexOf(p), ci = phases.indexOf(cur);
+    const cls = finished || i < ci ? 'done' : i === ci ? 'cur' : '';
+    return `<span class="phase ${cls}">${PHASE[p]}${finished || i < ci ? ' ✓' : ''}</span>`;
+  }).join('<span class="hint">→</span>') + `<span class="hint">→</span><span class="phase ${finished ? 'cur' : ''}">完成</span>` +
+    `<span class="hint" style="margin-left:12px">当前阶段 ${esc(flow.stage)}（${esc(flow.stage_status)}），模式 ${esc(flow.mode)}</span>`;
+  const n = (t) => evs.filter((e) => e.trigger === t).length;
+  const t0 = Math.min(...runs.map((r) => Date.parse(r.started_at)).concat(Date.parse(flow.created_at ?? D.generatedAt)));
+  const t1 = Math.max(...runs.map((r) => Date.parse(r.ended_at ?? D.generatedAt)).concat(t0));
+  const sum = (k) => runs.reduce((a, r) => a + (r.tokens[k] ?? 0), 0);
+  const done = tasks.filter((t) => t.status === 'done').length;
+  const tiles = [
+    [`${done} / ${tasks.filter((t) => t.status !== 'cancelled').length}`, '任务完成'],
+    [tasks.filter((t) => t.status === 'blocked').length, '阻塞中'],
+    [runs.length, '子进程运行'],
+    [fmtDur(t1 - t0), '首个运行到最后'],
+    [fmtN(sum('input') + sum('output')), '输入 + 输出 token'],
+    [fmtN(sum('cache_read')), '缓存读'],
+    [n('review_reject'), '审查打回'],
+    [n('precheck_fail') + n('verify_fail') + n('merge_verify_fail'), '验证失败'],
+    [evs.filter((e) => e.type === 'violation').length, '被拦下的违规'],
+    [runs.filter((r) => r.forked_from).length, '接着上次对话的返工'],
+  ];
+  $('#tiles').innerHTML = tiles.map(([v, k]) => `<div class="tile"><div class="v">${esc(v)}</div><div class="k">${esc(k)}</div></div>`).join('');
+}
+
+// —— 状态机 ——
+const POS = {
+  pending: [70, 175], ready: [220, 175], in_progress: [390, 175], review: [570, 175], verifying: [740, 175],
+  queued_merge: [900, 175], merging: [1060, 175], done: [1200, 175], blocked: [570, 400], cancelled: [150, 400],
+};
+function renderSM(tasks, evs) {
+  const svg = $('#sm'); svg.innerHTML = '';
+  $('#smLegend').innerHTML = ['in_progress', 'review', 'verifying', 'done', 'blocked', 'pending'].map((s) => `<span><i class="sw" style="background:${ST[s].c}"></i>${ST[s].icon} ${ST[s].l}${s === 'verifying' ? '、排队合并、合并中' : s === 'pending' ? '、可派发、已取消' : ''}</span>`).join('');
+  const defs = svgEl('defs', {}, svg);
+  const mk = svgEl('marker', { id: 'arr', viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto-start-reverse' }, defs);
+  svgEl('path', { d: 'M0,0 L10,5 L0,10 z', fill: 'var(--axis)' }, mk);
+  const taskEv = evs.filter((e) => e.type === 'transition' && e.task);
+  const count = (from, to, trig) => taskEv.filter((e) => e.from === from && e.to === to && e.trigger === trig).length;
+  // 合并同一对状态之间的规则
+  const pairs = new Map();
+  for (const r of D.transitions) for (const f of r.from) {
+    const k = `${f}>${r.to}`;
+    if (!pairs.has(k)) pairs.set(k, { from: f, to: r.to, rules: [] });
+    pairs.get(k).rules.push({ ...r, n: count(f, r.to, r.trigger) });
+  }
+  const edgeEls = [];
+  const order = Object.keys(POS);
+  for (const p of pairs.values()) {
+    const [x1, y1] = POS[p.from], [x2, y2] = POS[p.to];
+    const total = p.rules.reduce((a, r) => a + r.n, 0);
+    const failure = p.rules.every((r) => r.failure);
+    let d, lx, ly;
+    if (p.from === p.to) {
+      d = `M${x1 - 18},${y1 - 22} C${x1 - 40},${y1 - 85} ${x1 + 40},${y1 - 85} ${x1 + 18},${y1 - 22}`; lx = x1; ly = y1 - 72;
+    } else if (y1 === y2 && order.indexOf(p.to) === order.indexOf(p.from) + 1) {
+      d = `M${x1 + 52},${y1} L${x2 - 54},${y2}`; lx = (x1 + x2) / 2; ly = y1 - 6;
+    } else if (y1 === y2) {
+      const back = x2 < x1, h = Math.min(back ? 110 : 115, 30 + Math.abs(x2 - x1) / 6) * (back ? 1 : -1);
+      d = `M${x1},${y1 + (back ? 22 : -22)} C${x1},${y1 + h * 1.3} ${x2},${y2 + h * 1.3} ${x2},${y2 + (back ? 22 : -22)}`; lx = (x1 + x2) / 2; ly = y1 + h;
+    } else {
+      const sy = y1 < y2 ? 22 : -22;
+      d = `M${x1},${y1 + sy} C${x1},${(y1 + y2) / 2} ${x2},${(y1 + y2) / 2} ${x2},${y2 - sy}`; lx = (x1 * 0.45 + x2 * 0.55); ly = (y1 + y2) / 2;
+    }
+    const g = svgEl('g', {}, svg);
+    const path = svgEl('path', { d, class: 'edge' + (failure ? ' fail' : ''), 'marker-end': 'url(#arr)' }, g);
+    const hit = svgEl('path', { d, class: 'edge-hit' }, g);
+    if (total) { const t = svgEl('text', { x: lx, y: ly, 'text-anchor': 'middle', 'font-size': 11, class: 'sec' }, g); t.textContent = `×${total}`; }
+    hover(hit, () => `${ST[p.from].l} → ${ST[p.to].l}\n` + p.rules.map((r) => `· ${r.trigger}（${(TRIG[r.trigger] || ['', ''])[0]}）×${r.n}：${(TRIG[r.trigger] || ['', ''])[1]}`).join('\n'));
+    edgeEls.push({ p, path });
+  }
+  for (const [s, [x, y]] of Object.entries(POS)) {
+    const n = tasks.filter((t) => t.status === s).length;
+    const g = svgEl('g', { class: 'node', tabindex: 0, role: 'button', 'aria-label': ST[s].l }, svg);
+    svgEl('rect', { x: x - 52, y: y - 22, width: 104, height: 44, rx: 8, fill: ST[s].c, 'fill-opacity': s === 'pending' || s === 'ready' || s === 'cancelled' ? 0.35 : 0.9 }, g);
+    const t = svgEl('text', { x, y: y - 2, 'text-anchor': 'middle', 'font-size': 13, 'font-weight': 600 }, g); t.textContent = `${ST[s].icon} ${ST[s].l}`;
+    const c = svgEl('text', { x, y: y + 14, 'text-anchor': 'middle', 'font-size': 11 }, g); c.textContent = n ? `${n} 个任务` : s;
+    const pick = () => {
+      for (const n of svg.querySelectorAll('.node')) n.classList.toggle('sel', n === g);
+      for (const e of edgeEls) e.path.classList.toggle('hot', e.p.from === s || e.p.to === s);
+      const rows = (dir) => [...pairs.values()].filter((p) => (dir === 'in' ? p.to === s : p.from === s)).flatMap((p) => p.rules.map((r) => ({ p, r })));
+      const list = (dir) => rows(dir).map(({ p, r }) => `<tr><td>${dir === 'in' ? chip(p.from) : chip(p.to)}</td><td><b>${esc(r.trigger)}</b>${r.failure ? ' <span class="hint">计失败</span>' : ''}<br><span class="hint">${esc((TRIG[r.trigger] || ['', ''])[0])}：${esc((TRIG[r.trigger] || ['', ''])[1])}</span></td><td class="num">${r.n}</td></tr>`).join('');
+      const here = tasks.filter((t) => t.status === s);
+      $('#smSide').innerHTML = `<h2>${chip(s)}</h2>
+        <h3>当前处于此状态的任务（${here.length}）</h3>${here.length ? here.map((t) => `<div>${esc(t.id)} ${esc(t.title)}</div>`).join('') : '<div class="hint">无</div>'}
+        <h3>进入</h3><table><tr><th>来自</th><th>触发</th><th class="num">次数</th></tr>${list('in') || '<tr><td colspan=3 class="hint">（起点）</td></tr>'}</table>
+        <h3>离开</h3><table><tr><th>去往</th><th>触发</th><th class="num">次数</th></tr>${list('out') || '<tr><td colspan=3 class="hint">（终点）</td></tr>'}</table>`;
+    };
+    g.addEventListener('click', pick);
+    g.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(); } });
+  }
+  const steps = [
+    ['待前置 → 可派发', '硬依赖都完成后由程序晋升；自动派发开启时程序马上派发。'],
+    ['可派发 → 实施中', '建独立 worktree，颁发 token 与租约，拉起实施子进程（guard 约束可写范围、受保护路径与命令）。'],
+    ['实施中 → 审查中', '实施者 flow_note 写 handoff 后 flow_submit；程序清理范围外未跟踪的文件，检查 diff 不越界。'],
+    ['审查前验证', '程序先跑 verify：失败直接退回实施（precheck_fail），通过才派审查。'],
+    ['审查中 → 验证中', '只读审查者 flow_approve；打回带位置、问题、期望。第二轮起只核对上次的问题。'],
+    ['验证中 → 排队合并', '代码没变时沿用审查前的验证结果；先行验收测试在这里确认"先失败"后直接完成。'],
+    ['排队合并 → 合并中 → 已完成', '串行：squash、rebase 到集成分支、合并后验证、快进。失败退回实施。'],
+    ['阶段闸门', '本阶段任务全部完成后程序跑闸门命令；需要人工的阶段等你 /flow approve。'],
+  ];
+  $('#pathSteps').innerHTML = steps.map(([a, b]) => `<li><b>${esc(a)}</b>：${esc(b)}</li>`).join('');
+}
+
+// —— DAG ——
+function renderDAG(flow, tasks, runs, evs, handoffs) {
+  const svg = $('#dag'); svg.innerHTML = '';
+  $('#dagLegend').innerHTML = ['in_progress', 'review', 'verifying', 'done', 'blocked', 'pending'].map((s) => `<span><i class="sw" style="background:${ST[s].c}"></i>${ST[s].icon} ${ST[s].l}</span>`).join('') +
+    '<span><svg width="28" height="8"><line x1="0" y1="4" x2="28" y2="4" stroke="var(--text-secondary)" stroke-width="1.5"/></svg>硬依赖</span><span><svg width="28" height="8"><line x1="0" y1="4" x2="28" y2="4" stroke="var(--text-secondary)" stroke-width="1.5" stroke-dasharray="5 3"/></svg>软依赖</span>';
+  const stages = [...flow.stages.filter((s) => tasks.some((t) => t.stage === s)), ...new Set(tasks.map((t) => t.stage).filter((s) => !flow.stages.includes(s)))];
+  const W = 190, H = 52, GX = 44, GY = 16, colPad = 26;
+  const pos = new Map();
+  let x = 20, maxY = 0;
+  const colX = [];
+  for (const st of stages) {
+    const group = tasks.filter((t) => t.stage === st);
+    const ids = new Set(group.map((t) => t.id));
+    const depth = new Map();
+    const go = (id, seen = new Set()) => {
+      if (depth.has(id)) return depth.get(id);
+      if (seen.has(id)) return 0; seen.add(id);
+      const t = group.find((g) => g.id === id);
+      const v = 1 + Math.max(0, ...t.depends_on.filter((d) => d.type === 'hard' && ids.has(d.task)).map((d) => go(d.task, seen)));
+      depth.set(id, v); return v;
+    };
+    for (const t of group) go(t.id);
+    const layers = Math.max(1, ...depth.values());
+    colX.push([st, x, layers]);
+    for (let l = 1; l <= layers; l++) {
+      const at = group.filter((t) => depth.get(t.id) === l);
+      at.forEach((t, i) => { pos.set(t.id, [x + (l - 1) * (W + GX), 40 + i * (H + GY)]); maxY = Math.max(maxY, 40 + i * (H + GY) + H); });
+    }
+    x += layers * (W + GX) + colPad;
+  }
+  svg.setAttribute('width', x); svg.setAttribute('height', maxY + 20); svg.setAttribute('viewBox', `0 0 ${x} ${maxY + 20}`);
+  for (const [st, cx, layers] of colX) {
+    svgEl('rect', { x: cx - 10, y: 6, width: layers * (W + GX) - GX + 20, height: maxY + 6, rx: 8, fill: 'var(--surface-2)' }, svg);
+    const t = svgEl('text', { x: cx, y: 26, 'font-size': 12, 'font-weight': 600, class: 'sec' }, svg); t.textContent = `${st} · ${PHASE[STAGE_PHASE[st]] ?? ''}`;
+  }
+  const defs = svgEl('defs', {}, svg);
+  const mk = svgEl('marker', { id: 'arr2', viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 6, markerHeight: 6, orient: 'auto-start-reverse' }, defs);
+  svgEl('path', { d: 'M0,0 L10,5 L0,10 z', fill: 'var(--text-muted)' }, mk);
+  const edges = [];
+  for (const t of tasks) for (const d of t.depends_on) {
+    const a = pos.get(d.task), b = pos.get(t.id);
+    if (!a || !b) continue;
+    const x1 = a[0] + W, y1 = a[1] + H / 2, x2 = b[0], y2 = b[1] + H / 2;
+    const p = svgEl('path', { d: `M${x1},${y1} C${x1 + 40},${y1} ${x2 - 40},${y2} ${x2 - 2},${y2}`, fill: 'none', stroke: 'var(--text-muted)', 'stroke-width': 1.5, 'stroke-dasharray': d.type === 'soft' ? '5 3' : '', 'marker-end': 'url(#arr2)', 'stroke-opacity': 0.7 }, svg);
+    edges.push({ from: d.task, to: t.id, p });
+  }
+  for (const t of tasks) {
+    const [x0, y0] = pos.get(t.id) ?? [0, 0];
+    const s = ST[t.status] || ST.pending;
+    const g = svgEl('g', { class: 'node', tabindex: 0, role: 'button', 'aria-label': `${t.id} ${t.title} ${s.l}` }, svg);
+    svgEl('rect', { x: x0, y: y0, width: W, height: H, rx: 8, fill: 'var(--surface-1)', stroke: 'var(--border)' }, g);
+    svgEl('rect', { x: x0, y: y0, width: 6, height: H, rx: 3, fill: s.c }, g);
+    const a = svgEl('text', { x: x0 + 14, y: y0 + 19, 'font-size': 12, 'font-weight': 600 }, g); a.textContent = `${t.id} · ${s.icon} ${s.l}${t.attempts ? ` · 返工 ${t.attempts}` : ''}`;
+    const b = svgEl('text', { x: x0 + 14, y: y0 + 38, 'font-size': 12, class: 'sec' }, g); b.textContent = t.title.length > 14 ? t.title.slice(0, 14) + '…' : t.title;
+    hover(g, () => `${t.id} ${t.title}\n${t.kind} · ${t.role} · ${s.l}\n可写：${(t.conflict_files ?? t.writes).join('、')}`);
+    const pick = () => {
+      for (const n of svg.querySelectorAll('.node')) n.classList.toggle('sel', n === g);
+      for (const e of edges) { const on = e.from === t.id || e.to === t.id; e.p.setAttribute('stroke', on ? 'var(--text-primary)' : 'var(--text-muted)'); e.p.setAttribute('stroke-width', on ? 2.5 : 1.5); }
+      showTask(t, tasks, runs, evs, handoffs);
+    };
+    g.addEventListener('click', pick);
+    g.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(); } });
+  }
+  $('#taskTable').innerHTML = `<tr><th>任务</th><th>阶段</th><th>类型</th><th>角色</th><th>状态</th><th class="num">返工</th><th class="num">运行</th><th>依赖</th></tr>` +
+    tasks.map((t) => `<tr><td>${esc(t.id)} ${esc(t.title)}</td><td>${esc(t.stage)}</td><td>${esc(t.kind)}</td><td>${esc(t.role)}</td><td>${chip(t.status)}</td><td class="num">${t.attempts}</td><td class="num">${runs.filter((r) => r.task === t.id).length}</td><td>${t.depends_on.map((d) => esc(d.task) + (d.type === 'soft' ? '（软）' : '')).join('、') || '—'}</td></tr>`).join('');
+}
+
+function showTask(t, tasks, runs, evs, handoffs) {
+  const tr = runs.filter((r) => r.task === t.id).sort((a, b) => a.started_at.localeCompare(b.started_at));
+  const te = evs.filter((e) => e.task === t.id && (e.type === 'transition' || e.type === 'violation'));
+  $('#dagSide').innerHTML = `<h2>${esc(t.id)} ${esc(t.title)}</h2>${chip(t.status)}
+    <dl class="kv" style="margin-top:8px">
+      <dt>类型 / 角色</dt><dd>${esc(t.kind)} · ${esc(t.role)}</dd>
+      <dt>阶段</dt><dd>${esc(t.stage)}</dd>
+      <dt>可写范围</dt><dd>${esc((t.conflict_files ?? t.writes).join('、'))}</dd>
+      <dt>verify</dt><dd>${esc(t.verify.join('、') || '无')}</dd>
+      <dt>返工 / 中断</dt><dd>${t.attempts} / ${t.interruptions ?? 0}</dd>
+      ${t.blocked_reason ? `<dt>阻塞原因</dt><dd>${esc(t.blocked_reason)}</dd>` : ''}
+      ${t.last_failure ? `<dt>上次未通过</dt><dd>${esc(t.last_failure.slice(0, 600))}</dd>` : ''}
+    </dl>
+    <h3>验收标准</h3><ul style="margin:0;padding-left:18px">${t.acceptance.map((a) => `<li>${esc(a)}</li>`).join('')}</ul>
+    <h3>运行（${tr.length}）</h3><table><tr><th>角色</th><th>模型</th><th>结果</th><th class="num">耗时</th><th class="num">轮</th></tr>${tr.map((r) => `<tr><td>${esc(r.role)}${r.forked_from ? ' ↻' : ''}${r.escalated ? ' ⬆' : ''}</td><td>${esc((r.model ?? '').split('/').pop())}${r.review_mode ? `（${esc(r.review_mode)}）` : ''}</td><td>${esc((OUT[outcomeOf(r)] || [outcomeOf(r)])[0])}</td><td class="num">${r.ended_at ? fmtDur(Date.parse(r.ended_at) - Date.parse(r.started_at)) : '运行中'}</td><td class="num">${r.turns ?? '—'}</td></tr>`).join('')}</table>
+    <div class="hint">↻ 接着上次对话；⬆ 升级模型</div>
+    <h3>状态变化</h3><table>${te.map((e) => `<tr><td class="hint">${time(e.ts)}</td><td>${e.type === 'violation' ? '⚠ 违规' : `${esc(e.trigger)}：${esc((ST[e.from] || { l: e.from }).l)} → ${esc((ST[e.to] || { l: e.to }).l)}`}${e.reason ? `<br><span class="hint">${esc(e.reason.slice(0, 240))}</span>` : ''}</td></tr>`).join('')}</table>
+    <details><summary>handoff（最近部分）</summary><pre>${esc(handoffs[t.id] ?? '（无）')}</pre></details>`;
+}
+
+// —— 时间线 ——
+function renderTimeline(flow, runs, evs, tasks) {
+  const svg = $('#tl'); svg.innerHTML = '';
+  const used = [...new Set(runs.map(outcomeOf))];
+  const groups = new Map();
+  for (const [k, [, c, g]] of Object.entries(OUT)) if (used.includes(k)) groups.set(g, c);
+  $('#tlLegend').innerHTML = [...groups].map(([g, c]) => `<span><i class="sw" style="background:${c}"></i>${g}</span>`).join('') + '<span class="hint">悬停色块看具体结果</span>';
+  if (!runs.length) { svg.setAttribute('height', 30); return; }
+  const roles = [...new Set(runs.map((r) => r.role))].sort((a, b) => ['orchestrator', 'architect', 'reviewer'].indexOf(b) - ['orchestrator', 'architect', 'reviewer'].indexOf(a) || a.localeCompare(b));
+  const t0 = Math.min(...runs.map((r) => Date.parse(r.started_at)));
+  const t1 = Math.max(...runs.map((r) => Date.parse(r.ended_at ?? D.generatedAt)));
+  const L = 150, R = 20, lane = 30;
+  const width = Math.max(900, Math.min(4000, (t1 - t0) / 60e3 * 6 + L + R));
+  const H = roles.length * lane + 50;
+  svg.setAttribute('width', width); svg.setAttribute('height', H); svg.setAttribute('viewBox', `0 0 ${width} ${H}`);
+  const X = (t) => L + (t - t0) / Math.max(1, t1 - t0) * (width - L - R);
+  // 刻度
+  const span = t1 - t0, stepMin = [5, 10, 15, 30, 60, 120, 240].find((m) => span / (m * 60e3) <= 14) ?? 480;
+  for (let m = 0; m * 60e3 <= span; m += stepMin) {
+    const x = X(t0 + m * 60e3);
+    svgEl('line', { x1: x, x2: x, y1: 20, y2: H - 20, stroke: 'var(--grid)' }, svg);
+    const t = svgEl('text', { x, y: H - 6, 'font-size': 11, 'text-anchor': 'middle', class: 'muted' }, svg); t.textContent = m >= 60 ? `${(m / 60).toFixed(m % 60 ? 1 : 0)} 小时` : `${m} 分`;
+  }
+  roles.forEach((role, i) => {
+    const y = 24 + i * lane;
+    const t = svgEl('text', { x: L - 8, y: y + 15, 'font-size': 12, 'text-anchor': 'end', class: 'sec' }, svg); t.textContent = role;
+    svgEl('line', { x1: L, x2: width - R, y1: y + lane - 3, y2: y + lane - 3, stroke: 'var(--grid)' }, svg);
+  });
+  for (const e of evs.filter((e) => e.type === 'gate_result' || e.type === 'approval')) {
+    const x = X(Date.parse(e.ts));
+    if (x < L) continue;
+    svgEl('line', { x1: x, x2: x, y1: 14, y2: H - 20, stroke: 'var(--text-secondary)', 'stroke-dasharray': '2 3' }, svg);
+    const t = svgEl('text', { x: x + 3, y: 12, 'font-size': 10, class: 'sec' }, svg); t.textContent = `${e.data?.stage ?? ''} ${e.type === 'approval' ? '批准' : '闸门'}`;
+  }
+  for (const r of runs) {
+    const i = roles.indexOf(r.role);
+    const a = X(Date.parse(r.started_at)), b = X(Date.parse(r.ended_at ?? D.generatedAt));
+    const [label, color] = OUT[outcomeOf(r)] || [outcomeOf(r), 'var(--idle)'];
+    const rect = svgEl('rect', { x: a, y: 28 + i * lane, width: Math.max(3, b - a - 2), height: lane - 12, rx: 3, fill: color, stroke: 'var(--surface-1)', 'stroke-width': 1 }, svg);
+    if (b - a > 34) { const t = svgEl('text', { x: a + 4, y: 28 + i * lane + 13, 'font-size': 10, fill: '#fff', style: 'fill:#fff;pointer-events:none' }, svg); t.textContent = r.task ?? ''; }
+    hover(rect, () => {
+      const task = tasks.find((t) => t.id === r.task);
+      return `${r.run_id}\n${r.task ?? '—'} ${task ? task.title : ''}\n${r.role} · ${r.model ?? '未知模型'}${r.review_mode ? `（审查档 ${r.review_mode}）` : ''}${r.escalated ? ' · 升级模型' : ''}${r.forked_from ? ' · 接着上次对话' : ''}\n结果：${label}\n开始 ${time(r.started_at)}，耗时 ${r.ended_at ? fmtDur(Date.parse(r.ended_at) - Date.parse(r.started_at)) : '运行中'}\n输入 ${fmtN(r.tokens.input)} · 输出 ${fmtN(r.tokens.output)} · 缓存读 ${fmtN(r.tokens.cache_read)}${r.turns != null ? ` · ${r.turns} 轮` : ''}${r.violations ? `\n违规 ${r.violations} 次` : ''}`;
+    });
+  }
+  $('#runTable').innerHTML = `<tr><th>运行</th><th>任务</th><th>角色</th><th>模型</th><th>结果</th><th>开始</th><th class="num">耗时</th><th class="num">输入</th><th class="num">输出</th><th class="num">缓存读</th><th class="num">轮</th></tr>` +
+    [...runs].sort((a, b) => a.started_at.localeCompare(b.started_at)).map((r) => `<tr><td>${esc(r.run_id)}${r.forked_from ? ' ↻' : ''}${r.escalated ? ' ⬆' : ''}</td><td>${esc(r.task ?? '—')}</td><td>${esc(r.role)}</td><td>${esc((r.model ?? '').split('/').pop())}${r.review_mode ? `（${esc(r.review_mode)}）` : ''}</td><td>${esc((OUT[outcomeOf(r)] || [outcomeOf(r)])[0])}</td><td>${time(r.started_at)}</td><td class="num">${r.ended_at ? fmtDur(Date.parse(r.ended_at) - Date.parse(r.started_at)) : '运行中'}</td><td class="num">${fmtN(r.tokens.input)}</td><td class="num">${fmtN(r.tokens.output)}</td><td class="num">${fmtN(r.tokens.cache_read)}</td><td class="num">${r.turns ?? '—'}</td></tr>`).join('');
+}
+
+// —— 成本 ——
+function renderCost(runs, evs, tasks) {
+  const by = new Map();
+  for (const r of runs) {
+    const row = by.get(r.role) ?? { role: r.role, runs: 0, input: 0, output: 0, cache: 0, ms: 0, turns: 0, tr: 0 };
+    row.runs++; row.input += r.tokens.input ?? 0; row.output += r.tokens.output ?? 0; row.cache += r.tokens.cache_read ?? 0;
+    if (r.ended_at) row.ms += Date.parse(r.ended_at) - Date.parse(r.started_at);
+    if (r.turns != null) { row.turns += r.turns; row.tr++; }
+    by.set(r.role, row);
+  }
+  const rows = [...by.values()].sort((a, b) => b.input + b.output - a.input - a.output);
+  const max = Math.max(1, ...rows.map((r) => r.input + r.output));
+  $('#costBars').innerHTML = rows.map((r) => `<div class="bar-row"><span>${esc(r.role)}</span><div class="bar-track"><div class="bar" style="width:${(r.input + r.output) / max * 100}%" title="${esc(r.role)}：${fmtN(r.input + r.output)}"></div></div><span class="hint" style="text-align:right">${fmtN(r.input + r.output)}</span></div>`).join('') || '<div class="hint">没有运行</div>';
+  $('#costTable').innerHTML = `<tr><th>角色</th><th class="num">运行</th><th class="num">输入</th><th class="num">输出</th><th class="num">缓存读</th><th class="num">运行时长</th><th class="num">平均轮</th></tr>` +
+    rows.map((r) => `<tr><td>${esc(r.role)}</td><td class="num">${r.runs}</td><td class="num">${fmtN(r.input)}</td><td class="num">${fmtN(r.output)}</td><td class="num">${fmtN(r.cache)}</td><td class="num">${fmtDur(r.ms)}</td><td class="num">${r.tr ? (r.turns / r.tr).toFixed(1) : '—'}</td></tr>`).join('');
+  const kinds = { review_reject: '审查打回', precheck_fail: '审查前验证失败', verify_fail: '验证失败', merge_verify_fail: '合并后验证失败', run_failed: '运行失败', block: '阻塞' };
+  const rw = tasks.map((t) => { const c = {}; for (const k of Object.keys(kinds)) c[k] = evs.filter((e) => e.task === t.id && e.trigger === k).length; return { t, c, total: Object.values(c).reduce((a, b) => a + b, 0) }; }).filter((x) => x.total).sort((a, b) => b.total - a.total);
+  $('#reworkTable').innerHTML = `<tr><th>任务</th>${Object.values(kinds).map((k) => `<th class="num">${k}</th>`).join('')}<th class="num">合计</th></tr>` +
+    (rw.map((x) => `<tr><td>${esc(x.t.id)} ${esc(x.t.title)}</td>${Object.keys(kinds).map((k) => `<td class="num">${x.c[k] || ''}</td>`).join('')}<td class="num"><b>${x.total}</b></td></tr>`).join('') || '<tr><td class="hint" colspan="8">没有返工</td></tr>');
+}
+
+// —— 事件 ——
+function renderEvents(evs) {
+  const types = [...new Set(evs.map((e) => e.type))];
+  const ts = $('#evType'); const keep = ts.value; ts.innerHTML = '<option value="">全部类型</option>' + types.map((t) => `<option>${esc(t)}</option>`).join(''); ts.value = types.includes(keep) ? keep : '';
+  const draw = () => {
+    const q = $('#evQ').value.trim().toLowerCase(), ty = ts.value, hide = $('#evHideNote').checked;
+    const list = evs.filter((e) => (!ty || e.type === ty) && (!hide || ty || (e.type !== 'note' && e.type !== 'dispatch')) && (!q || JSON.stringify(e).toLowerCase().includes(q)));
+    $('#evCount').textContent = `${list.length} / ${evs.length} 条`;
+    $('#evTable').innerHTML = `<tr><th>#</th><th>时间</th><th>类型</th><th>任务</th><th>转移</th><th>执行者</th><th>原因</th></tr>` + list.slice(-800).map((e) => `<tr><td class="num">${e.seq}</td><td>${time(e.ts)}</td><td>${e.type === 'violation' ? '⚠ ' : ''}${esc(e.type)}</td><td>${esc(e.task ?? '')}</td><td>${e.trigger ? `${esc(e.trigger)}${e.from ? `：${esc(e.from)} → ${esc(e.to)}` : ''}` : ''}</td><td>${esc(e.actor)}</td><td>${esc((e.reason ?? '').slice(0, 300))}</td></tr>`).join('');
+  };
+  $('#evQ').oninput = draw; ts.onchange = draw; $('#evHideNote').onchange = draw;
+  draw();
+}
+
+// —— 原始状态 ——
+function renderRaw(flow, tasks, handoffs) {
+  $('#rawFlow').textContent = JSON.stringify(flow, null, 2);
+  $('#rawPauses').textContent = JSON.stringify(D.modelPauses, null, 2);
+  $('#rawMq').textContent = JSON.stringify(D.mergeQueue, null, 2);
+  const s = $('#rawTaskSel'); s.innerHTML = tasks.map((t) => `<option value="${esc(t.id)}">${esc(t.id)} ${esc(t.title)}</option>`).join('');
+  const show = () => { const t = tasks.find((x) => x.id === s.value); $('#rawTask').textContent = JSON.stringify(t, null, 2); $('#rawHandoff').textContent = handoffs[s.value] ?? '（无）'; };
+  s.onchange = show; show();
+}
+
+render();
+</script>
+</body>
+</html>

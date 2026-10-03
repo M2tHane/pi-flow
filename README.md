@@ -260,6 +260,7 @@ AGENTS.md            极简说明
 | 合入主分支失败 | 主工作区有未提交改动，或主分支在流程期间被修改。提交或暂存后重试 `/flow approve` |
 | 残留的 worktree 或临时文件 | `/flow doctor --fix` |
 | 想看每个任务花了多少 | `/flow status --cost` |
+| 想直观地看整个流程（状态机与转移次数、任务 DAG、运行时间线、成本、事件日志） | 在 pi-flow 仓库里执行 `node scripts/flow-view.ts <项目目录>`，生成 `<项目目录>.flow-view.html`，用浏览器打开（自包含，不联网，只读） |
 
 ---
 
