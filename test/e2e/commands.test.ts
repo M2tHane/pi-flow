@@ -4,7 +4,8 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { runFlowCommand, runFlowBuild, type CommandEnv } from '../../src/commands/flow.ts';
 import { renumber } from '../../src/core/stages.ts';
-import { setupProject, type Project } from '../helpers/project.ts';
+import { setupProject, DIRECT_YAML, type Project } from '../helpers/project.ts';
+import { StateStore } from '../../src/core/state-store.ts';
 import { makeEngine } from '../helpers/engine.ts';
 import { mkTask } from '../helpers/tasks.ts';
 
@@ -78,5 +79,27 @@ test('/flow knowledge：列出、确认改写、废弃、提升；/flow rules �
     assert.match(await runFlowCommand('knowledge retire K-002 "已改用内存实现"', e), /已废弃 K-002/);
     assert.doesNotMatch(await runFlowCommand('knowledge', e), /K-00/);
     assert.match(await runFlowCommand('knowledge --all', e), /K-001[\s\S]*已成为规则[\s\S]*K-002[\s\S]*已废弃/);
+  } finally { p.cleanup(); }
+});
+
+test('/flow next 先推进程序步骤：引擎重启前已提交、排队合并的任务（不逐任务审查）由新引擎合入', async () => {
+  const p = await setupProject({ yaml: DIRECT_YAML, tasks: [mkTask('T-001')] });
+  try {
+    // 旧引擎：提交后子进程挂住不退出（随后引擎被杀），任务停在合并队列里
+    const old = makeEngine(p, async (_r, _n, a) => {
+      await a.call('flow_claim');
+      await a.call('write', { path: 'src/server/t-001/a.ts', content: 'ok' });
+      await a.call('flow_note', { text: '完成' });
+      await a.call('flow_submit', { summary: 's' });
+      await new Promise(() => {});
+    });
+    await old.engine.next(p.flowId);
+    const end = Date.now() + 30_000;
+    while (p.store.readTask(p.flowId, 'T-001').status !== 'queued_merge') { if (Date.now() > end) throw new Error('等待超时'); await new Promise((r) => setTimeout(r, 20)); }
+    const store = new StateStore(p.dir, { limits: p.config.limits });
+    const fresh = makeEngine({ ...p, store }, async () => { throw new Error('不应再派发'); });
+    await runFlowCommand('next', env({ ...p, store }, fresh.engine));
+    assert.equal(store.readTask(p.flowId, 'T-001').status, 'done');
+    assert.deepEqual(fresh.errors, []);
   } finally { p.cleanup(); }
 });

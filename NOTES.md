@@ -182,6 +182,7 @@
 103. 阶段末审查（`review.stage_end`，默认 true；测试配置固定 false）：实施阶段（非设计阶段、非 fix）任务全部结束后由程序推进 `flows/<id>/stage-review-<阶段>.json`（reviewing → fixing → confirming → refixing → gating → test_fixing / needs_human → done），每步的记录、新任务与 handoff 在同一事务内写入，崩溃后从中途继续。审查与确认是程序生成的只读 analysis 任务（`stage_review`，角色 reviewer，审查用强模型、确认用普通档），经 `report` 转 done。
 104. 新工具 `flow_review_report`（问题文件必须是具体路径、不能是契约或受保护文件、要有实施角色能写，否则拒绝）与 `flow_review_confirm`（参数只有 `{id, resolved, note}`，id 必须在清单中且每个都要回答；Pi 自己也按 schema 拒绝多余字段）；reviewer 角色隐式拥有。修复任务用已有的 kind `review-fix`，按（模块，角色）分组、writes = 问题涉及的文件。
 105. 闸门失败（auto 命令）时从输出中提取仓库里的文件，按写过它的任务找角色（writes 取那些任务的 writes），生成第 n 轮修复任务；两轮后或定位不到时转 needs_human（"需要你处理"，`/flow gate` 重跑不再自动修）。阶段审查结束后被修订重新打开的阶段不再审查。
+106. `/flow next` 先 pump 再派发（复跑看板时发现）：提交直接进合并队列后，引擎在"提交"与"合并"之间重启，任务会停在 queued_merge，只有 pump 会处理它。
 
 ## 真实模型实验
 

@@ -186,8 +186,12 @@ export async function runFlowCommand(args: string, env: CommandEnv): Promise<str
     case 'next': {
       const h = env.engine();
       const flowId = activeFlowId(h.store);
-      const d = await h.engine.next(flowId);
-      const head = d.length ? `已派发：${d.map((x) => `${x.task} → ${x.role}（${x.model}，run ${x.run_id}）`).join('；')}` : '没有可派发的任务。';
+      // 先推进程序步骤：引擎重启后，已提交、排队合并的任务（第四轮起提交直接进合并队列）只有 pump 会处理
+      const before = new Set(h.engine.activeRuns().map((r) => r.run_id));
+      await h.engine.pump(flowId);
+      await h.engine.next(flowId);
+      const d = h.engine.activeRuns().filter((r) => !before.has(r.run_id));
+      const head = d.length ? `已派发：${d.map((x) => `${x.task} → ${x.role}（run ${x.run_id}）`).join('；')}` : '没有可派发的任务。';
       if (env.waitForIdle) await h.engine.idle();
       return `${head}\n\n${renderStatus(h.store, h.config)}`;
     }
