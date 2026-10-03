@@ -174,7 +174,7 @@ B-001「做一个待办应用」
   - 普通：用 reviewer 自己的模型。模板中 reviewer 默认是**中等档**（以前是强档）。
   - 高风险：解决合并冲突、改动契约或 shared、改动 `review.high_risk.paths` 中的路径、改动超过 400 行（`review.high_risk.max_lines`），用强模型审查（先行验收测试不算高风险：它必须先失败已由程序在审查前验证，审查用普通档）。强模型取 `/flow-config escalate reviewer <模型>` > `review.high_risk.model` > reviewer 档位的上一档。
   - 用 `/flow-config` 为 reviewer 显式指定过模型的（例如设成强模型），普通审查就用那个模型；想省成本时把 reviewer 改成中等模型，再用 `/flow-config escalate reviewer <强模型>` 指定高风险审查用的模型。run 记录的 `review_mode` 是 light、full（普通）、strong。同时进行的审查数受 `review.max_parallel` 限制。
-- **返工接着上一次的对话**：任务被打回（审查、验证、合并后验证）后，实施者不再从头开始读任务和代码，而是复制上一次运行的对话（`pi --fork`）接着做，只收到"为什么没通过"和新的临时目录。换了模型（例如失败后升级）或会话太长（超过约 1.5 MB）时仍从头开始。`limits.continue_session: false` 关闭。run 记录的 `forked_from` 标明接着的是哪次运行。
+- **返工接着上一次的对话**：任务被打回（审查、验证、合并后验证）后，实施者不再从头开始读任务和代码，而是复制上一次运行的对话（`pi --fork`）接着做，只收到"为什么没通过"和新的临时目录。换了模型（例如失败后升级）或会话太长（超过约 400 KB）时仍从头开始。`limits.continue_session: false` 关闭。run 记录的 `forked_from` 标明接着的是哪次运行。
 - **并发**：模板默认同时进行 3 个实施任务（`limits.max_parallel`，以前是 2），审查另计（`review.max_parallel`，默认 2）。实施用本地模型时，确认本地服务能承受这么多并发请求；已有项目的 `workflow.yaml` 不受影响，需要时自己改。
 - **审查提示直接附 diff**：改动不超过约 2 万字符时，diff 直接放进审查提示（第二轮起只附上次审查之后的改动），审查者不用再花一轮去 `git diff`。`/flow status --cost` 的每行显示平均每次运行几轮，便于找出来回多的角色。
 - **先验证再审查**：提交后程序先跑 verify，typecheck 或测试不过直接退回实施者，不派审查；先行验收测试、复现测试在这一步确认"先失败"。通过后再派审查，审查通过时代码没变，就沿用这次结果，不重跑。`review.verify_first: false` 可恢复旧顺序（审查通过后才跑 verify）。

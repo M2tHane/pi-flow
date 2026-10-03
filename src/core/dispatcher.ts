@@ -31,8 +31,11 @@ import { activePause, classifyUnavailable, clearPause, describePause, pauseActiv
 import type { ModelPause } from './schemas.ts';
 
 export const REVIEWER_ROLE = 'reviewer';
-/** 会话文件超过这个大小就不再接着（上下文太长，每轮重发的成本超过重新读代码） */
-export const MAX_FORK_BYTES = 1_500_000;
+/**
+ * 会话文件超过这个大小就不再接着（上下文太长，每轮重发的成本超过重新读代码）。
+ * 真实冒烟：一次 175 轮的实施会话约 0.5 MB，接着它返工的两次运行缓存读合计上千万 token；1.5 MB → 400 KB。
+ */
+export const MAX_FORK_BYTES = 400_000;
 /** diff 不超过这么多字符时直接放进审查提示 */
 export const INLINE_DIFF_MAX = 20_000;
 
