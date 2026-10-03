@@ -170,7 +170,7 @@ export function assemblePrompt(i: AssembleInput): AssembledPrompt {
     parts.push(`## 临时目录\n需要做临时实验（建临时文件、跑一次性脚本）时放在 \`${i.scratchDir}\`：可以 cd 进去，可以建、删、移动文件，本次运行结束后自动删除。不要在 worktree 里建临时文件：worktree 中只能写、删除、移动本任务 writes 内的文件，writes 之外的改动会让提交被拒。`);
   }
   if (i.mode === 'impl' && i.existingWork?.trim()) {
-    parts.push(`## 工作区已有的改动\n这些改动是本任务之前的运行留下的（会话中断或被打回前的工作），还没有通过审查。先用 \`git status\` 与 \`git diff ${t.base_sha ?? '<base_sha>'}\` 检查，再决定继续完善还是重写；不要无故丢弃仍然有用的部分。\n\n\`\`\`\n${i.existingWork.trim()}\n\`\`\``);
+    parts.push(`## 工作区已有的改动\n这些改动是本任务之前的运行留下的（会话中断或被打回前的工作），还没有合入集成分支。先用 \`git status\` 与 \`git diff ${t.base_sha ?? '<base_sha>'}\` 检查，再决定继续完善还是重写；不要无故丢弃仍然有用的部分。\n\n\`\`\`\n${i.existingWork.trim()}\n\`\`\``);
   }
   const up = i.mode === 'impl' && i.upstream?.length ? upstreamSection(i.upstream) : '';
   if (up) parts.push(up);

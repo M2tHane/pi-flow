@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseConfig } from '../../src/core/config.ts';
-import { assessRisk, escalationModel, resolveModelRef, strongReviewModel } from '../../src/core/cost-control.ts';
-import { TEST_YAML } from '../helpers/config.ts';
+import { assessRisk, escalationModel, perTaskReview, resolveModelRef, strongReviewModel } from '../../src/core/cost-control.ts';
+import { TEMPLATE_YAML, TEST_YAML } from '../helpers/config.ts';
 import { mkTask, hard } from '../helpers/tasks.ts';
 
 const YAML = TEST_YAML.replace(/models:[\s\S]*?\nmodes:/, 'models:\n  strong: "p/strong"\n  medium: "p/medium"\n  cheap:  "<provider/model>"\nmodes:');
@@ -57,4 +57,17 @@ test('模型引用与升级：档位或 provider/model；占位符取不到；�
   assert.equal(escalationModel(config, { version: 1, roles: { 'backend-engineer': { escalate_model: 'q/big' } } }, 'backend-engineer', 'p/medium'), 'q/big');
   assert.equal(escalationModel(config, none, 'backend-engineer', 'p/strong'), null);
   assert.throws(() => parseConfig(YAML.replace('roles:\n', 'roles:\n  x-role: { model: medium, tools: [read], escalate_model: huge }\n')), /模型档位 huge 未在 models 中定义/);
+});
+
+test('逐任务审查：默认关闭（模板 per_task: false）；设计阶段、fix 流程、先行验收测试照旧审查；per_task: true 时全部审查', () => {
+  const off = parseConfig(TEMPLATE_YAML);
+  const on = parseConfig(TEST_YAML);
+  const impl = mkTask('T-001', { stage: 'S3' });
+  assert.equal(perTaskReview(off, 'build', impl, [impl]), false);
+  assert.equal(perTaskReview(on, 'build', impl, [impl]), true);
+  assert.equal(perTaskReview(off, 'build', mkTask('T-002', { stage: 'S1', kind: 'doc' }), []), true);
+  assert.equal(perTaskReview(off, 'feature', mkTask('T-002', { stage: 'F0', kind: 'doc' }), []), true);
+  assert.equal(perTaskReview(off, 'fix', impl, [impl]), true);
+  const lead = mkTask('T-003', { kind: 'test', stage: 'S3' });
+  assert.equal(perTaskReview(off, 'build', lead, [lead, mkTask('T-004', { stage: 'S3', deps: [hard('T-003')] })]), true);
 });

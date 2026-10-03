@@ -12,6 +12,7 @@ import { matchesAny, isProtected, CONTRACTS_PATH } from './paths.ts';
 import { carriedTestOf } from './dag.ts';
 import { proposeCandidate } from './knowledge.ts';
 import { evidenceText, runShell } from './verify-runner.ts';
+import { perTaskReview } from './cost-control.ts';
 
 export interface MergeHooks {
   /** 受影响的测试文件（codegraph 影响面分析）；拿不到返回 null，退回全量 test */
@@ -216,10 +217,20 @@ export class MergeQueue {
     return out;
   }
 
-  private async postMergeVerify(flowId: string, t: TaskFile, wt: string, changed: string[]) {
+  /**
+   * 合并后验证要跑的命令。逐任务审查关闭（第四轮）时这是任务唯一的程序验证：verify 非空的任务跑全量 typecheck、lint、test
+   * （commands 中定义且非空的）；否则只跑任务 verify 里有的命令，test 优先用受影响的测试。
+   * 文档类任务（verify 为空）都不跑，否则新项目在建好脚手架前永远无法合并。
+   */
+  private async mergeVerifyPlan(flowId: string, t: TaskFile, wt: string, changed: string[]): Promise<{ full: boolean; plan: { name: string; shell: string }[] }> {
     const cmds = this.config.commands;
-    // 只在任务的 verify 包含时运行（文档类任务不跑 typecheck/test，否则新项目在建好脚手架前永远无法合并）
     const plan: { name: string; shell: string }[] = [];
+    if (!t.verify.length) return { full: false, plan };
+    const flow = this.store.readFlow(flowId);
+    if (!perTaskReview(this.config, flow.mode, t, this.store.listTasks(flowId))) {
+      for (const name of ['typecheck', 'lint', 'test']) if (cmds[name]?.trim()) plan.push({ name, shell: cmds[name] });
+      return { full: true, plan };
+    }
     if (cmds['typecheck'] && t.verify.includes('typecheck')) plan.push({ name: 'typecheck', shell: cmds['typecheck'] });
     if (t.verify.some((v) => v === 'test' || v === 'test_affected')) {
       const affected = cmds['test_affected'] && this.hooks.affectedFiles ? await this.hooks.affectedFiles(wt, changed) : null;
@@ -229,13 +240,20 @@ export class MergeQueue {
         plan.push({ name: 'test', shell: cmds['test'] });
       }
     }
+    return { full: false, plan };
+  }
+
+  private async postMergeVerify(flowId: string, t: TaskFile, wt: string, changed: string[]) {
+    const { full, plan } = await this.mergeVerifyPlan(flowId, t, wt, changed);
     const results: { command: string; exit_code: number }[] = [];
     for (const c of plan) {
       const r = { command: c.name, ...(await runShell(c.shell, wt, this.hooks.verifyTimeoutMs)) };
       results.push({ command: c.name, exit_code: r.exit_code });
       await this.store.saveEvidence(flowId, t.id, `merge-a${t.attempts}-${c.name}.log`, evidenceText(r, c.shell), 'merge-queue');
       if (r.exit_code !== 0) {
-        return { ok: false as const, results, reason: `合并后验证失败（可能与已合入的其他任务存在语义冲突）：${c.name} 退出码 ${r.exit_code}\n${r.output.trim().split('\n').slice(-15).join('\n')}` };
+        // 全量验证（不逐任务审查时）的失败多半是任务自己的问题，日志多给一些
+        const why = full ? `已 rebase 到集成分支最新，全量 ${plan.map((x) => x.name).join('、')} 中 ` : '可能与已合入的其他任务存在语义冲突：';
+        return { ok: false as const, results, reason: `合并后验证失败（${why}${c.name} 退出码 ${r.exit_code}）\n${r.output.trim().split('\n').slice(full ? -40 : -15).join('\n')}` };
       }
     }
     return { ok: true as const, results, reason: '' };

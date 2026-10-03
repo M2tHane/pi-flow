@@ -8,7 +8,7 @@ import { isProtected, matchesAny } from './paths.ts';
 export type Trigger =
   | 'schedule' | 'dispatch' | 'submit' | 'review_pass' | 'review_reject'
   | 'verify_pass' | 'verify_fail' | 'merge_start' | 'merge_done' | 'merge_verify_fail'
-  | 'merge_blocked' | 'merge_requeue' | 'block' | 'unblock' | 'lease_expired' | 'run_failed' | 'run_interrupted' | 'run_paused' | 'precheck_fail' | 'report' | 'repro_confirmed' | 'cancel' | 'review_skip';
+  | 'merge_blocked' | 'merge_requeue' | 'block' | 'unblock' | 'lease_expired' | 'run_failed' | 'run_interrupted' | 'run_paused' | 'precheck_fail' | 'report' | 'repro_confirmed' | 'cancel' | 'review_skip' | 'submit_direct';
 
 /** 同一任务连续会话中断达到此次数转 blocked，防止无限重来 */
 export const MAX_INTERRUPTIONS = 5;
@@ -39,6 +39,8 @@ export interface Facts {
   fast_forwarded?: boolean;
   worktree_clean?: boolean;
   reason?: string;
+  /** 按 review.per_task 判定本任务不逐任务审查，提交后直接进入合并队列（submit_direct，由 flow_submit 的程序判定） */
+  direct_merge?: boolean;
   /** 引擎按风险规则判定为低风险（review_skip） */
   low_risk?: boolean;
   /** unblock 时由用户指定的 attempts，缺省清零 */
@@ -75,6 +77,22 @@ function leaseValid(lease: Lease | null, f: Facts, what: string): string[] {
   return [];
 }
 
+/** 提交（submit、submit_direct）的共同检查：租约、diff 非空且不越界、已写 handoff */
+function submitErrors(t: TaskFile, f: Facts): string[] {
+  const errs = leaseValid(t.lease, f, '提交被拒');
+  const diff = f.diff_files;
+  if (!diff) errs.push('缺少 worktree diff');
+  else if (diff.length === 0) errs.push('worktree 没有改动，无可提交内容');
+  else {
+    const prot = diff.filter((p) => isProtected(p, { contractsLocked: f.contracts_locked ?? true }));
+    if (prot.length) errs.push(`diff 含受保护路径：${prot.join('、')}`);
+    const outside = diff.filter((p) => !matchesAny(p, t.writes));
+    if (outside.length) errs.push(`diff 越出任务 writes：${outside.join('、')}`);
+  }
+  errs.push(...need(f.handoff_written, '尚未写 handoff，请先调用 flow_note'));
+  return errs;
+}
+
 export const TRANSITIONS: readonly Rule[] = [
   {
     from: ['pending'], to: 'ready', trigger: 'schedule',
@@ -100,20 +118,13 @@ export const TRANSITIONS: readonly Rule[] = [
   },
   {
     from: ['in_progress'], to: 'review', trigger: 'submit',
-    check: (t, f) => {
-      const errs = leaseValid(t.lease, f, '提交被拒');
-      const diff = f.diff_files;
-      if (!diff) errs.push('缺少 worktree diff');
-      else if (diff.length === 0) errs.push('worktree 没有改动，无可提交内容');
-      else {
-        const prot = diff.filter((p) => isProtected(p, { contractsLocked: f.contracts_locked ?? true }));
-        if (prot.length) errs.push(`diff 含受保护路径：${prot.join('、')}`);
-        const outside = diff.filter((p) => !matchesAny(p, t.writes));
-        if (outside.length) errs.push(`diff 越出任务 writes：${outside.join('、')}`);
-      }
-      errs.push(...need(f.handoff_written, '尚未写 handoff，请先调用 flow_note'));
-      return errs;
-    },
+    check: (t, f) => [...need(f.direct_merge !== true, '本任务不逐任务审查，应直接进入合并队列'), ...submitErrors(t, f)],
+    effect: (t) => { t.impl_run = t.lease!.run_id; t.lease = null; },
+  },
+  {
+    // 偏离（第四轮）：关闭逐任务审查时提交后直接进入合并队列，合并时跑全量测试，质量由阶段末审查把关
+    from: ['in_progress'], to: 'queued_merge', trigger: 'submit_direct',
+    check: (t, f) => [...need(f.direct_merge === true, '本任务需要逐任务审查'), ...submitErrors(t, f)],
     effect: (t) => { t.impl_run = t.lease!.run_id; t.lease = null; },
   },
   {

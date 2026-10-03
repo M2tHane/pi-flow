@@ -12,7 +12,7 @@ import { readFileSync } from 'node:fs';
 import { parseConfig } from '../../src/core/config.ts';
 import { PROJECT_YAML } from '../helpers/project.ts';
 import { startFakeLlm, type FakeLlm } from '../fixtures/fake-llm/server.ts';
-import { setupProject } from '../helpers/project.ts';
+import { setupProject, DIRECT_YAML } from '../helpers/project.ts';
 import { mkTask } from '../helpers/tasks.ts';
 
 const ROOT = path.join(import.meta.dirname, '../..');
@@ -182,6 +182,38 @@ test('真实 pi 子进程：返工时接着上一次的对话继续（--fork）�
     assert.ok(second, '第二次运行的第一个请求带着上一次的 5 条回复');
     assert.match(JSON.stringify(second.last), /继续任务[\s\S]*审查前验证失败[\s\S]*flow_claim/);
     assert.ok(impl[1]!.session_file && impl[1]!.session_file !== impl[0]!.session_file, '新会话单独留档');
+  } finally { p.cleanup(); }
+});
+
+test('真实 pi 子进程：关闭逐任务审查时提交直接合并，合并时全量测试失败退回，接着上一次的对话修好后合入', { skip: !piAvailable && 'pi 不可用', timeout: 240_000 }, async () => {
+  const p = await setupProject({ yaml: DIRECT_YAML, tasks: [mkTask('T-001', { verify: ['typecheck', 'test'] })] });
+  try {
+    const logFile = '/tmp/pi-flow-e2e-llm.log';
+    const before = existsSync(logFile) ? readFileSync(logFile, 'utf8').length : 0;
+    const errors: unknown[] = [];
+    const engine = new Engine({
+      root: p.dir, store: p.store, config: p.config, launcher: new PiLauncher(),
+      roleSettings: () => ({ version: 1, roles: { 'backend-engineer': { model: 'fakellm/impl-fork' }, reviewer: { model: 'fakellm/review-pass' } } }),
+      packageAgentsDir: path.join(ROOT, 'agents'),
+      subagentExtension: path.join(ROOT, 'src/pi-adapter/subagent.ts'),
+      extraExtensions: () => [path.join(ROOT, 'test/fixtures/fake-llm/provider.ts')],
+      onError: (e) => errors.push(e),
+    });
+    await engine.next(p.flowId);
+    await engine.idle();
+    assert.deepEqual(errors, []);
+    const t = p.store.readTask(p.flowId, 'T-001');
+    assert.equal(t.status, 'done', `${t.status} ${t.last_failure ?? ''}`);
+    assert.equal(t.attempts, 1, '第一次提交在合并时的全量测试中失败');
+    const runs = p.store.listRuns().sort((a, b) => a.started_at.localeCompare(b.started_at));
+    assert.deepEqual(runs.map((r) => r.role), ['backend-engineer', 'backend-engineer'], '没有派审查');
+    assert.equal(runs[1]!.forked_from, runs[0]!.run_id);
+    const triggers = p.store.readEvents().filter((e) => e.task === 'T-001' && e.type === 'transition').map((e) => e.trigger);
+    assert.deepEqual(triggers.filter((x) => x !== 'dispatch' && x !== 'schedule'), ['submit_direct', 'merge_start', 'merge_verify_fail', 'submit_direct', 'merge_start', 'merge_done']);
+    const reqs = readFileSync(logFile, 'utf8').slice(before).trim().split('\n').map((l) => JSON.parse(l)).filter((r) => r.model === 'impl-fork');
+    const second = reqs.find((r) => r.turn === 5)!;
+    assert.ok(second, '第二次运行的第一个请求带着上一次的 5 条回复');
+    assert.match(JSON.stringify(second.last), /继续任务[\s\S]*合并后验证失败[\s\S]*全量/);
   } finally { p.cleanup(); }
 });
 

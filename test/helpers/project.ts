@@ -18,6 +18,9 @@ export const PROJECT_YAML = TEST_YAML
   e2e:       "true"
 limits:`);
 
+/** 关闭逐任务审查（模板默认）：提交后直接进入合并队列，合并时跑全量 typecheck、lint、test */
+export const DIRECT_YAML = PROJECT_YAML.replace(/^  per_task: true$/m, '  per_task: false');
+
 export interface Project {
   dir: string;
   git: (...a: string[]) => string;

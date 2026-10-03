@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readdirSync } from 'node:fs';
 import path from 'node:path';
-import { setupProject, PROJECT_YAML } from '../helpers/project.ts';
+import { setupProject, PROJECT_YAML, DIRECT_YAML } from '../helpers/project.ts';
 import { makeEngine, commitToBranch } from '../helpers/engine.ts';
 import type { FakeAgent } from '../fixtures/fake-subagent/launcher.ts';
 import { mkTask } from '../helpers/tasks.ts';
@@ -268,5 +268,34 @@ test('合并后验证使用 codegraph 给出的受影响测试；拿不到时退
     assert.deepEqual(ev('T-001').sort(), ['merge-a0-test_affected.log', 'merge-a0-typecheck.log']);
     assert.deepEqual(ev('T-002').sort(), ['merge-a0-test.log', 'merge-a0-typecheck.log']);
     assert.equal(seen.length, 2);
+  } finally { p.cleanup(); }
+});
+
+test('关闭逐任务审查（默认）：提交后不派审查直接进入合并队列；合并时跑全量 typecheck、lint、test，失败退回实施并重新派发，修好后合入；文档类任务不跑命令', async () => {
+  const p = await setupProject({ yaml: DIRECT_YAML, tasks: [mkTask('T-001', { verify: ['test'] }), mkTask('T-002', { verify: [] })] });
+  try {
+    const { engine, merges, errors } = makeEngine(p, async (role, nth, a) => {
+      assert.notEqual(role, 'reviewer', '不应派审查');
+      if (a.env.task === 'T-002') return implement(a, { 'src/server/t-002/readme.md': 'doc' });
+      // 第一次带着 FAIL 提交（全量 test 会失败），第二次修好
+      return implement(a, { 'src/server/t-001/a.ts': nth === 1 ? 'FAIL' : 'ok' });
+    });
+    await engine.next(p.flowId);
+    await engine.idle();
+    assert.deepEqual(errors, []);
+    for (const id of ['T-001', 'T-002']) assert.equal(p.store.readTask(p.flowId, id).status, 'done', id);
+    const t1 = p.store.readTask(p.flowId, 'T-001');
+    assert.equal(t1.attempts, 1);
+    const vf = merges.find((m) => m.kind === 'verify_failed');
+    assert.ok(vf?.kind === 'verify_failed' && vf.task === 'T-001', JSON.stringify(merges));
+    if (vf?.kind === 'verify_failed') assert.match(vf.reason, /全量 typecheck、lint、test 中 test 退出码 1/);
+    assert.deepEqual(readdirEvidence(p.dir, p.flowId, 'T-001').sort(),
+      ['merge-a0-lint.log', 'merge-a0-test.log', 'merge-a0-typecheck.log', 'merge-a1-lint.log', 'merge-a1-test.log', 'merge-a1-typecheck.log']);
+    assert.ok(!existsSync(path.join(p.dir, '.flow/flows', p.flowId, 'evidence', 'T-002')), '文档类任务不跑命令');
+    const evs = p.store.readEvents().filter((e) => e.type === 'transition');
+    assert.ok(!evs.some((e) => e.to === 'review' || e.to === 'verifying'), '不经过审查与 verify');
+    assert.equal(evs.filter((e) => e.trigger === 'submit_direct').length, 3);
+    assert.deepEqual(p.store.listRuns().map((r) => r.role).sort(), ['backend-engineer', 'backend-engineer', 'backend-engineer']);
+    assertSingleMerging(p.store.readEvents());
   } finally { p.cleanup(); }
 });

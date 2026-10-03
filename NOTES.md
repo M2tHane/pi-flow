@@ -178,6 +178,7 @@
 **第四轮（2026-10-03 起，`docs/HANDOFF-4.md`）**
 
 101. 契约到函数级：每个模块一个契约文件，写对外函数的名字、参数、返回值、错误（REST 照旧）；任务 inputs 列出依赖的契约条目。只改技能与提示，程序不校验格式。
+102. 逐任务审查可关闭（`review.per_task`，默认 false）：新增 `in_progress → queued_merge`（`submit_direct`，检查同 submit）；合并时 verify 非空的任务跑全量 typecheck、lint、test（不再用受影响测试），失败按 merge_verify_fail 退回并接续对话。设计阶段文档、fix 流程、先行验收测试照旧逐任务审查（设计阶段只有一个任务，审查兼查 extras）。修订第 45 条（关闭审查时）。测试配置固定 `per_task: true`。
 
 ## 真实模型实验
 

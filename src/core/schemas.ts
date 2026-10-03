@@ -284,6 +284,8 @@ export const WorkflowFile = Type.Object({
   }, { additionalProperties: false })),
   /** 按风险审查（第二轮 H）：低风险任务用便宜模型审查或只做程序检查；审查 run 的并发上限 */
   review: Type.Optional(Type.Object({
+    /** 逐任务审查（第四轮，默认 false）：关闭时提交后直接进入合并队列，合并时跑全量测试；设计阶段与 fix 流程照旧逐任务审查 */
+    per_task: Type.Optional(Type.Boolean()),
     max_parallel: Type.Optional(PosInt),
     low_risk: Type.Optional(Type.Object({
       enabled: Type.Optional(Type.Boolean()),

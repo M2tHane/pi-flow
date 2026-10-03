@@ -327,6 +327,9 @@
     "review": {
       "type": "object",
       "properties": {
+        "per_task": {
+          "type": "boolean"
+        },
         "max_parallel": {
           "type": "integer",
           "minimum": 1

@@ -11,6 +11,7 @@ import { KnowledgeError, learn, proposeCandidate, KNOWLEDGE_CONTENT_MAX, KNOWLED
 import { validateDag, dagReport, formatDagReport, leadingTestErrors, normalizeLeadingTests } from '../core/dag.ts';
 import { changedFiles, cleanStrayUntracked, snapshot } from '../core/worktree.ts';
 import { git } from '../core/git.ts';
+import { perTaskReview } from '../core/cost-control.ts';
 
 export const NOTE_LIMIT = 4000;
 
@@ -143,16 +144,18 @@ export async function flowSubmit(ctx: ToolContext, p: Static<typeof SubmitParams
   }
   snapshot(t.worktree, `[${ctx.env.flow}/${t.id}] ${p.summary.split('\n')[0]}`);
   const diff = changedFiles(t.worktree, t.base_sha);
+  // 关闭逐任务审查时直接进入合并队列（合并时跑全量测试）
+  const direct = !perTaskReview(ctx.config, ctx.store.readFlow(ctx.env.flow).mode, t, ctx.store.listTasks(ctx.env.flow));
   try {
-    await ctx.store.transitionTask(ctx.env.flow, t.id, {
-      to: 'review', trigger: 'submit', actor: actor(ctx), facts: { token: ctx.env.token, diff_files: diff },
-    });
+    await ctx.store.transitionTask(ctx.env.flow, t.id, direct
+      ? { to: 'queued_merge', trigger: 'submit_direct', actor: actor(ctx), facts: { token: ctx.env.token, diff_files: diff, direct_merge: true } }
+      : { to: 'review', trigger: 'submit', actor: actor(ctx), facts: { token: ctx.env.token, diff_files: diff } });
   } catch (e) {
     rethrow(e, `只修改 writes 内的文件。还原越界改动：新增的文件用 git rm <文件>，修改过的文件用 git checkout ${t.base_sha} -- <文件>。先 flow_note 写 handoff，然后再次 flow_submit。`);
   }
   await ctx.store.appendHandoff(ctx.env.flow, t.id, `提交说明：${p.summary}`, actor(ctx));
   await ctx.store.updateRun(ctx.env.run, { outcome: 'submitted' }, actor(ctx), '提交');
-  return { text: `已提交审查（改动 ${diff.length} 个文件${stray.length ? `；已清理可写范围外、未被跟踪的文件 ${stray.length} 个：${stray.slice(0, 5).join('、')}` : ''}）。你的工作已完成，请直接结束，不要再调用工具。`, details: { files: diff, cleaned: stray } };
+  return { text: `${direct ? '已提交合并' : '已提交审查'}（改动 ${diff.length} 个文件${stray.length ? `；已清理可写范围外、未被跟踪的文件 ${stray.length} 个：${stray.slice(0, 5).join('、')}` : ''}）。你的工作已完成，请直接结束，不要再调用工具。`, details: { files: diff, cleaned: stray } };
 }
 
 async function submitAnalysis(ctx: ToolContext, t: TaskFile, p: Static<typeof SubmitParams>): Promise<ToolResult> {

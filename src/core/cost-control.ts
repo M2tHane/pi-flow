@@ -5,6 +5,7 @@ import type { FlowFile, RoleSettingsFile, TaskFile } from './schemas.ts';
 import { matchesAny, CONTRACTS_PATH } from './paths.ts';
 import { isLeadingTest } from './dag.ts';
 import { git } from './git.ts';
+import { DESIGN_STAGES } from '../modes/plan.ts';
 
 const isPlaceholder = (m: string) => /^<.*>$/.test(m.trim());
 
@@ -14,6 +15,18 @@ export function resolveModelRef(config: FlowConfig, ref: string | undefined): st
   if (ref.includes('/')) return isPlaceholder(ref) ? null : ref;
   const m = config.raw.models[ref];
   return m && !isPlaceholder(m) ? m : null;
+}
+
+// —— 第四轮：逐任务审查可关闭 ——
+
+/**
+ * 这个任务提交后是否逐任务审查（review → verifying → queued_merge）。review.per_task 默认关闭：提交后直接进入合并队列，
+ * 合并时跑全量测试，质量由阶段末审查把关。设计阶段的文档（只有一个任务，审查兼查"超出需求"）、fix 流程、
+ * 必须先失败的先行验收测试照旧逐任务审查。
+ */
+export function perTaskReview(config: FlowConfig, mode: FlowFile['mode'], t: TaskFile, tasks: readonly TaskFile[]): boolean {
+  if (config.raw.review?.per_task === true) return true;
+  return mode === 'fix' || DESIGN_STAGES.has(t.stage) || isLeadingTest(t, tasks);
 }
 
 // —— H：按风险审查 ——

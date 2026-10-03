@@ -76,6 +76,21 @@ test('in_progress -> review：token、租约、diff、受保护路径、handoff'
   assert.equal(r.task.impl_run, 'r-1');
 });
 
+test('in_progress -> queued_merge（submit_direct）：不逐任务审查时提交直接进入合并队列，检查与 submit 相同；两条路径互斥', () => {
+  const t = inProgress();
+  const good = facts({ token: TOKEN, diff_files: ['src/server/t-001/a.ts'], direct_merge: true });
+  bad(planTransition(t, 'queued_merge', 'submit_direct', { ...good, direct_merge: undefined }), /需要逐任务审查/);
+  bad(planTransition(t, 'review', 'submit', good), /直接进入合并队列/);
+  bad(planTransition(t, 'queued_merge', 'submit_direct', { ...good, token: 'forged' }), /token/);
+  bad(planTransition(t, 'queued_merge', 'submit_direct', { ...good, diff_files: ['src/web/x.ts'] }), /src\/web\/x\.ts/);
+  bad(planTransition(t, 'queued_merge', 'submit_direct', { ...good, handoff_written: false }), /handoff/);
+  bad(planTransition(t, 'queued_merge', 'submit_direct', { ...good, diff_files: [] }), /没有改动/);
+  const r = ok(planTransition(t, 'queued_merge', 'submit_direct', good));
+  assert.equal(r.task.status, 'queued_merge');
+  assert.equal(r.task.lease, null);
+  assert.equal(r.task.impl_run, 'r-1');
+});
+
 test('review -> verifying：reviewer run 不同于实施 run', () => {
   const t = mkTask('T-001', { status: 'review', impl_run: 'r-1', lease: lease('r-2', RTOKEN) });
   bad(planTransition(t, 'verifying', 'review_pass', facts({ token: 'x' })), /token/);

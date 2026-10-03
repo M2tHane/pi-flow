@@ -546,7 +546,7 @@ export class StateStore {
   private applyQueueEffects(tx: Tx, mq: MergeQueueFile, flow: string, task: string, from: TaskStatus, to: TaskStatus) {
     const same = (e: { flow: string; task: string }) => e.flow === flow && e.task === task;
     let changed = false;
-    if (to === 'queued_merge' && from === 'verifying') {
+    if (to === 'queued_merge' && (from === 'verifying' || from === 'in_progress')) {
       if (!mq.queue.some(same)) mq.queue.push({ flow, task, enqueued_at: tx.ts });
       changed = true;
     } else if (to === 'queued_merge' && from === 'merging') {
