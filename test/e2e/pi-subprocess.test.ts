@@ -184,3 +184,30 @@ test('真实 pi 子进程：返工时接着上一次的对话继续（--fork）�
     assert.ok(impl[1]!.session_file && impl[1]!.session_file !== impl[0]!.session_file, '新会话单独留档');
   } finally { p.cleanup(); }
 });
+
+test('真实 pi 子进程：bash 命令没给超时或超过上限时改成 limits.bash_timeout_s', { skip: !piAvailable && 'pi 不可用', timeout: 120_000 }, async () => {
+  const yaml = PROJECT_YAML.replace(/^  bash_timeout_s: 300 /m, '  bash_timeout_s: 2   ');
+  const p = await setupProject({ yaml, tasks: [mkTask('T-001', { verify: ['test'] })] });
+  try {
+    const logFile = '/tmp/pi-flow-e2e-llm.log';
+    const before = existsSync(logFile) ? readFileSync(logFile, 'utf8').length : 0;
+    const engine = new Engine({
+      root: p.dir, store: p.store, config: parseConfig(yaml), launcher: new PiLauncher(),
+      roleSettings: () => ({ version: 1, roles: { 'backend-engineer': { model: 'fakellm/impl-sleep' }, reviewer: { model: 'fakellm/review-pass' } } }),
+      packageAgentsDir: path.join(ROOT, 'agents'),
+      subagentExtension: path.join(ROOT, 'src/pi-adapter/subagent.ts'),
+      extraExtensions: () => [path.join(ROOT, 'test/fixtures/fake-llm/provider.ts')],
+    });
+    const t0 = Date.now();
+    await engine.promote(p.flowId);
+    await engine.dispatch(p.flowId, 'T-001');
+    // 只等第一次运行：两次 sleep 30 各在 2 秒后被结束
+    while (p.store.listRuns().every((r) => !r.ended_at) && Date.now() - t0 < 60_000) await new Promise((r) => setTimeout(r, 200));
+    engine.killAll();
+    await engine.idle();
+    assert.ok(Date.now() - t0 < 50_000, '没有等满 60 秒');
+    const reqs = readFileSync(logFile, 'utf8').slice(before).trim().split('\n').map((l) => JSON.parse(l)).filter((r) => r.model === 'impl-sleep');
+    assert.match(JSON.stringify(reqs.find((r) => r.turn === 1)?.last), /timed out after 2 seconds/);
+    assert.match(JSON.stringify(reqs.find((r) => r.turn === 2)?.last), /timed out after 2 seconds/);
+  } finally { p.cleanup(); }
+});

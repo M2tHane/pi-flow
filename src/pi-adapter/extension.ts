@@ -146,6 +146,8 @@ export function engineFor(root: string): EngineHandle {
     onError: (e) => s.notify(`pi-flow 程序步骤出错：${(e as Error).message}`, 'warning'),
   });
   s.handle = { store, engine, config };
+  // 任何命令启动引擎都要检查租约：卡住的子进程（例如挂起的测试命令）到期会被结束，不只在 /flow resume 时
+  engine.startLeaseWatch();
   // 主动通知只在进入新阶段、出现需要你处理的事、任务首次失败重试时出现
   let prev = snapshotOf(store, config);
   const check = () => {

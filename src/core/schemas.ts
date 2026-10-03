@@ -257,6 +257,8 @@ export const WorkflowFile = Type.Object({
     session_retention_days: Type.Optional(PosInt),
     /** 返工时接着上一次的对话继续（pi --fork），默认 true（第三轮后续 2） */
     continue_session: Type.Optional(Type.Boolean()),
+    /** 子进程 bash 命令的超时上限（秒），默认 300：没给或超过时由 pi-flow 改成上限 */
+    bash_timeout_s: Type.Optional(PosInt),
     /** ready 任务由引擎自动派发（默认 true）；false 时由 orchestrator 调用 flow_dispatch 或用户 /flow next（第三轮后续 5） */
     auto_dispatch: Type.Optional(Type.Boolean()),
   }, { additionalProperties: false }),

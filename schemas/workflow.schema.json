@@ -78,6 +78,10 @@
         "continue_session": {
           "type": "boolean"
         },
+        "bash_timeout_s": {
+          "type": "integer",
+          "minimum": 1
+        },
         "auto_dispatch": {
           "type": "boolean"
         }

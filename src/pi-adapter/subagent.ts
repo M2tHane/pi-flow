@@ -8,6 +8,16 @@ import { SubagentRuntime } from '../core/subagent-runtime.ts';
 import { SUBAGENT_TOOLS, runEnvFrom, type SubagentToolName } from '../tools/subagent-tools.ts';
 import { MISSING_TOOLS_REASON } from '../core/dependencies.ts';
 
+/** 子进程 bash 命令的超时上限（秒），workflow.yaml 的 limits.bash_timeout_s，默认 300 */
+export const DEFAULT_BASH_TIMEOUT_S = 300;
+export const bashTimeoutS = (config: { limits: { bash_timeout_s?: number } }) => config.limits.bash_timeout_s ?? DEFAULT_BASH_TIMEOUT_S;
+
+/** 没给超时或超过上限时改成上限 */
+export function applyBashTimeout(input: Record<string, unknown>, maxS: number): void {
+  const t = input['timeout'];
+  if (typeof t !== 'number' || !Number.isFinite(t) || t <= 0 || t > maxS) input['timeout'] = maxS;
+}
+
 export default function piFlowSubagent(pi: ExtensionAPI): void {
   const env = runEnvFrom(process.env);
   if (!env) return;
@@ -40,7 +50,11 @@ export default function piFlowSubagent(pi: ExtensionAPI): void {
 
   pi.on('tool_call', async (event, ctx) => {
     const g = await rt.gate({ toolName: event.toolName, input: event.input }, ctx.cwd);
-    if (!g.block) return;
+    if (!g.block) {
+      // bash 命令一律有超时（秒）：挂起的测试、没关的服务器不会把整个任务卡住（Pi 1.0.0：event.input 可原地修改）
+      if (event.toolName === 'bash') applyBashTimeout(event.input as Record<string, unknown>, bashTimeoutS(config));
+      return;
+    }
     if (g.terminate) setTimeout(() => ctx.shutdown(), 0);
     return { block: true, reason: g.reason, ...(g.terminate ? { terminate: true } : {}) };
   });
