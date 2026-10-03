@@ -1,7 +1,8 @@
 // worktree 与任务分支：从集成分支 HEAD 拉出，放在项目目录之外的同级目录。
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { git, gitOk } from './git.ts';
+import { matchesAny } from './paths.ts';
 
 export const worktreesRoot = (mainRoot: string) =>
   path.join(path.dirname(path.resolve(mainRoot)), `${path.basename(path.resolve(mainRoot))}.worktrees`);
@@ -45,6 +46,17 @@ export function snapshot(wt: string, message: string): string | null {
   if (gitOk(wt, ['diff', '--cached', '--quiet'])) return null;
   git(wt, ['commit', '-q', '--no-verify', '-m', message], { engineIdentity: true });
   return headSha(wt);
+}
+
+/**
+ * 提交前清理工作区中未被 git 跟踪、又不在任务 writes 内的文件（测试或程序运行留下的数据文件、日志等）。
+ * 它们不是任务的产出，留着会让提交因越界被拒，而实施者又无权删除。返回被删除的文件（相对 worktree）。
+ */
+export function cleanStrayUntracked(wt: string, writes: readonly string[]): string[] {
+  const untracked = git(wt, ['ls-files', '--others', '--exclude-standard', '-z']).split('\0').filter(Boolean);
+  const stray = untracked.filter((f) => !matchesAny(f, writes));
+  for (const f of stray) rmSync(path.join(wt, f), { force: true });
+  return stray.sort();
 }
 
 /** base 到 HEAD 之间改动的文件（不合并重命名，删除也算）。调用前应先 snapshot。 */

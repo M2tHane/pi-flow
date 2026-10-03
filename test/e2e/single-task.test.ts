@@ -1,7 +1,7 @@
 // M3 验收：单任务闭环（fake-subagent 驱动真实的引擎、guard、工具、verify、状态存储）。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { Engine, DispatchError } from '../../src/core/dispatcher.ts';
 import type { RoleSettingsFile } from '../../src/core/schemas.ts';
@@ -161,6 +161,31 @@ test('review.verify_first: false 时照旧：审查通过后才跑 verify，失�
     const transitions = p.store.readEvents().filter((e) => e.type === 'transition' && e.task === 'T-001').map((e) => `${e.trigger}:${e.from}->${e.to}`);
     assert.ok(transitions.includes('verify_fail:verifying->in_progress'));
     assert.ok(!transitions.some((x) => x.startsWith('precheck_fail')));
+  } finally { p.cleanup(); }
+});
+
+test('提交前清理可写范围外、未被跟踪的文件（测试运行留下的数据）；writes 内的文件照常提交', async () => {
+  const p = await setupProject({ tasks: [task1()] });
+  try {
+    let submitText = '';
+    const { engine } = makeEngine(p, async (role, _n, a) => {
+      if (role === 'reviewer') return approve(a);
+      assert.ok((await a.call('flow_claim')).ok);
+      assert.ok((await a.call('write', { path: 'src/server/t-001/a.ts', content: 'export const a = 1;' })).ok);
+      // 模拟测试或程序运行时在工作区写下的数据文件（不经过工具，guard 看不到）
+      mkdirSync(path.join(a.spec.cwd, 'data'), { recursive: true });
+      writeFileSync(path.join(a.spec.cwd, 'data/ledger.json'), '{}');
+      await a.call('flow_note', { text: '完成' });
+      const r = await a.call('flow_submit', { summary: '实现 a' });
+      assert.ok(r.ok, r.text);
+      submitText = r.text;
+    });
+    await engine.next(p.flowId);
+    await engine.idle();
+    assert.equal(p.store.readTask(p.flowId, 'T-001').status, 'done');
+    assert.match(submitText, /已清理可写范围外、未被跟踪的文件 1 个：data\/ledger\.json/);
+    assert.match(p.store.readHandoff(p.flowId, 'T-001'), /程序清理了[\s\S]*data\/ledger\.json/);
+    assert.throws(() => p.git('show', `flow/${p.flowId}/integration:data/ledger.json`));
   } finally { p.cleanup(); }
 });
 

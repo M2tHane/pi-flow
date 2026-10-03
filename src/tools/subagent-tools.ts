@@ -9,7 +9,7 @@ import { KNOWLEDGE_CATEGORIES, ProposedTask, RevisionDependency, RevisionTask, t
 import { checkRevision } from '../core/revision.ts';
 import { KnowledgeError, learn, proposeCandidate, KNOWLEDGE_CONTENT_MAX, KNOWLEDGE_PER_RUN } from '../core/knowledge.ts';
 import { validateDag, dagReport, formatDagReport, normalizeLeadingTests } from '../core/dag.ts';
-import { changedFiles, snapshot } from '../core/worktree.ts';
+import { changedFiles, cleanStrayUntracked, snapshot } from '../core/worktree.ts';
 import { git } from '../core/git.ts';
 
 export const NOTE_LIMIT = 4000;
@@ -137,6 +137,10 @@ export async function flowSubmit(ctx: ToolContext, p: Static<typeof SubmitParams
   if (t.kind === 'analysis') return submitAnalysis(ctx, t, p);
   if (t.status !== 'in_progress') throw new FlowToolError(`任务当前是 ${t.status}，不能提交。`);
   if (!t.worktree || !t.base_sha) throw new FlowToolError('任务没有 worktree 或 base_sha，无法提交，请调用 flow_block 报告。');
+  const stray = cleanStrayUntracked(t.worktree, t.conflict_files ?? t.writes);
+  if (stray.length) {
+    await ctx.store.appendHandoff(ctx.env.flow, t.id, `提交前程序清理了可写范围外、未被 git 跟踪的文件：${stray.slice(0, 20).join('、')}${stray.length > 20 ? ` 等 ${stray.length} 个` : ''}（多为测试或运行产生的数据；测试应把数据写到临时目录）`, 'flow-submit');
+  }
   snapshot(t.worktree, `[${ctx.env.flow}/${t.id}] ${p.summary.split('\n')[0]}`);
   const diff = changedFiles(t.worktree, t.base_sha);
   try {
@@ -148,7 +152,7 @@ export async function flowSubmit(ctx: ToolContext, p: Static<typeof SubmitParams
   }
   await ctx.store.appendHandoff(ctx.env.flow, t.id, `提交说明：${p.summary}`, actor(ctx));
   await ctx.store.updateRun(ctx.env.run, { outcome: 'submitted' }, actor(ctx), '提交');
-  return { text: `已提交审查（改动 ${diff.length} 个文件）。你的工作已完成，请直接结束，不要再调用工具。`, details: { files: diff } };
+  return { text: `已提交审查（改动 ${diff.length} 个文件${stray.length ? `；已清理可写范围外、未被跟踪的文件 ${stray.length} 个：${stray.slice(0, 5).join('、')}` : ''}）。你的工作已完成，请直接结束，不要再调用工具。`, details: { files: diff, cleaned: stray } };
 }
 
 async function submitAnalysis(ctx: ToolContext, t: TaskFile, p: Static<typeof SubmitParams>): Promise<ToolResult> {
