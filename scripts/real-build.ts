@@ -22,6 +22,18 @@ const t0 = Date.now();
 const stamp = () => `${Math.round((Date.now() - t0) / 1000)}s`;
 const step = (s: string) => console.log(`\n\x1b[1m▶ [${stamp()}] ${s}\x1b[0m`);
 
+// 当前正在执行的 pi 命令：脚本被中断时转发 SIGTERM，让它结束自己拉起的 subagent，而不是留下孤儿进程
+let current: ReturnType<typeof spawn> | null = null;
+for (const sig of ['SIGINT', 'SIGTERM'] as const) {
+  process.on(sig, () => {
+    console.log(`\n收到 ${sig}，结束正在执行的 pi 命令及其子进程…`);
+    if (!current) process.exit(130);
+    current.once('close', () => process.exit(130));
+    current.kill('SIGTERM');
+    setTimeout(() => process.exit(130), 15_000).unref();
+  });
+}
+
 function pi(cwd: string, message: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const c = spawn('pi', ['-p', '--no-session', '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-context-files', '-e', EXTENSION, message],
@@ -29,7 +41,8 @@ function pi(cwd: string, message: string): Promise<string> {
     let out = '';
     c.stdout.on('data', (b) => { out += b; process.stdout.write(b); });
     c.stderr.on('data', (b) => { out += b; process.stdout.write(b); });
-    c.on('close', (code) => (code === 0 ? resolve(out) : reject(new Error(`pi 退出码 ${code}`))));
+    current = c;
+    c.on('close', (code) => { current = null; return code === 0 ? resolve(out) : reject(new Error(`pi 退出码 ${code}`)); });
   });
 }
 
