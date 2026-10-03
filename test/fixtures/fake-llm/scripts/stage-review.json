@@ -1,0 +1,12 @@
+{ "variants": [
+  { "match": "flow_review_confirm", "steps": [
+    { "tool_calls": [ { "name": "flow_review_confirm", "arguments": { "results": [ { "id": "R-1", "resolved": true, "new_issue": "顺便再提一个问题" } ] } } ] },
+    { "tool_calls": [ { "name": "flow_review_confirm", "arguments": { "results": [ { "id": "R-1", "resolved": true } ] } } ] },
+    { "text": "确认完成" }
+  ] },
+  { "match": "flow_review_report", "steps": [
+    { "tool_calls": [ { "name": "bash", "arguments": { "command": "git log --oneline -3" } } ] },
+    { "tool_calls": [ { "name": "flow_review_report", "arguments": { "summary": "a.ts 的值与契约不符", "issues": [ { "module": "server", "location": "src/server/t-001/a.ts:1", "problem": "a 应为 2", "expected": "export const a = 2", "files": [ "src/server/t-001/a.ts" ] } ] } } ] },
+    { "text": "审查完成" }
+  ] }
+] }

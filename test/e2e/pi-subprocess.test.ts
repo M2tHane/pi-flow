@@ -12,7 +12,7 @@ import { readFileSync } from 'node:fs';
 import { parseConfig } from '../../src/core/config.ts';
 import { PROJECT_YAML } from '../helpers/project.ts';
 import { startFakeLlm, type FakeLlm } from '../fixtures/fake-llm/server.ts';
-import { setupProject, DIRECT_YAML } from '../helpers/project.ts';
+import { setupProject, DIRECT_YAML, STAGE_REVIEW_YAML } from '../helpers/project.ts';
 import { mkTask } from '../helpers/tasks.ts';
 
 const ROOT = path.join(import.meta.dirname, '../..');
@@ -214,6 +214,37 @@ test('真实 pi 子进程：关闭逐任务审查时提交直接合并，合并�
     const second = reqs.find((r) => r.turn === 5)!;
     assert.ok(second, '第二次运行的第一个请求带着上一次的 5 条回复');
     assert.match(JSON.stringify(second.last), /继续任务[\s\S]*合并后验证失败[\s\S]*全量/);
+  } finally { p.cleanup(); }
+});
+
+test('真实 pi 子进程：阶段末审查——审查者用 flow_review_report 提交清单，修复合入后用 flow_review_confirm 确认（多出的字段被参数格式拒绝）', { skip: !piAvailable && 'pi 不可用', timeout: 300_000 }, async () => {
+  const yaml = STAGE_REVIEW_YAML.replace(/^  auto_dispatch: false$/m, '  auto_dispatch: true');
+  const p = await setupProject({ yaml, tasks: [mkTask('T-001', { verify: ['typecheck', 'test'] })] });
+  try {
+    const logFile = '/tmp/pi-flow-e2e-llm.log';
+    const before = existsSync(logFile) ? readFileSync(logFile, 'utf8').length : 0;
+    const errors: unknown[] = [];
+    const engine = new Engine({
+      root: p.dir, store: p.store, config: parseConfig(yaml), launcher: new PiLauncher(),
+      roleSettings: () => ({ version: 1, roles: { 'backend-engineer': { model: 'fakellm/impl-stage' }, reviewer: { model: 'fakellm/stage-review' } } }),
+      packageAgentsDir: path.join(ROOT, 'agents'),
+      subagentExtension: path.join(ROOT, 'src/pi-adapter/subagent.ts'),
+      extraExtensions: () => [path.join(ROOT, 'test/fixtures/fake-llm/provider.ts')],
+      onError: (e) => errors.push(e),
+    });
+    await engine.next(p.flowId);
+    await engine.idle();
+    assert.deepEqual(errors, []);
+    const sr = p.store.readStageReview(p.flowId, 'S3')!;
+    assert.equal(sr.status, 'done', JSON.stringify(sr));
+    assert.deepEqual(sr.issues.map((i) => [i.id, i.module, i.files]), [['R-1', 'server', ['src/server/t-001/a.ts']]]);
+    assert.deepEqual(sr.confirm, [{ id: 'R-1', resolved: true }]);
+    assert.equal(p.store.readTask(p.flowId, sr.fix_tasks[0]!).status, 'done');
+    assert.equal(p.git('show', `flow/${p.flowId}/integration:src/server/t-001/a.ts`), 'export const a = 2;');
+    assert.equal(p.store.readFlow(p.flowId).stage_status, 'awaiting_human');
+    const reqs = readFileSync(logFile, 'utf8').slice(before).trim().split('\n').map((l) => JSON.parse(l)).filter((r) => r.model === 'stage-review');
+    assert.ok(reqs.some((r) => r.tools.includes('flow_review_report') && r.tools.includes('flow_review_confirm')), '审查者的工具里有阶段审查的两个工具');
+    assert.ok(reqs.some((r) => /flow_review_confirm[\s\S]*must not have additional properties/.test(JSON.stringify(r.last))), '多出的字段被参数格式拒绝');
   } finally { p.cleanup(); }
 });
 

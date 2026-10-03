@@ -20,6 +20,8 @@ limits:`);
 
 /** 关闭逐任务审查（模板默认）：提交后直接进入合并队列，合并时跑全量 typecheck、lint、test */
 export const DIRECT_YAML = PROJECT_YAML.replace(/^  per_task: true$/m, '  per_task: false');
+/** 模板默认的新流程：不逐任务审查，阶段末审查一次 */
+export const STAGE_REVIEW_YAML = DIRECT_YAML.replace(/^  stage_end: false$/m, '  stage_end: true');
 
 export interface Project {
   dir: string;

@@ -5,7 +5,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import type { FlowConfig } from './config.ts';
 import type { AgentDef } from './agents.ts';
-import type { TaskFile } from './schemas.ts';
+import type { StageIssue, TaskFile } from './schemas.ts';
 
 export interface RuleFile { path: string; content: string }
 
@@ -42,6 +42,20 @@ export interface PreviousReview {
   maxRounds?: number;
 }
 
+/** 阶段末审查（第四轮）的提示材料 */
+export interface AssembleStageReview {
+  kind: 'review' | 'confirm';
+  /** 本阶段第一次合并前的集成分支提交 */
+  baseSha: string | null;
+  /** baseSha..HEAD 的 diff --stat */
+  diffStat?: string | undefined;
+  /** 确认：清单上的问题 */
+  issues?: StageIssue[];
+  /** 确认：修复开始时的提交与之后的改动 */
+  fixBase?: string | null;
+  fixDiffStat?: string | undefined;
+}
+
 export interface AssembleInput {
   agent: AgentDef;
   rules: RuleFile[];
@@ -50,7 +64,9 @@ export interface AssembleInput {
   task: TaskFile;
   flowId: string;
   handoff: string;
-  mode: 'impl' | 'review';
+  /** stage：阶段末审查与确认（只读，提交问题清单或逐条确认） */
+  mode: 'impl' | 'review' | 'stage';
+  stageReview?: AssembleStageReview;
   commands: Record<string, string>;
   /** 审查模式：base_sha..HEAD 的 diff --stat */
   diffStat?: string;
@@ -122,6 +138,30 @@ export function previousReviewSection(pr: PreviousReview): string {
   ].join('\n\n');
 }
 
+/** 阶段末审查的材料：本阶段的改动范围；确认时附清单与修复后的改动 */
+export function stageReviewSections(s: AssembleStageReview): string[] {
+  const base = s.baseSha ? s.baseSha.slice(0, 12) : null;
+  const out = [base
+    ? `## 本阶段的改动\n本阶段第一次合并前的集成分支提交：${s.baseSha}。工作区是集成分支最新代码；用 \`git diff ${base} HEAD -- <路径>\` 查看某个模块的改动。\n\n\`\`\`\n${(s.diffStat ?? '（无法取得）').trim()}\n\`\`\``
+    : '## 本阶段的改动\n工作区是集成分支最新代码；本阶段各任务的可写范围见 handoff。'];
+  if (s.kind === 'review') {
+    out.push([
+      '## 阶段审查的要求',
+      '1. 按模块读本阶段的代码（实现与测试），对照 docs/contracts/ 中的契约、ARCHITECTURE.md、上面的规则和 handoff 中各任务的验收标准。',
+      '2. 只提这几类问题：违反契约（函数名、参数、返回值、错误、接口与契约不符）；违反规则（引用条目）；不满足验收标准；明确的缺陷（错误的逻辑、遗漏的错误处理、测试没有真正验证行为）。',
+      '3. 不提风格偏好、命名喜好、"可以更好"的重构；这些不是问题。',
+      '4. 每条问题写明 module（模块名）、location（文件:行）、problem、expected（期望的修改）、files（修复要改的文件，具体路径，只涉及一个模块）。程序按模块把问题分给负责的角色并行修复，修复者只能改 files 里的文件。',
+      '5. 这是本阶段唯一一次提出问题的机会：之后的确认只能核对这份清单，不能补充新问题。所以要一次看全，但不要为了凑数提问题。',
+    ].join('\n'));
+  } else {
+    const issues = s.issues ?? [];
+    out.push(`## 待确认的问题\n${issues.length ? issues.map((x) => `- ${x.id}［${x.module}］${x.location}：${x.problem}；期望：${x.expected}（文件：${x.files.join('、')}）`).join('\n') : '（无）'}`);
+    if (s.fixBase) out.push(`## 修复开始后的改动\n用 \`git diff ${s.fixBase.slice(0, 12)} HEAD -- <文件>\` 查看。\n\n\`\`\`\n${(s.fixDiffStat ?? '（无法取得）').trim() || '（没有改动）'}\n\`\`\``);
+    out.push('## 确认的要求\n只核对上面每条问题是否已按"期望"解决。不要提出新问题，也不要因为别处的代码打回；清单之外的发现写在 note 里也不会被处理。');
+  }
+  return out;
+}
+
 /** 返工时接着上一次的对话：任务说明、上游与 handoff 都已在对话里，只说明这次为什么回来、新的临时目录与开始方式 */
 export function continuationPrompt(i: AssembleInput): string {
   const t = i.task;
@@ -188,7 +228,12 @@ export function assemblePrompt(i: AssembleInput): AssembledPrompt {
     const what = pr?.head ? `上次审查（${pr.head.slice(0, 12)}）之后的改动` : '本任务的全部改动';
     parts.push(`## ${what}（已附 diff，不必再运行 git diff）\n${i.inlineDiff.trim() ? `\`\`\`diff\n${i.inlineDiff.trim()}\n\`\`\`` : '（没有改动）'}`);
   }
-  parts.push(i.mode === 'review'
+  if (i.mode === 'stage' && i.stageReview) parts.push(...stageReviewSections(i.stageReview));
+  parts.push(i.mode === 'stage'
+    ? (i.stageReview?.kind === 'confirm'
+      ? '开始：逐条核对上面的问题，最后调用 flow_review_confirm：每个编号回答 resolved（true/false），未解决的在 note 里写原因。只能回答这些编号，不能提出新问题。'
+      : '开始：通读本阶段改动涉及的全部模块，最后调用 flow_review_report 一次提交问题清单（没有问题就提交空清单）。')
+    : i.mode === 'review'
     ? '开始：审查上述改动，最后调用 flow_approve 给出结论。'
     : '开始：先调用 flow_claim，然后按工作流程完成任务，最后 flow_note 写 handoff 并 flow_submit。');
   if (i.mode === 'impl' && i.continuation) return { system, user: continuationPrompt(i) };

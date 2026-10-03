@@ -179,6 +179,9 @@
 
 101. 契约到函数级：每个模块一个契约文件，写对外函数的名字、参数、返回值、错误（REST 照旧）；任务 inputs 列出依赖的契约条目。只改技能与提示，程序不校验格式。
 102. 逐任务审查可关闭（`review.per_task`，默认 false）：新增 `in_progress → queued_merge`（`submit_direct`，检查同 submit）；合并时 verify 非空的任务跑全量 typecheck、lint、test（不再用受影响测试），失败按 merge_verify_fail 退回并接续对话。设计阶段文档、fix 流程、先行验收测试照旧逐任务审查（设计阶段只有一个任务，审查兼查 extras）。修订第 45 条（关闭审查时）。测试配置固定 `per_task: true`。
+103. 阶段末审查（`review.stage_end`，默认 true；测试配置固定 false）：实施阶段（非设计阶段、非 fix）任务全部结束后由程序推进 `flows/<id>/stage-review-<阶段>.json`（reviewing → fixing → confirming → refixing → gating → test_fixing / needs_human → done），每步的记录、新任务与 handoff 在同一事务内写入，崩溃后从中途继续。审查与确认是程序生成的只读 analysis 任务（`stage_review`，角色 reviewer，审查用强模型、确认用普通档），经 `report` 转 done。
+104. 新工具 `flow_review_report`（问题文件必须是具体路径、不能是契约或受保护文件、要有实施角色能写，否则拒绝）与 `flow_review_confirm`（参数只有 `{id, resolved, note}`，id 必须在清单中且每个都要回答；Pi 自己也按 schema 拒绝多余字段）；reviewer 角色隐式拥有。修复任务用已有的 kind `review-fix`，按（模块，角色）分组、writes = 问题涉及的文件。
+105. 闸门失败（auto 命令）时从输出中提取仓库里的文件，按写过它的任务找角色（writes 取那些任务的 writes），生成第 n 轮修复任务；两轮后或定位不到时转 needs_human（"需要你处理"，`/flow gate` 重跑不再自动修）。阶段审查结束后被修订重新打开的阶段不再审查。
 
 ## 真实模型实验
 
@@ -203,6 +206,7 @@
 
 修改 `agents/`、`rules/`、`skills/` 会改变子进程系统提示的稳定前缀，提供商的提示缓存失效一次；`rules/` 的改动只影响之后 `/flow init` 的新项目。改动时在此追加一行。
 
+- 10-03（第 103 条）：reviewer（阶段审查）、orchestrator、backend、frontend、db、infra、test、ui 角色提示（review-fix 只修分到的问题）；`decompose-dag` 技能；工具声明多了 flow_review_report、flow_review_confirm。
 - 10-03（第 101 条）：architect 角色提示；`design-contract`、`decompose-dag` 技能。
 - 10-03（第 100 条）：backend、frontend、db、test、reviewer 角色提示；`rules/testing.md`；`decompose-dag`、`revise-plan`（重写）、`design-contract` 技能。
 - 10-02（第 97 条）：`rules/testing.md` 增加四条。

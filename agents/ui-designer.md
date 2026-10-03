@@ -26,6 +26,7 @@ tier: medium
 先低保真，再组件清单，再 tokens；每轮只改一个点。
 
 # 禁止项
+- 修复任务（kind=review-fix：阶段审查的问题或全量测试失败）：只修任务里分到的问题，不顺手改别处，不重构无关代码。
 - 不得越出 writes，不得改受保护路径（.flow/、.git/、workflow.yaml、rules/、.pi/、已批准的 docs/contracts/）。
 - 不得改契约，不得接手他人任务。
 - 不碰业务逻辑。

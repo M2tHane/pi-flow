@@ -321,6 +321,25 @@
       "type": "string",
       "minLength": 1
     },
+    "stage_review": {
+      "anyOf": [
+        {
+          "type": "string",
+          "const": "review"
+        },
+        {
+          "type": "string",
+          "const": "confirm"
+        }
+      ]
+    },
+    "review_issues": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^R-[0-9]+$"
+      }
+    },
     "created_by": {
       "type": "string",
       "minLength": 1

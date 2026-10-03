@@ -132,6 +132,10 @@ export const TaskFile = Type.Object({
   conflict_files: Type.Optional(Type.Array(Type.String())),
   /** 同步主分支的冲突修复任务：合并的主分支提交（worktree 是含冲突标记的合并提交） */
   sync_main: Type.Optional(Type.String({ minLength: 1 })),
+  /** 阶段末审查（第四轮）的只读任务：review 提交问题清单，confirm 逐条确认修复（kind=analysis，角色 reviewer） */
+  stage_review: Type.Optional(Type.Union([Type.Literal('review'), Type.Literal('confirm')])),
+  /** 阶段审查修复任务（kind=review-fix）分到的问题编号 */
+  review_issues: Type.Optional(Type.Array(Type.String({ pattern: '^R-[0-9]+$' }))),
   created_by: Type.String({ minLength: 1 }),
   version: Type.Integer({ minimum: 1 }),
 }, { additionalProperties: false });
@@ -286,6 +290,8 @@ export const WorkflowFile = Type.Object({
   review: Type.Optional(Type.Object({
     /** 逐任务审查（第四轮，默认 false）：关闭时提交后直接进入合并队列，合并时跑全量测试；设计阶段与 fix 流程照旧逐任务审查 */
     per_task: Type.Optional(Type.Boolean()),
+    /** 阶段末审查（第四轮，默认 true）：实施阶段的任务全部合入后，强模型审查一次本阶段全部代码，按模块并行修复、确认一次，再跑全量测试 */
+    stage_end: Type.Optional(Type.Boolean()),
     max_parallel: Type.Optional(PosInt),
     low_risk: Type.Optional(Type.Object({
       enabled: Type.Optional(Type.Boolean()),
@@ -391,6 +397,41 @@ export const RevisionTask = Type.Object({
   contract_change: Type.Optional(Type.Boolean()),
 }, { additionalProperties: false });
 export type RevisionTask = Static<typeof RevisionTask>;
+
+// —— 阶段末审查（第四轮）：本阶段任务全部合入后审查一次 → 按模块并行修复 → 只确认不新增 → 全量测试与有限重试 ——
+export const STAGE_REVIEW_STATUSES = ['reviewing', 'fixing', 'confirming', 'refixing', 'gating', 'test_fixing', 'needs_human', 'done'] as const;
+export const StageIssue = Type.Object({
+  id: Type.String({ pattern: '^R-[0-9]+$' }),
+  module: Type.String({ minLength: 1 }),
+  location: Type.String({ minLength: 1 }),
+  problem: Type.String({ minLength: 1 }),
+  expected: Type.String({ minLength: 1 }),
+  files: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
+}, { additionalProperties: false });
+export type StageIssue = Static<typeof StageIssue>;
+
+export const StageReviewFile = Type.Object({
+  stage: Type.String({ minLength: 1 }),
+  status: Type.Enum(STAGE_REVIEW_STATUSES),
+  /** 本阶段第一次合并前的集成分支提交：审查看 base_sha..HEAD */
+  base_sha: Nullable(Type.String()),
+  review_task: Nullable(TaskId),
+  /** 审查者是否已提交清单（可以为空清单） */
+  reported: Type.Boolean(),
+  issues: Type.Array(StageIssue),
+  /** 第一轮修复开始时的集成分支提交：确认时看之后的改动 */
+  fix_base: Type.Optional(Type.String()),
+  fix_tasks: Type.Array(TaskId),
+  confirm_task: Nullable(TaskId),
+  confirm: Type.Array(Type.Object({ id: Type.String({ pattern: '^R-[0-9]+$' }), resolved: Type.Boolean(), note: Type.Optional(Type.String()) }, { additionalProperties: false })),
+  /** 确认未解决的问题再修一轮（不再确认） */
+  refix_tasks: Type.Array(TaskId),
+  /** 全量测试失败后的修复轮次（最多两轮） */
+  test_rounds: Type.Array(Type.Object({ command: Type.String(), tasks: Type.Array(TaskId), at: IsoTime }, { additionalProperties: false })),
+  reason: Type.Optional(Type.String()),
+  version: Type.Integer({ minimum: 1 }),
+}, { additionalProperties: false });
+export type StageReviewFile = Static<typeof StageReviewFile>;
 
 export const RevisionFile = Type.Object({
   /** 发起修订的任务（replan 任务）与原因 */
@@ -521,6 +562,7 @@ export const SCHEMAS = {
   knowledge: KnowledgeFile,
   revision: RevisionFile,
   'model-pauses': ModelPausesFile,
+  'stage-review': StageReviewFile,
 } as const;
 export type SchemaKind = keyof typeof SCHEMAS;
 

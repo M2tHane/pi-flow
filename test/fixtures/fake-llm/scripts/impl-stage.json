@@ -1,0 +1,16 @@
+{ "variants": [
+  { "match": "阶段审查问题", "steps": [
+    { "tool_calls": [ { "name": "flow_claim", "arguments": {} } ] },
+    { "tool_calls": [ { "name": "write", "arguments": { "path": "src/server/t-001/a.ts", "content": "export const a = 2;\n" } } ] },
+    { "tool_calls": [ { "name": "flow_note", "arguments": { "text": "按 R-1 修改" } } ] },
+    { "tool_calls": [ { "name": "flow_submit", "arguments": { "summary": "修复 R-1" } } ] },
+    { "text": "已提交" }
+  ] },
+  { "match": "", "steps": [
+    { "tool_calls": [ { "name": "flow_claim", "arguments": {} } ] },
+    { "tool_calls": [ { "name": "write", "arguments": { "path": "src/server/t-001/a.ts", "content": "export const a = 1;\n" } } ] },
+    { "tool_calls": [ { "name": "flow_note", "arguments": { "text": "完成 a.ts" } } ] },
+    { "tool_calls": [ { "name": "flow_submit", "arguments": { "summary": "实现 a.ts" } } ] },
+    { "text": "已提交" }
+  ] }
+] }

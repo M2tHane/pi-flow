@@ -330,6 +330,9 @@
         "per_task": {
           "type": "boolean"
         },
+        "stage_end": {
+          "type": "boolean"
+        },
         "max_parallel": {
           "type": "integer",
           "minimum": 1

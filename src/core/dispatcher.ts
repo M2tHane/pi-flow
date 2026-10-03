@@ -10,7 +10,7 @@ import type { RunOutcome, SubagentHandle, SubagentLauncher, SubagentSpec } from 
 import { hashToken, isSettled } from './state-machine.ts';
 import { resolveRoleModel } from './role-settings.ts';
 import { loadAgent } from './agents.ts';
-import { assemblePrompt, ruleFilesFor, type PreviousReview } from './prompt-assembler.ts';
+import { assemblePrompt, ruleFilesFor, type AssembleStageReview, type PreviousReview } from './prompt-assembler.ts';
 import { formatEntry, selectKnowledge } from './knowledge.ts';
 import { findSessionFile, sessionDirOf } from './session-log.ts';
 import { heldByRevision } from './revision.ts';
@@ -24,6 +24,7 @@ import { RUN_ENV_KEYS } from '../tools/subagent-tools.ts';
 import { MergeQueue, type MergeHooks, type MergeResult, type SyncResult } from './merge-queue.ts';
 import { runStageGate, gateFailedWithoutChange, type GateOutcome } from './gates.ts';
 import { ensureStageTasks } from './stages.ts';
+import { stageGateFailed, stageGatePassed, stageReviewStep } from './stage-review.ts';
 import { STAGE_SKILLS } from '../modes/plan.ts';
 import { fixStep } from '../modes/fix.ts';
 import { existsSync, readFileSync } from 'node:fs';
@@ -251,7 +252,11 @@ export class Engine {
     let model = base.model;
     // 按风险审查（H、第三轮 C）：低风险用便宜模型，高风险用强模型，其余用审查者自己的模型（取不到时都退回审查者的模型）
     let reviewMode: ReviewMode | undefined;
-    if (role === REVIEWER_ROLE) {
+    if (role === REVIEWER_ROLE && task.stage_review) {
+      // 阶段末审查用强模型；确认只看清单上的几处，用审查者自己的模型
+      reviewMode = task.stage_review === 'review' ? 'strong' : 'full';
+      if (reviewMode === 'strong') model = strongReviewModel(this.d.config, this.d.roleSettings(), role, model) ?? model;
+    } else if (role === REVIEWER_ROLE) {
       const risk = assessRisk(this.d.config, task, this.d.store.listTasks(flowId), diffNumstat(task));
       const policy = reviewPolicy(this.d.config).lowRisk;
       reviewMode = risk.low && policy.mode === 'cheap' ? 'light' : risk.high ? 'strong' : 'full';
@@ -312,7 +317,7 @@ export class Engine {
     const agent = loadAgent(role, root, this.d.packageAgentsDir);
     // 审查者使用被审任务的 scope 规则
     const { rules } = ruleFilesFor(config, root, task.scopes);
-    const mode = role === REVIEWER_ROLE ? 'review' : 'impl';
+    const mode = role === REVIEWER_ROLE ? (task.stage_review ? 'stage' : 'review') : 'impl';
     const diffStat = mode === 'review' && task.worktree && task.base_sha
       ? git(task.worktree, ['diff', '--stat', task.base_sha, 'HEAD']) : undefined;
     const previousReview = mode === 'review' ? previousReviewOf(store, flowId, task, reviewPolicy(config).maxRounds) : null;
@@ -339,6 +344,17 @@ export class Engine {
     }).filter((x): x is { path: string; content: string } => !!x);
     const tasks = store.listTasks(flowId);
     const carried = carriedTestOf(task, tasks);
+    // 阶段末审查：本阶段相对第一次合并前的改动；确认时附问题清单与修复开始后的改动
+    let stageReview: AssembleStageReview | undefined;
+    if (mode === 'stage' && task.stage_review) {
+      const sr = store.readStageReview(flowId, task.stage);
+      const stat = (from: string | null | undefined) => {
+        if (!from || !task.worktree) return undefined;
+        try { const s = git(task.worktree, ['diff', '--stat', from, 'HEAD']).trim(); return s.length > 8000 ? `${s.slice(0, 8000)}\n…` : s; } catch { return undefined; }
+      };
+      stageReview = { kind: task.stage_review, baseSha: sr?.base_sha ?? null, diffStat: stat(sr?.base_sha),
+        ...(task.stage_review === 'confirm' ? { issues: sr?.issues ?? [], fixBase: sr?.fix_base ?? null, fixDiffStat: stat(sr?.fix_base) } : {}) };
+    }
     // 实施类角色的临时目录（项目与 worktree 之外）：做实验、建临时文件，run 结束后删除
     const scratch = mode === 'impl' && config.role(role).writes.length ? scratchDir(root, runId) : undefined;
     if (scratch) mkdirSync(scratch, { recursive: true });
@@ -359,6 +375,7 @@ export class Engine {
       ...(mode === 'review' && (task.stage === 'S1' || task.stage === 'F1') && !task.replan && store.readProposal(flowId) ? { proposalExtras: store.readProposal(flowId)!.extras ?? [] } : {}),
       ...(fork && mode === 'impl' ? { continuation: { run: fork.run_id } } : {}),
       ...(existingWork ? { existingWork } : {}),
+      ...(stageReview ? { stageReview } : {}),
     });
     const runDir = path.join(worktreesRoot(root), '.runs', runId);
     mkdirSync(runDir, { recursive: true });
@@ -523,6 +540,8 @@ export class Engine {
       if (!stageTasks.every(isSettled)) return;
       // 计划修订待用户批准时不提交闸门（批准后可能新增本阶段的任务）
       if (this.d.store.readRevision(flowId)?.status === 'proposed') return;
+      // 阶段末审查（第四轮）：审查、按模块修复、确认都完成后才跑闸门；生成了新任务时等它们结束
+      if (await stageReviewStep(deps, flowId) === 'wait') { await this.promote(flowId); this.notify(); return; }
       if (!force && gateFailedWithoutChange(this.d.store, flowId, flow.stage)) return;
       await this.d.store.transitionStage(flowId, { to: 'awaiting_gate', trigger: 'submit_gate', actor: 'engine' });
       this.gating.add(flowId);
@@ -530,6 +549,9 @@ export class Engine {
       this.track(runStageGate(this.d.root, this.d.store, this.d.config, flowId, this.d.verifyTimeoutMs)
         .then(async (g) => {
           this.d.onGate?.(g);
+          // 阶段末审查：闸门通过则结束；全量测试失败则按日志生成修复任务（最多两轮，之后转需要用户处理）
+          if (g.passed) await stageGatePassed(deps, flowId, g.stage);
+          else if (g.failed) await stageGateFailed(deps, flowId, g.stage, g.failed);
           if (g.passed && !g.needsHuman) await this.d.store.advanceStage(flowId, 'gate');
         })
         .finally(() => this.gating.delete(flowId))

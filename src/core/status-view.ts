@@ -6,6 +6,7 @@ import { isFinished } from './state-store.ts';
 import { isLeadingTest } from './dag.ts';
 import { budgetState, formatBudget } from './cost-control.ts';
 import { activePauses, describePause } from './model-pause.ts';
+import { describeStageReview } from './stage-review.ts';
 import { PHASES, type FlowFile, type Phase, type TaskFile } from './schemas.ts';
 
 export type PhaseOrDone = Phase | 'done';
@@ -23,14 +24,14 @@ const GOALS: Record<'build' | 'feature' | 'fix', Record<PhaseOrDone, string>> = 
   build: {
     discovery: '整理需求，写出 PRD（含非目标与可验证的验收标准）',
     planning: '架构、契约与任务拆解',
-    execution: '按任务拆解实现，逐个审查、验证并合入集成分支',
+    execution: '按任务拆解实现，每个任务跑全量测试后合入集成分支；阶段末统一审查一次、按模块修复',
     acceptance: '集成与端到端测试，发布审批后合入主分支',
     done: '已合入主分支',
   },
   feature: {
     discovery: '写出功能说明（目标、非目标、验收标准）',
     planning: '影响面分析与本功能的任务拆解',
-    execution: '实现本功能的任务，逐个审查、验证并合入集成分支',
+    execution: '实现本功能的任务，每个任务跑全量测试后合入集成分支；阶段末统一审查一次、按模块修复',
     acceptance: '新功能验收与全量回归，审批后合入主分支',
     done: '已合入主分支',
   },
@@ -91,7 +92,8 @@ export function lastFailureKind(store: StateStore, flowId: string, taskId: strin
 
 /** expectFail：测试必须先失败（fix 的复现测试、先行验收测试） */
 export function taskActivity(t: TaskFile, failureKind: string | null, expectFail: 'repro' | 'leading' | null = null): string {
-  const base = t.status === 'in_progress' ? (t.kind === 'analysis' ? (t.lease ? '定位中' : '等待重新派发') : t.lease ? '实现中' : '等待重新派发')
+  const working = t.stage_review === 'review' ? '阶段审查中' : t.stage_review === 'confirm' ? '确认修复中' : t.kind === 'analysis' ? '定位中' : t.kind === 'review-fix' ? '修复中' : '实现中';
+  const base = t.status === 'in_progress' ? (t.lease ? working : '等待重新派发')
     : t.status === 'review' ? '审查中'
       : t.status === 'verifying' ? (expectFail === 'repro' ? '确认复现中' : expectFail === 'leading' ? '确认测试先失败' : '验证中')
         : t.status === 'queued_merge' || t.status === 'merging' ? '合入中'
@@ -125,7 +127,11 @@ export function actionsNeeded(store: StateStore, config: FlowConfig): Action[] {
     }
     if (flow.mode !== 'fix' && flow.stage_status === 'active') {
       const gate = [...store.readEvents()].reverse().find((e) => e.flow === flow.id && e.type === 'gate_result');
-      if (gate?.to === 'active' && gate.data?.['stage'] === flow.stage) {
+      const sr = store.readStageReview(flow.id, flow.stage);
+      if (sr?.status === 'needs_human') {
+        out.push({ key: `${flow.id}:stage-review:${flow.stage}:${sr.version}`, text: `实施阶段的${short(sr.reason ?? '全量测试仍失败', 200)}（失败日志：/flow status --detail）`,
+          command: '用 /flow replan "<怎么修>" 交给 architect 安排修复任务；处理后执行 /flow gate 重跑' });
+      } else if (gate?.to === 'active' && gate.data?.['stage'] === flow.stage) {
         out.push({ key: `${flow.id}:gatefail:${gate.seq}`, text: `阶段检查未通过：${short(gate.reason ?? '')}`, command: '修复后执行 /flow gate' });
       }
     }
@@ -190,6 +196,8 @@ export function renderFlow(store: StateStore, config: FlowConfig, flow: FlowFile
     ? `正在进行：\n${active.map((t) => `- ${t.id} ${short(t.title, 40)}（${t.lease?.role ?? t.role}）${taskActivity(t, t.attempts ? lastFailureKind(store, flow.id, t.id) : null,
       t.kind !== 'test' ? null : flow.mode === 'fix' ? 'repro' : isLeadingTest(t, tasks) ? 'leading' : null)}`).join('\n')}`
     : `正在进行：${flow.stage_status === 'awaiting_human' ? '无（等待你审批）' : flow.stage_status === 'awaiting_gate' ? '阶段检查中' : '无'}`);
+  const sr = flow.mode !== 'fix' ? store.readStageReview(flow.id, flow.stage) : null;
+  if (sr && sr.status !== 'done') lines.push(`阶段审查：${describeStageReview(sr)}`);
   const blocked = tasks.filter((t) => t.status === 'blocked');
   lines.push(blocked.length ? `阻塞：${blocked.map((t) => t.id).join('、')}（见上方"需要你处理"）` : '阻塞：无');
   return lines.join('\n');

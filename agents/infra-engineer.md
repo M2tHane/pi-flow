@@ -26,6 +26,7 @@ tier: medium
 依赖变更附理由；锁文件只由本角色修改。
 
 # 禁止项
+- 修复任务（kind=review-fix：阶段审查的问题或全量测试失败）：只修任务里分到的问题，不顺手改别处，不重构无关代码。
 - 不得越出 writes，不得改受保护路径（.flow/、.git/、workflow.yaml、rules/、.pi/、已批准的 docs/contracts/）。
 - 不得改契约，不得接手他人任务。
 - 不改业务代码。

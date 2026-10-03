@@ -1,4 +1,5 @@
 // orchestrator 的工具：flow_status（只读）、flow_dispatch（只收 ready 任务，非阻塞）、flow_wait（等待变化，返回精简摘要）。
+import { describeStageReview } from '../core/stage-review.ts';
 import { activePauses, describePause } from '../core/model-pause.ts';
 import { Type, type Static } from 'typebox';
 import type { StateStore } from '../core/state-store.ts';
@@ -75,6 +76,12 @@ export function statusText(store: StateStore, engine: Engine | null, flowId: str
   }
   const rev = openReplan(store, flowId)?.revision;
   if (rev) lines.push(`等待用户：计划修订待批准 → /flow approve（或 /flow reject "<意见>"）\n${formatRevision(rev)}`);
+  const sr = flow.mode !== 'fix' ? store.readStageReview(flowId, flow.stage) : null;
+  if (sr && sr.status !== 'done') {
+    const answer = (id: string) => { const c = sr.confirm.find((x) => x.id === id); return c ? (c.resolved ? ' ✓已解决' : ` ✗未解决${c.note ? `：${one(c.note, 80)}` : ''}`) : ''; };
+    lines.push(`阶段末审查（${sr.status}）：${describeStageReview(sr)}${sr.issues.length ? `\n${sr.issues.map((i) => `- ${i.id}［${i.module}］${one(i.location, 60)}：${one(i.problem, 120)}${answer(i.id)}`).join('\n')}` : ''}`);
+    if (sr.status === 'needs_human') lines.push(`全量测试失败日志：.flow/flows/${flowId}/evidence/stage-${flow.stage}/`);
+  }
   const gateFail = [...store.readEvents()].reverse().find((e) => e.flow === flowId && e.type === 'gate_result');
   if (gateFail && gateFail.to === 'active' && flow.stage_status === 'active') lines.push(`阶段闸门未通过：${one(gateFail.reason ?? '', 300)}（修复后执行 /flow gate 重跑）`);
   return lines.join('\n');

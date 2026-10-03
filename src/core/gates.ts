@@ -10,7 +10,8 @@ import { worktreesRoot, removeWorktree } from './worktree.ts';
 import { evidenceText, runShell } from './verify-runner.ts';
 import { PROPOSAL_STAGES } from '../modes/plan.ts';
 
-export interface GateOutcome { stage: string; passed: boolean; needsHuman: boolean; reasons: string[] }
+/** failed：失败的闸门命令与输出（阶段末审查据此生成修复任务） */
+export interface GateOutcome { stage: string; passed: boolean; needsHuman: boolean; reasons: string[]; failed?: { command: string; output: string } }
 
 export function stageDef(config: FlowConfig, mode: 'build' | 'feature', stage: string) {
   const def = config.raw.modes[mode]?.stages.find((s) => s.id === stage);
@@ -26,6 +27,7 @@ export async function runStageGate(root: string, store: StateStore, config: Flow
   const isLast = flow.stage === flow.stages.at(-1);
   const needsHuman = !!def.gate.human || isLast;
   const reasons: string[] = [];
+  let failed: GateOutcome['failed'];
 
   const open = store.listTasks(flowId).filter((t) => t.stage === flow.stage && !isSettled(t));
   if (open.length) reasons.push(`本阶段还有未完成的任务：${open.map((t) => `${t.id}（${t.status}）`).join('、')}`);
@@ -43,6 +45,7 @@ export async function runStageGate(root: string, store: StateStore, config: Flow
         await store.saveStageEvidence(flowId, flow.stage, `gate-${name}.log`, evidenceText(r, shell), 'gate');
         if (r.exit_code !== 0) {
           reasons.push(`闸门命令 ${name} 失败（退出码 ${r.exit_code}）：${r.output.trim().split('\n').slice(-8).join(' / ')}`);
+          failed = { command: name, output: r.output };
           break;
         }
       }
@@ -57,7 +60,7 @@ export async function runStageGate(root: string, store: StateStore, config: Flow
   } else {
     await store.transitionStage(flowId, { to: 'active', trigger: 'gate_failed', actor: 'gate', reason: reasons.join('；') });
   }
-  return { stage: flow.stage, passed, needsHuman, reasons };
+  return { stage: flow.stage, passed, needsHuman, reasons, ...(failed ? { failed } : {}) };
 }
 
 /** 本阶段最近一次闸门失败之后，是否还没有任何任务状态变化（避免对同样的结果反复跑闸门） */

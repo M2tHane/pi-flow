@@ -8,7 +8,7 @@ import { execFileSync } from 'node:child_process';
 import lockfile from 'proper-lockfile';
 import {
   validate, type FlowFile, type MergeQueueFile, type RunFile, type ProposalFile, type BriefFile, type KnowledgeFile, type ModelPausesFile, type RevisionFile, type SchemaKind, type StageStatus, type StateFile,
-  type TaskFile, type TaskStatus, type FlowEvent,
+  type TaskFile, type TaskStatus, type FlowEvent, type StageReviewFile,
 } from './schemas.ts';
 import {
   IN_FLIGHT, planStageTransition, planTransition, type Facts, type StageTrigger, type TaskPatch, type Trigger,
@@ -62,6 +62,7 @@ export const runRel = (run: string) => `runs/${run}.json`;
 export const proposalRel = (flow: string) => `flows/${flow}/proposal.json`;
 export const revisionRel = (flow: string) => `flows/${flow}/revision.json`;
 export const stageEvidenceRel = (flow: string, stage: string) => `flows/${flow}/evidence/stage-${stage}`;
+export const stageReviewRel = (flow: string, stage: string) => `flows/${flow}/stage-review-${stage}.json`;
 const MQ_REL = 'merge-queue.json';
 export const KNOWLEDGE_REL = 'knowledge.json';
 export const MODEL_PAUSES_REL = 'model-pauses.json';
@@ -164,7 +165,7 @@ export interface CreateFlowInput {
 }
 
 export type TaskInput = Pick<TaskFile, 'id' | 'stage' | 'kind' | 'title' | 'role' | 'scopes' | 'depends_on' | 'inputs'
-  | 'writes' | 'acceptance' | 'verify'> & Partial<Pick<TaskFile, 'merge_fix_for' | 'conflict_files' | 'worktree' | 'branch' | 'base_sha' | 'sync_main' | 'replan' | 'contract_change'>>;
+  | 'writes' | 'acceptance' | 'verify'> & Partial<Pick<TaskFile, 'merge_fix_for' | 'conflict_files' | 'worktree' | 'branch' | 'base_sha' | 'sync_main' | 'replan' | 'contract_change' | 'stage_review' | 'review_issues'>>;
 
 export type Findings = NonNullable<TaskFile['findings']>;
 
@@ -481,23 +482,52 @@ export class StateStore {
   async addTasks(flow: string, tasks: readonly TaskInput[], actor: string): Promise<TaskFile[]> {
     return this.transaction((tx) => {
       tx.readFlow(flow);
-      const out = tasks.map((t) => {
-        if (tx.readJson(taskRel(flow, t.id))) throw new StateError(`任务 ${flow}/${t.id} 已存在`);
-        const task: TaskFile = {
-          id: t.id, stage: t.stage, kind: t.kind, title: t.title, role: t.role, scopes: [...t.scopes],
-          depends_on: structuredClone(t.depends_on), inputs: [...t.inputs], writes: [...t.writes],
-          acceptance: [...t.acceptance], verify: [...t.verify], status: 'pending', attempts: 0, violations: 0,
-          lease_expirations: 0, lease: null, impl_run: null, branch: t.branch ?? null, worktree: t.worktree ?? null, base_sha: t.base_sha ?? null,
-          blocked_reason: null, last_failure: null, created_by: actor, version: 1,
-          ...(t.merge_fix_for ? { merge_fix_for: t.merge_fix_for } : {}),
-          ...(t.conflict_files ? { conflict_files: [...t.conflict_files] } : {}),
-          ...(t.sync_main ? { sync_main: t.sync_main } : {}),
-          ...(t.replan ? { replan: t.replan } : {}),
-        };
-        return tx.putTask(flow, task);
-      });
+      const out = tasks.map((t) => this.putNewTask(tx, flow, t, actor));
       tx.event({ flow, actor, type: 'note', reason: `新增任务 ${out.length} 个`, data: { tasks: out.map((t) => t.id) } });
       return out;
+    });
+  }
+
+  private putNewTask(tx: Tx, flow: string, t: TaskInput, actor: string): TaskFile {
+    if (tx.readJson(taskRel(flow, t.id))) throw new StateError(`任务 ${flow}/${t.id} 已存在`);
+    const task: TaskFile = {
+      id: t.id, stage: t.stage, kind: t.kind, title: t.title, role: t.role, scopes: [...t.scopes],
+      depends_on: structuredClone(t.depends_on), inputs: [...t.inputs], writes: [...t.writes],
+      acceptance: [...t.acceptance], verify: [...t.verify], status: 'pending', attempts: 0, violations: 0,
+      lease_expirations: 0, lease: null, impl_run: null, branch: t.branch ?? null, worktree: t.worktree ?? null, base_sha: t.base_sha ?? null,
+      blocked_reason: null, last_failure: null, created_by: actor, version: 1,
+      ...(t.merge_fix_for ? { merge_fix_for: t.merge_fix_for } : {}),
+      ...(t.conflict_files ? { conflict_files: [...t.conflict_files] } : {}),
+      ...(t.sync_main ? { sync_main: t.sync_main } : {}),
+      ...(t.replan ? { replan: t.replan } : {}),
+      ...(t.stage_review ? { stage_review: t.stage_review } : {}),
+      ...(t.review_issues ? { review_issues: [...t.review_issues] } : {}),
+    };
+    return tx.putTask(flow, task);
+  }
+
+  readStageReview(flow: string, stage: string): StageReviewFile | null {
+    return this.readJsonRel<StageReviewFile>(stageReviewRel(flow, stage));
+  }
+
+  /**
+   * 推进阶段审查记录（第四轮）：在同一事务内写记录、新增任务并写它们的 handoff，崩溃后不会出现"状态已推进、任务没建"。
+   * next.version 必须基于当前版本（新记录忽略）。
+   */
+  async updateStageReview(flow: string, next: StageReviewFile, opts: { tasks?: readonly TaskInput[]; handoffs?: Record<string, string>; actor: string; reason: string }): Promise<StageReviewFile> {
+    return this.transaction((tx) => {
+      tx.readFlow(flow);
+      const rel = stageReviewRel(flow, next.stage);
+      const cur = tx.readJson<StageReviewFile>(rel);
+      const saved = tx.putJson(rel, 'stage-review', { ...next, version: cur ? next.version : 1 });
+      const added = (opts.tasks ?? []).map((t) => this.putNewTask(tx, flow, t, opts.actor));
+      for (const [task, text] of Object.entries(opts.handoffs ?? {})) {
+        const h = handoffRel(flow, task);
+        tx.putText(h, `${tx.readText(h) ?? ''}\n## ${tx.ts} ${opts.actor}\n\n${text.trim()}\n`);
+      }
+      tx.event({ flow, actor: opts.actor, type: 'note', reason: opts.reason,
+        data: { stage: next.stage, stage_review: next.status, ...(added.length ? { tasks: added.map((t) => t.id) } : {}) } });
+      return saved;
     });
   }
 
