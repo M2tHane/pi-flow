@@ -25,7 +25,9 @@ test('角色 writes 由 scopes 并集推导', () => {
   assert.deepEqual(c.roles['architect']!.writes, ['docs/**', 'src/shared/**']);
   assert.deepEqual(c.roles['reviewer']!.writes, []);
   assert.deepEqual(c.roles['orchestrator']!.readPaths, ['docs/**', '.flow/**']);
-  assert.equal(c.roles['backend-engineer']!.env['PI_SERENA_STRICT'], '1');
+  assert.deepEqual(c.roles['backend-engineer']!.env, {}, '模板不再给实施角色开 Serena 严格模式（弱模型被反复拦下）');
+  const strict = parseConfig(TEST_YAML.replace(/(  backend-engineer:[^\n]*) \}/, '$1, env: { PI_SERENA_STRICT: "1" } }'));
+  assert.equal(strict.roles['backend-engineer']!.env['PI_SERENA_STRICT'], '1', '需要时仍可在 workflow.yaml 中按角色开启');
   assert.equal(c.roles['backend-engineer']!.modelTier, 'medium');
 });
 

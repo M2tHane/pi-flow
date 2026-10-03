@@ -81,9 +81,9 @@ roles:
   orchestrator:      { model: medium, tools: [read, flow_status, flow_dispatch, flow_wait], read_paths: ["docs/**", ".flow/**"], writes: [] }
   architect:         { model: strong, scopes: [docs, shared], tools: [codemode, read, write, edit, "@serena_read", "@codegraph", flow_propose_tasks, flow_note, flow_submit] }
   researcher:        { model: cheap,  scopes: [research], tools: [read, write, "@web", flow_note, flow_submit] }
-  db-engineer:       { model: medium, scopes: [database], tools: [read, write, edit, bash, "@serena_read", "@serena_edit", flow_claim, flow_note, flow_submit], env: { PI_SERENA_STRICT: "1" } }
-  backend-engineer:  { model: medium, scopes: [backend],  tools: [read, write, edit, bash, "@serena_read", "@serena_edit", flow_claim, flow_note, flow_submit], env: { PI_SERENA_STRICT: "1" } }
-  frontend-engineer: { model: medium, scopes: [frontend], tools: [read, write, edit, bash, "@serena_read", "@serena_edit", flow_claim, flow_note, flow_submit], env: { PI_SERENA_STRICT: "1" } }
+  db-engineer:       { model: medium, scopes: [database], tools: [read, write, edit, bash, "@serena_read", "@serena_edit", flow_claim, flow_note, flow_submit] }
+  backend-engineer:  { model: medium, scopes: [backend],  tools: [read, write, edit, bash, "@serena_read", "@serena_edit", flow_claim, flow_note, flow_submit] }
+  frontend-engineer: { model: medium, scopes: [frontend], tools: [read, write, edit, bash, "@serena_read", "@serena_edit", flow_claim, flow_note, flow_submit] }
   ui-designer:       { model: medium, scopes: [ui],       tools: [read, write, edit, flow_claim, flow_note, flow_submit] }
   infra-engineer:    { model: medium, scopes: [infra],    tools: [read, write, edit, bash, flow_claim, flow_note, flow_submit] }
   test-engineer:     { model: medium, scopes: [acceptance], tools: [read, write, edit, bash, "@serena_read", "@codegraph", flow_claim, flow_note, flow_submit] }

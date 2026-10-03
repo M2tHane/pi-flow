@@ -50,9 +50,9 @@ try {
   install: "true"
   typecheck: "true"
   lint: "true"
-  test: "node --test"
-  test_affected: "node --test {files}"
-  e2e: "node --test"
+  test: "node --test --test-timeout=60000"
+  test_affected: "node --test --test-timeout=60000 {files}"
+  e2e: "node --test --test-timeout=60000"
 limits:`));
   sh(dir, 'git', ['add', 'workflow.yaml']);
   sh(dir, 'git', ['-c', 'user.name=demo', '-c', 'user.email=demo@local', 'commit', '-q', '-m', '调整命令']);
@@ -64,6 +64,7 @@ limits:`));
   let replanned = args.has('--no-replan') || store.listTasks(store.readState().active_flow ?? '').some((t) => !!t.replan);
   const unblocked = new Set<string>();
   const unblockCount = new Map<string, number>();
+  const replannedFor = new Set<string>();
   let lastSig = '';
   let stalled = 0;
   for (let i = 0; i < 40; i++) {
@@ -90,6 +91,13 @@ limits:`));
       // 代替"只和主 agent 对话、不动代码"的用户回答：同一任务最多三次，采纳 agent 给出的建议
       const b = blocked.find((t) => (unblockCount.get(t.id) ?? 0) < 3);
       if (!b) { step(`任务多次阻塞，停止：${blocked.map((t) => `${t.id}：${t.blocked_reason}`).join('；')}`); break; }
+      // 上游测试或计划本身有误（agent 建议修订计划）：代替用户把原话交给 architect 修订，批准后再解除阻塞
+      if (/修订计划/.test(b.blocked_reason ?? '') && !replannedFor.has(b.id)) {
+        replannedFor.add(b.id);
+        step(`${b.id} 阻塞并建议修订计划：${b.blocked_reason}\n→ 代替用户发起 /flow replan`);
+        await pi(dir, `/flow replan ${JSON.stringify(`任务 ${b.id} 阻塞：${b.blocked_reason}`)}`);
+        continue;
+      }
       unblockCount.set(b.id, (unblockCount.get(b.id) ?? 0) + 1);
       unblocked.add(b.id);
       step(`${b.id} 阻塞：${b.blocked_reason}\n→ 代替用户回答（第 ${unblockCount.get(b.id)} 次）`);
