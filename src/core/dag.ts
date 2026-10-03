@@ -86,6 +86,17 @@ const IMPLEMENTING_KINDS: ReadonlySet<string> = new Set(['impl', 'infra']);
  * 先行验收测试：kind=test，且有实现类任务（impl、infra）硬依赖它（测试先于实现写好）。
  * 它审查通过后必须先失败，确认后不单独合入，由"承载者"从它的分支末端开工并一并合入。
  */
+/**
+ * 关闭先行验收测试（默认）时的校验：测试任务不能被同阶段的实现任务硬依赖。
+ * 实施者为自己的功能边写边测；跨模块的联调、端到端测试放在后面的阶段，对着已实现的功能写。
+ */
+export function leadingTestErrors(tasks: readonly LeadTask[]): string[] {
+  return tasks.filter((t) => isLeadingTest(t, tasks)).map((t) => {
+    const users = tasks.filter((x) => IMPLEMENTING_KINDS.has(x.kind) && hasHard(x, t.id)).map((x) => x.id);
+    return `${t.id}：本项目不用"先行验收测试"（${users.join('、')} 硬依赖这个测试任务）。请把测试并入实现任务：由实施者为自己的功能写测试并跑通（writes 加上该模块的测试目录，验收标准写明要测什么）；跨模块的联调、端到端测试放到后面的阶段交给 test-engineer。确需先行验收测试时，用户可在 workflow.yaml 设 testing.leading_tests: true`;
+  });
+}
+
 export function isLeadingTest(t: LeadTask, tasks: readonly LeadTask[]): boolean {
   return t.kind === 'test' && tasks.some((x) => IMPLEMENTING_KINDS.has(x.kind) && hasHard(x, t.id));
 }

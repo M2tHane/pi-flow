@@ -316,6 +316,8 @@ export const WorkflowFile = Type.Object({
     /** 被至少这么多任务硬依赖的实施任务（底座）第一次就用升级模型，默认 3；0 关闭（第三轮后续：底座任务对弱模型太大） */
     critical_fanout: Type.Optional(Type.Integer({ minimum: 0 })),
   }, { additionalProperties: false })),
+  /** 测试方式（第三轮后续）：默认由实施者边写边测、合并后跑全量；leading_tests 为 true 时才允许"先行验收测试 → 实现"的拆法 */
+  testing: Type.Optional(Type.Object({ leading_tests: Type.Optional(Type.Boolean()) }, { additionalProperties: false })),
   /** 项目知识库：auto_candidates 为 true 时，审查打回与合并后验证失败会提炼为知识候选（默认关闭：真实冒烟中这些候选多是一次性细节） */
   knowledge: Type.Optional(Type.Object({ auto_candidates: Type.Optional(Type.Boolean()) }, { additionalProperties: false })),
   /** 每个流程的成本预算（第二轮 I）：tokens 计输入 + 输出；cost 为 Pi 报告的金额。超出后暂停派发新任务 */

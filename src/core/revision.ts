@@ -4,7 +4,7 @@
 import type { FlowConfig } from './config.ts';
 import type { StateStore, TaskInput } from './state-store.ts';
 import type { Dependency, RevisionFile, RevisionTask, TaskFile } from './schemas.ts';
-import { normalizeLeadingTests, validateDag } from './dag.ts';
+import { leadingTestErrors, normalizeLeadingTests, validateDag } from './dag.ts';
 import { isSettled } from './state-machine.ts';
 import { DESIGN_STAGES } from '../modes/plan.ts';
 import { removeWorktree } from './worktree.ts';
@@ -136,6 +136,10 @@ export function checkRevision(config: FlowConfig, flowStages: readonly string[],
   const merged = [...existing, ...added];
   for (const t of merged) {
     for (const d of t.depends_on) if (cancelled.has(d.task)) errors.push(`${t.id} 依赖被取消的 ${d.task}：请一并调整它的依赖或取消它`);
+  }
+  if (config.raw.testing?.leading_tests !== true) {
+    const before = new Set(leadingTestErrors(tasks.filter((t) => t.status !== 'cancelled' && !t.replan)));
+    errors.push(...leadingTestErrors(merged).filter((e) => !before.has(e)));
   }
   const lead = normalizeLeadingTests(merged);
   errors.push(...lead.errors.filter((e) => !normalizeLeadingTests(tasks.filter((t) => t.status !== 'cancelled' && !t.replan)).errors.includes(e)));

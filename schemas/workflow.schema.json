@@ -429,6 +429,15 @@
       },
       "additionalProperties": false
     },
+    "testing": {
+      "type": "object",
+      "properties": {
+        "leading_tests": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
     "knowledge": {
       "type": "object",
       "properties": {

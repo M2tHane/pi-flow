@@ -37,6 +37,8 @@ review:                         # 按风险审查（可选，以下为默认值�
     max_lines: 400
     paths: []
   # max_rounds: 3               # 审查轮次上限（可选）：到达时只剩建议类问题就通过，建议记入 handoff
+testing:
+  leading_tests: false          # 默认实施者为自己的功能边写边测，合并后程序跑全量测试；true 时允许"先行验收测试 → 实现"的拆法
 escalation:                     # 同一任务失败 after_failures 次后，下一次实施换成升级模型
   critical_fanout: 3            # 被至少 3 个任务硬依赖的实施任务（底座）第一次就用升级模型；0 关闭
   after_failures: 2             # 升级模型：/flow-config escalate > roles.<角色>.escalate_model > 上一档（cheap→medium→strong）
@@ -61,7 +63,7 @@ modes:
       - { id: S4, name: regression,     phase: acceptance, gate: { auto: [test, e2e], human: true } }
 scopes:
   backend:    { rules: [rules/backend.md],      writes: ["src/server/**", "tests/server/**"] }
-  database:   { rules: [rules/database.md],     writes: ["migrations/**", "src/db/**"] }
+  database:   { rules: [rules/database.md],     writes: ["migrations/**", "src/db/**", "tests/db/**"] }
   frontend:   { rules: [rules/frontend.md],     writes: ["src/web/**", "tests/web/**"] }
   ui:         { rules: [rules/ui.md],           writes: ["design/**", "src/web/components/base/**"] }
   shared:     { rules: [rules/shared-types.md], writes: ["src/shared/**"] }

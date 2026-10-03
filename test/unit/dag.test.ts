@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { validateDag, computeReady, dagStats, mutexPairs, conflictsWith, remainingPath, type DagCatalog,
-  isLeadingTest, carrierOf, carriedTestOf, normalizeLeadingTests, dagReport, serialHeads } from '../../src/core/dag.ts';
+  isLeadingTest, carrierOf, carriedTestOf, normalizeLeadingTests, dagReport, serialHeads, leadingTestErrors } from '../../src/core/dag.ts';
 import { mkTask, hard, soft } from '../helpers/tasks.ts';
 
 const catalog: DagCatalog = {
@@ -145,6 +145,13 @@ test('DAG 报告：同一阶段开头连续两层只能串行时提醒；关键�
     mkTask('T-001'), mkTask('T-002'), mkTask('T-003', { deps: [hard('T-001')] }), mkTask('T-004', { deps: [hard('T-003')] }), mkTask('T-005'),
   ];
   assert.ok(dagReport(longPath).warnings.some((w) => /关键路径 3 \/ 任务数 5/.test(w)));
+});
+
+test('默认不用先行验收测试：被实现任务硬依赖的测试任务报错；联调测试依赖实现、实现自带测试都可以', () => {
+  const lead = [mkTask('T-001', { kind: 'test' }), mkTask('T-002', { deps: [hard('T-001')] })];
+  assert.match(leadingTestErrors(lead).join(), /T-001：本项目不用"先行验收测试"（T-002 硬依赖/);
+  const ok = [mkTask('T-001', { writes: ['src/server/a/**', 'tests/server/a/**'] }), mkTask('T-002', { kind: 'integration', deps: [hard('T-001')] }), mkTask('T-003', { kind: 'test', deps: [hard('T-001')] })];
+  assert.deepEqual(leadingTestErrors(ok), []);
 });
 
 test('互斥由 writes 重叠自动推导', () => {

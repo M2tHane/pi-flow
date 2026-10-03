@@ -28,7 +28,15 @@ test('修订校验：阶段不能早于当前或是设计阶段；调整依赖�
   assert.deepEqual(checkRevision(config, STAGES, 'S3', tasks, { add: [], rewire: [], cancel: [] }).errors, ['修订没有任何改动']);
 });
 
-test('修订中的先行验收测试：新增测试被多个任务硬依赖时，其余依赖改为承载者；编号映射接在现有任务之后', () => {
+test('默认不用先行验收测试：修订新增被实现任务硬依赖的测试任务被拒', () => {
+  const tasks = [mkTask('T-001', { status: 'done' }), mkTask('T-002')];
+  const test1 = nt('N-001', { kind: 'test', role: 'test-engineer', scopes: ['acceptance'], writes: ['tests/acceptance/x/**'], verify: ['test'] });
+  const r = checkRevision(config, STAGES, 'S3', tasks, { add: [test1, nt('N-002', { depends_on: [hard('N-001')] })], rewire: [], cancel: [] });
+  assert.ok(r.errors.some((e) => /不用"先行验收测试"/.test(e)), r.errors.join('\n'));
+});
+
+test('修订中的先行验收测试（testing.leading_tests: true）：新增测试被多个任务硬依赖时，其余依赖改为承载者；编号映射接在现有任务之后', () => {
+  const config = parseConfig(TEST_YAML.replace('leading_tests: false', 'leading_tests: true '));
   const tasks = [mkTask('T-001', { status: 'done' }), mkTask('T-002')];
   const test1 = nt('N-001', { kind: 'test', role: 'test-engineer', scopes: ['acceptance'], writes: ['tests/acceptance/x/**'], verify: ['test'] });
   const r = checkRevision(config, STAGES, 'S3', tasks, {

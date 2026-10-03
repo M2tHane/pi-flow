@@ -13,7 +13,8 @@ import type { RoleSettingsFile } from '../../src/core/schemas.ts';
 
 const ALL_TRUE = PROJECT_YAML.replace(/  test:      ".*"/, '  test:      "true"');
 /** 验收测试含 FAIL 标记且实现（src/server/todo）不存在时失败：模拟"实现之前必然失败"的真实测试 */
-const ACCEPT_TEST = PROJECT_YAML.replace(/  test:      ".*"/, '  test:      "! grep -rqs FAIL tests/acceptance || test -d src/server/todo"');
+// 这个用例覆盖"先行验收测试"的整套机制，需要显式开启（默认关闭，实施者边写边测）
+const ACCEPT_TEST = PROJECT_YAML.replace(/  test:      ".*"/, '  test:      "! grep -rqs FAIL tests/acceptance || test -d src/server/todo"').replace('leading_tests: false', 'leading_tests: true ');
 const SETTINGS: RoleSettingsFile = { version: 1, roles: Object.fromEntries(
   ['architect', 'reviewer', 'backend-engineer', 'frontend-engineer', 'test-engineer', 'infra-engineer', 'db-engineer', 'ui-designer'].map((r) => [r, { model: 'fake/m' }])) };
 void ALL_FAKE;

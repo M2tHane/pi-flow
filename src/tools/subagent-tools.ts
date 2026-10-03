@@ -8,7 +8,7 @@ import { hashToken } from '../core/state-machine.ts';
 import { KNOWLEDGE_CATEGORIES, ProposedTask, RevisionDependency, RevisionTask, type TaskFile } from '../core/schemas.ts';
 import { checkRevision } from '../core/revision.ts';
 import { KnowledgeError, learn, proposeCandidate, KNOWLEDGE_CONTENT_MAX, KNOWLEDGE_PER_RUN } from '../core/knowledge.ts';
-import { validateDag, dagReport, formatDagReport, normalizeLeadingTests } from '../core/dag.ts';
+import { validateDag, dagReport, formatDagReport, leadingTestErrors, normalizeLeadingTests } from '../core/dag.ts';
 import { changedFiles, cleanStrayUntracked, snapshot } from '../core/worktree.ts';
 import { git } from '../core/git.ts';
 
@@ -278,7 +278,8 @@ export async function flowProposeTasks(ctx: ToolContext, p: Static<typeof Propos
     if (x.kind === 'merge-fix' || x.kind === 'review-fix') errors.push(`${x.id}：kind ${x.kind} 由程序生成，不能提交`);
     if (x.role === 'orchestrator' || x.role === 'reviewer') errors.push(`${x.id}：角色 ${x.role} 不能承担任务`);
   }
-  // 先行验收测试：一个测试由一个承载者带入集成分支，其余依赖方改为依赖承载者
+  // 先行验收测试默认关闭：实施者边写边测；开启时一个测试由一个承载者带入集成分支，其余依赖方改为依赖承载者
+  if (ctx.config.raw.testing?.leading_tests !== true) errors.push(...leadingTestErrors(p.tasks));
   const lead = normalizeLeadingTests(p.tasks);
   errors.push(...lead.errors);
   const v = validateDag(lead.tasks, ctx.config.dagCatalog());
