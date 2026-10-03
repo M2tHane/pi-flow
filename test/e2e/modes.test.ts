@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { setupProject, PROJECT_YAML, type Project } from '../helpers/project.ts';
+import { actionsNeeded } from '../../src/core/status-view.ts';
 import { makeEngine, ALL_FAKE } from '../helpers/engine.ts';
 import type { FakeAgent } from '../fixtures/fake-subagent/launcher.ts';
 import { startFlow, approveStage, rejectStage } from '../../src/core/stages.ts';
@@ -32,7 +33,7 @@ function scripts(p: Project, proposal: (stage: string) => unknown[]) {
     else if (t.stage === 'S1' || t.stage === 'F1') {
       await a.call('write', { path: 'docs/ARCHITECTURE.md', content: '# 架构\n' });
       if (t.stage === 'S1') await a.call('write', { path: 'docs/contracts/api.ts', content: 'export type Todo = { id: string };\n' });
-      const r = await a.call('flow_propose_tasks', { tasks: proposal(t.stage) });
+      const r = await a.call('flow_propose_tasks', { tasks: proposal(t.stage), ...(t.stage === 'S1' ? { extras: ['待办 id 用 UUID 而不是自增数字：方便以后多端同步'] } : {}) });
       assert.ok(r.ok, r.text);
     } else {
       // 验收测试第一次写成"必然通过"（被程序打回），第二次才是实现前会失败的测试
@@ -97,7 +98,8 @@ test('build 模式全流程：闸门逐个人工批准，agent 不能批准；�
       seen.push(stage);
       if (stage === 'S1') {
         assert.equal(p.store.listTasks(flow.id).length, 3, '批准前提案不落为任务（S0、S0 修订、S1 各一个）');
-        assert.match(statusText(p.store, null, flow.id), /任务提案（S1）[\s\S]*关键路径长度/);
+        assert.match(statusText(p.store, null, flow.id), /任务提案（S1）[\s\S]*关键路径长度[\s\S]*超出需求的设计（1 项，需要你确认[\s\S]*1\. 待办 id 用 UUID/);
+        assert.ok(actionsNeeded(p.store, p.config).some((x) => /其中 1 项设计超出了需求，需要你确认/.test(x.text)));
         // agent 无法批准阶段闸门
         await assert.rejects(p.store.transitionStage(flow.id, { to: 'done', trigger: 'approve', actor: 'run:r-x' }), /用户/);
         // 闸门未批准，next 不会派发后续任务

@@ -102,6 +102,14 @@ test('审查提示直接附上 diff：第一轮是全部改动，第二轮起是
   assert.doesNotMatch(assemblePrompt(base).user, /已附 diff/);
 });
 
+test('审查设计任务时附上 architect 申报的超出需求的设计；没申报时写明应只覆盖需求', () => {
+  const agent = { name: 'reviewer', tier: 'medium', thinking: null, description: '', prompt: 'R' };
+  const base = { agent, rules: [], task: mkTask('T-002', { stage: 'S1', kind: 'doc' }), flowId: 'B-001', handoff: '', mode: 'review' as const, commands: config.commands };
+  assert.match(assemblePrompt({ ...base, proposalExtras: ['迁移支持回滚：方便演示环境重置'] }).user, /超出需求的设计（extras）\n- 迁移支持回滚[\s\S]*按缺陷打回/);
+  assert.match(assemblePrompt({ ...base, proposalExtras: [] }).user, /没有申报：文档应当只覆盖需求/);
+  assert.doesNotMatch(assemblePrompt(base).user, /extras/);
+});
+
 test('返工接着上一次的对话：用户消息只有续做说明，系统提示不变', () => {
   const agent = { name: 'backend-engineer', tier: 'medium', thinking: null, description: '', prompt: 'R' };
   const task = mkTask('T-001', { base_sha: 'abc123', last_failure: '审查前验证失败：test 退出码 1' });

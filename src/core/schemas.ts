@@ -351,6 +351,8 @@ export const ProposalFile = Type.Object({
   run: Type.String(),
   created_at: IsoTime,
   tasks: Type.Array(ProposedTask, { minItems: 1 }),
+  /** 文档（契约、架构）中超出需求的设计，由用户在批准时决定是否保留（第三轮后续：契约不超出需求） */
+  extras: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
   report: Type.Object({
     task_count: Type.Integer(), critical_path: Type.Array(Type.String()), critical_path_length: Type.Integer(),
     max_width: Type.Integer(), hard_ratio: Type.Number(), warnings: Type.Array(Type.String()),

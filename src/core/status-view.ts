@@ -119,7 +119,8 @@ export function actionsNeeded(store: StateStore, config: FlowConfig): Action[] {
       } else {
         const phase = PHASE_LABEL[currentPhase(config, flow, tasks)];
         const last = flow.stage === flow.stages.at(-1);
-        out.push({ key: `${flow.id}:gate:${flow.stage}`, text: `${phase}阶段的产出等待你审批${last ? '（批准后合入主分支）' : ''}`, command: last ? '/flow approve' : '/flow approve 或 /flow reject "<意见>"' });
+        const extras = ['S1', 'F1'].includes(flow.stage) ? store.readProposal(flow.id)?.extras?.length ?? 0 : 0;
+        out.push({ key: `${flow.id}:gate:${flow.stage}`, text: `${phase}阶段的产出等待你审批${last ? '（批准后合入主分支）' : ''}${extras ? `；其中 ${extras} 项设计超出了需求，需要你确认（/flow status --detail 查看）` : ''}`, command: last ? '/flow approve' : '/flow approve 或 /flow reject "<意见>"' });
       }
     }
     if (flow.mode !== 'fix' && flow.stage_status === 'active') {

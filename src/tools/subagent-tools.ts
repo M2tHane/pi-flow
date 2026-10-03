@@ -265,7 +265,10 @@ export async function flowBlock(ctx: ToolContext, p: Static<typeof BlockParams>)
 }
 
 export const DESIGN_STAGES = ['S1', 'F1'];
-export const ProposeParams = Type.Object({ tasks: Type.Array(ProposedTask, { minItems: 1, maxItems: 200, description: '任务列表（DAG）。id 用 T-001 起的临时编号，批准后由程序重新编号' }) });
+export const ProposeParams = Type.Object({
+  tasks: Type.Array(ProposedTask, { minItems: 1, maxItems: 200, description: '任务列表（DAG）。id 用 T-001 起的临时编号，批准后由程序重新编号' }),
+  extras: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { maxItems: 30, description: '文档（契约、架构、规则草案）里超出需求的设计，逐条写明是什么、为什么需要；用户批准时决定是否保留。没有就不填' })),
+});
 
 export async function flowProposeTasks(ctx: ToolContext, p: Static<typeof ProposeParams>): Promise<ToolResult> {
   const t = checkRun(ctx);
@@ -286,7 +289,7 @@ export async function flowProposeTasks(ctx: ToolContext, p: Static<typeof Propos
   errors.push(...v.errors);
   if (errors.length) throw new FlowToolError(`任务列表校验失败，未保存：\n${errors.map((e) => `- ${e}`).join('\n')}\n建议：逐条修正后重新调用 flow_propose_tasks。`);
   const report = dagReport(lead.tasks, v.warnings);
-  await ctx.store.saveProposal(ctx.env.flow, { stage: t.stage, run: ctx.env.run, created_at: (ctx.now?.() ?? new Date()).toISOString(), tasks: lead.tasks, report }, actor(ctx));
+  await ctx.store.saveProposal(ctx.env.flow, { stage: t.stage, run: ctx.env.run, created_at: (ctx.now?.() ?? new Date()).toISOString(), tasks: lead.tasks, report, ...(p.extras?.length ? { extras: p.extras } : {}) }, actor(ctx));
   const adjusted = lead.notes.length ? `\n程序已按"先行验收测试由一个实现任务承载"调整依赖：\n${lead.notes.map((n) => `- ${n}`).join('\n')}` : '';
   return { text: `任务列表已保存（用户批准本阶段闸门后生效，可在批准前重新提交覆盖）。\n${formatDagReport(report)}${adjusted}`, details: { ...report } };
 }

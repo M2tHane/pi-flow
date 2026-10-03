@@ -356,6 +356,7 @@ export class Engine {
       ...(diffStat !== undefined ? { diffStat } : {}),
       ...(previousReview ? { previousReview } : {}),
       ...(inlineDiff !== undefined ? { inlineDiff } : {}),
+      ...(mode === 'review' && (task.stage === 'S1' || task.stage === 'F1') && !task.replan && store.readProposal(flowId) ? { proposalExtras: store.readProposal(flowId)!.extras ?? [] } : {}),
       ...(fork && mode === 'impl' ? { continuation: { run: fork.run_id } } : {}),
       ...(existingWork ? { existingWork } : {}),
     });

@@ -406,6 +406,7 @@
     - pi-flow：跑了 84 分钟仍在功能阶段（16 个任务完成 10 个），用户叫停。47 次运行，输入 1738k、输出 291k、缓存读 21.1M，gpt 部分金额 3.62。审查打回 11 次，其中 7 次是先行验收测试写错（断言与契约矛盾、随机数据却断言固定顺序、夹具 bug、node:sqlite 行对象的 deepEqual 等），3 次是底座未达到 architect 自定的超出需求的契约（迁移回滚、thenable 回调等）；最后两个任务阻塞：一个因为验收测试写错而实现者无权修改，一个因为契约缺口而契约已锁定。项目 `/var/folders/87/538dtvdd6013gnp3w4qpz5jw0000gn/T/pi-flow-real-build-KhR9JN`。
     - 用户据此决定三项改动：① 实施者边写边测、只测自己的功能，合并后跑大范围测试；② 讨论完先把所有功能和 API 落成文档（契约不超出需求）；③ 运行中改需求：分析影响 → 改 API 文档 → 取消受影响的未开始任务 → 派发新任务。
     - **① 已实现**：`workflow.yaml` 新增 `testing.leading_tests`（默认 false）。关闭时 `flow_propose_tasks` 与计划修订拒绝"测试任务被同阶段实现任务硬依赖"的拆法（`dag.ts` 的 `leadingTestErrors`），提示把测试并入实现任务；先行验收测试的整套机制保留，开启后照旧。实施角色（backend、frontend、db）提示改为边写边测，契约有缺口时 flow_block 并写"建议修订计划"；test-engineer 改为功能实现之后的联调与端到端测试及复现测试；reviewer 检查实施任务是否带了覆盖验收标准的测试；`rules/testing.md`、`decompose-dag`、`revise-plan`、`design-contract` 同步；模板 database scope 增加 `tests/db/**`。覆盖先行验收测试机制的端到端用例显式开启 `leading_tests`。
+    - **② 已实现（契约不超出需求）**：`flow_propose_tasks` 新增 `extras`（文档中超出需求的设计，逐条写明是什么、为什么），保存在提案里。批准规划阶段时，`/flow status --detail` 与 orchestrator 的状态列出这些设计并提示"不同意就 /flow reject"，"需要你处理"里注明有几项要确认。审查 S1/F1 设计任务时，提示附上申报的 extras，未申报的超出部分按缺陷打回。`design-contract` 技能写明"契约是把需求落成文档，不是扩展需求"、实现手段不写进契约、需求不清在需求阶段问清；reviewer 检查项增加一条。
 
 ## 第三轮优化设计要点
 
@@ -524,7 +525,7 @@
 
 ## 缓存提醒
 
-- 2026-10-03（第 100 条 ①）：`agents/` 中 backend、frontend、db、test、reviewer 与 `rules/testing.md`、`skills/decompose-dag`、`revise-plan`、`design-contract` 改为"实施者边写边测"；相关子进程提示缓存失效一次。
+- 2026-10-03（第 100 条 ①②）：`agents/` 中 backend、frontend、db、test、reviewer 与 `skills/design-contract`（契约不超出需求）、 `rules/testing.md`、`skills/decompose-dag`、`revise-plan`、`design-contract` 改为"实施者边写边测"；相关子进程提示缓存失效一次。
 - 2026-10-02（第 97 条）：`rules/testing.md` 增加四条（新项目 `/flow init` 时复制，已有项目不受影响）；用到 testing 规则的子进程提示缓存失效一次。
 - 2026-10-02（第三轮后续 5）：`agents/orchestrator.md` 改为"任务由程序派发，用 flow_wait 等待"；主会话进入调度模式后的提示缓存失效一次。
 - 2026-10-02（第三轮后续 1）：`agents/reviewer.md` 改为"派审查前已验证"；reviewer 子进程提示缓存失效一次。

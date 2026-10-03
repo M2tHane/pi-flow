@@ -66,6 +66,8 @@ export interface AssembleInput {
   evidenceDir?: string;
   /** 本 run 的临时目录（实施类角色） */
   scratchDir?: string;
+  /** 审查设计任务时：architect 在提案中列出的超出需求的设计（undefined 表示不是设计任务或还没有提案） */
+  proposalExtras?: string[];
   /** 审查模式：直接附上的 diff（有上一轮审查时是上次审查之后的改动，否则是全部改动）；太大时不给 */
   inlineDiff?: string;
   /** 实施模式：接着上一次运行（run）的对话继续，只给简短的续做说明 */
@@ -179,6 +181,9 @@ export function assemblePrompt(i: AssembleInput): AssembledPrompt {
   const pr = i.mode === 'review' ? i.previousReview : undefined;
   if (pr) parts.push(previousReviewSection(pr));
   else if (t.last_failure) parts.push(`## 上次未通过的原因（请先处理）\n${t.last_failure}`);
+  if (i.mode === 'review' && i.proposalExtras) {
+    parts.push(`## architect 申报的超出需求的设计（extras）\n${i.proposalExtras.length ? i.proposalExtras.map((x) => `- ${x}`).join('\n') : '（没有申报：文档应当只覆盖需求）'}\n文档中超出需求、又不在上面列表里的设计，按缺陷打回。`);
+  }
   if (i.mode === 'review' && i.inlineDiff !== undefined) {
     const what = pr?.head ? `上次审查（${pr.head.slice(0, 12)}）之后的改动` : '本任务的全部改动';
     parts.push(`## ${what}（已附 diff，不必再运行 git diff）\n${i.inlineDiff.trim() ? `\`\`\`diff\n${i.inlineDiff.trim()}\n\`\`\`` : '（没有改动）'}`);
