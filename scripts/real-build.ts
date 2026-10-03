@@ -17,6 +17,9 @@ const args = new Set(argv);
 const existing = argv.includes('--dir') ? argv[argv.indexOf('--dir') + 1] : undefined;
 const DEFAULT_DESC = '做一个纯 JavaScript（ES 模块，Node 24，无第三方依赖）的待办清单库：createTodoList() 返回对象，提供 add(title) 返回带自增 id 的待办、list() 返回全部待办、done(id) 标记完成（id 不存在时抛错）。数据只保存在内存中。代码放在 src/server/todo/，测试用 node:test。';
 const desc = argv.includes('--desc') ? argv[argv.indexOf('--desc') + 1]! : DEFAULT_DESC;
+// --desc-file：需求较长（多行、含表格）时从文件读，用 /flow-build --from；--feature-file：建完后再用功能流程做一次需求变更
+const descFile = argv.includes('--desc-file') ? path.resolve(argv[argv.indexOf('--desc-file') + 1]!) : undefined;
+const featureFile = argv.includes('--feature-file') ? path.resolve(argv[argv.indexOf('--feature-file') + 1]!) : undefined;
 const sh = (cwd: string, cmd: string, a: string[]) => execFileSync(cmd, a, { cwd, encoding: 'utf8' }).trim();
 const t0 = Date.now();
 const stamp = () => `${Math.round((Date.now() - t0) / 1000)}s`;
@@ -71,7 +74,7 @@ limits:`));
   sh(dir, 'git', ['-c', 'user.name=demo', '-c', 'user.email=demo@local', 'commit', '-q', '-m', '调整命令']);
 
   step('/flow-build --direct');
-  await pi(dir, `/flow-build --direct ${JSON.stringify(desc)}`);
+  await pi(dir, descFile ? `/flow-build --from ${JSON.stringify(descFile)}` : `/flow-build --direct ${JSON.stringify(desc)}`);
   }
   const store = new StateStore(dir);
   let replanned = args.has('--no-replan') || store.listTasks(store.readState().active_flow ?? '').some((t) => !!t.replan);
@@ -80,7 +83,7 @@ limits:`));
   const replannedFor = new Set<string>();
   let lastSig = '';
   let stalled = 0;
-  for (let i = 0; i < 40; i++) {
+  const drive = async () => { for (let i = 0; i < 40; i++) {
     const active = store.readState().active_flow;
     if (!active) break;
     const f = store.readFlow(active);
@@ -134,6 +137,16 @@ limits:`));
     }
     step(`阶段 ${f.stage}（${f.stage_status}）→ /flow next`);
     await pi(dir, '/flow next');
+  } };
+  await drive();
+  const buildEnd = Date.now();
+  if (featureFile) {
+    step(`需求变更：/flow-build --feature --from ${featureFile}`);
+    await pi(dir, `/flow-build --feature --from ${JSON.stringify(featureFile)}`);
+    await drive();
+    step(`变更耗时 ${Math.round((Date.now() - buildEnd) / 1000)}s（新建部分 ${Math.round((buildEnd - t0) / 1000)}s）`);
+    const feat = store.listFlows().find((id) => store.readFlow(id).mode === 'feature');
+    if (feat) { const c = costReport(store, { flow: feat }); console.log(`变更流程 ${feat}：${formatRow(c.total)}`); for (const r of c.byRole) console.log(formatRow(r)); }
   }
   step('结果');
   console.log(sh(dir, 'git', ['log', '--oneline', '--first-parent', 'main']));

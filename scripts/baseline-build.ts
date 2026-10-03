@@ -13,6 +13,9 @@ const opt = (k: string, d: string) => (argv.includes(k) ? argv[argv.indexOf(k) +
 const MODEL = opt('--model', 'openai-codex/gpt-6.1-sol');
 const THINKING = opt('--thinking', 'high');
 const DESC = opt('--desc', '做一个个人记账服务（Node 24，ES 模块，无第三方依赖）：账户管理；收支记录（金额、日期、分类、备注，属于某个账户）；分类管理；月度统计（按月、按分类汇总收入与支出）；用 Node http 模块提供 REST API；数据用 JSON 文件存储；支持把收支记录导出为 CSV。测试用 node:test。');
+// --desc-file：需求从文件读；--then-file：第一版做完后，在同一会话里再提一次需求变更（与 pi-flow 的 --feature-file 对应）
+const DESC_TEXT = argv.includes('--desc-file') ? readFileSync(path.resolve(opt('--desc-file', '')), 'utf8').trim() : DESC;
+const THEN = argv.includes('--then-file') ? readFileSync(path.resolve(opt('--then-file', '')), 'utf8').trim() : undefined;
 const ANSWER = '同意你给出的建议（默认方案），按建议继续。';
 const PLUGINS = path.join(homedir(), '.pi/agent/npm/node_modules');
 const EXT = ['@bacnh85/pi-serena', '@vndv/pi-codegraph', 'pi-subagents'].map((p) => path.join(PLUGINS, p));
@@ -64,12 +67,30 @@ function pi(prompt: string, cont: boolean, round: number): Promise<string> {
   });
 }
 
-let last = await pi(DESC, false, 0);
-for (let i = 1; i <= 3 && /[？?]\s*$|请确认|是否需要|要不要|你希望/.test(last.slice(-300)); i++) {
+const asks = (t: string) => /[？?]\s*$|请确认|是否需要|要不要|你希望/.test(t.slice(-300));
+let last = await pi(DESC_TEXT, false, 0);
+for (let i = 1; i <= 3 && asks(last); i++) {
   console.log(`\n▶ 它在提问，代替用户回答：${ANSWER}\n  （它的问题：${last.slice(-300)}）`);
   last = await pi(ANSWER, true, i);
 }
+const buildEnd = Date.now();
+if (THEN) {
+  console.log(`\n▶ 第一版完成（${((buildEnd - t0) / 60000).toFixed(1)} 分钟），提出需求变更`);
+  last = await pi(THEN, true, 10);
+  for (let i = 11; i <= 13 && asks(last); i++) last = await pi(ANSWER, true, i);
+}
 const wall = Date.now() - t0;
+// 每轮 pi 命令的主会话用量（来自 JSON 事件流；不含 subagent）
+const roundUsage = (prefix: (n: number) => boolean) => {
+  const u = { input: 0, output: 0, cacheRead: 0, turns: 0, tools: 0 };
+  for (const f of readdirSync(sessionDir).filter((x) => x.startsWith('stdout-round'))) {
+    if (!prefix(Number(f.match(/\d+/)![0]))) continue;
+    for (const line of readFileSync(path.join(sessionDir, f), 'utf8').split('\n')) {
+      try { const ev = JSON.parse(line); if (ev.type === 'tool_execution_start') u.tools++; if (ev.type === 'message_end' && ev.message?.role === 'assistant') { u.turns++; u.input += ev.message.usage?.input ?? 0; u.output += ev.message.usage?.output ?? 0; u.cacheRead += ev.message.usage?.cacheRead ?? 0; } } catch { /* 跳过 */ }
+    }
+  }
+  return u;
+};
 
 // —— 统计：会话目录下的全部会话文件（主会话 + subagent 子会话） ——
 const files: string[] = [];
@@ -102,6 +123,7 @@ try { tests = sh('node', ['--test', '--test-reporter=tap']).split('\n').filter((
 const fmt = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(2)}M` : n >= 1e4 ? `${(n / 1e3).toFixed(1)}k` : String(n));
 const report = [
   `\n# 原生 pi 对照结果`,
+  ...(THEN ? (() => { const a = roundUsage((n) => n < 10), b = roundUsage((n) => n >= 10); return [`第一版：${((buildEnd - t0) / 60000).toFixed(1)} 分钟，主会话 ${a.turns} 轮、${a.tools} 次工具调用，输入 ${fmt(a.input)}、输出 ${fmt(a.output)}、缓存读 ${fmt(a.cacheRead)}`, `需求变更：${((wall - (buildEnd - t0)) / 60000).toFixed(1)} 分钟，主会话 ${b.turns} 轮、${b.tools} 次工具调用，输入 ${fmt(b.input)}、输出 ${fmt(b.output)}、缓存读 ${fmt(b.cacheRead)}`]; })() : []),
   `总耗时：${(wall / 60000).toFixed(1)} 分钟；代答次数：${Math.max(0, readdirSync(sessionDir).filter((f) => f.startsWith('stdout-round')).length - 1)}`,
   `会话文件：${files.length} 个（主会话 1 个${files.length > 1 ? `，subagent 子会话 ${files.length - 1} 个` : ''}）`,
   `token：输入 ${fmt(sum.input)}，输出 ${fmt(sum.output)}，缓存读 ${fmt(sum.cacheRead)}，缓存写 ${fmt(sum.cacheWrite)}，金额 ${sum.cost.toFixed(4)}`,
