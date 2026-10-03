@@ -372,6 +372,20 @@
     - `agents/orchestrator.md` 与 guard 的提示改为"任务由程序派发，用 flow_wait 等待"（缓存提醒见下）。测试用配置 `TEST_YAML` 关闭自动派发，测试中显式调用 `engine.next`，派发顺序可控。
     - 验收：`test/e2e/orchestrator-tools.test.ts`（不调用 flow_dispatch，一次 pump 后两个有依赖的任务依次自动派发、审查、合入；flow_wait 跳过中间步骤，第一次返回时报告 T-001 完成；空闲时立即返回；自动派发时忙碌中的下一步是 flow_wait，空闲且有可派发任务时退回 flow_dispatch，关闭时照旧）；`test/e2e/orchestrator-session.test.ts`（真实 pi 主会话的用量写入 orchestrator run）；全量端到端 64 个通过。
 
+97. **第二次中型项目冒烟（2026-10-02，开 A–D 与后续 1–5）暴露的问题与修复**：
+    - 运行：个人记账服务，15 个任务（S2 两个底座、S3 五对"验收测试 → 实现"、S4 联调）；跑了 10 小时只完成 9 个，用户同意停下修复。数据：41 次运行，输入 1164k、输出 202k、缓存读 28.7M；backend-engineer 10 次运行 230 分钟、平均 52 轮、缓存读 24.6M；审查 16 次共 15 分钟；审查打回 8 次、阻塞 6 次、违规 7 次、接续对话 6 次、升级 3 次、模型暂停 0 次。项目保留在 `/var/folders/87/538dtvdd6013gnp3w4qpz5jw0000gn/T/pi-flow-real-build-bbgjbZ`，日志 `~/pi-flow-runs/real-build-20261002-0853.log`。
+    - 有效的：拆任务后 S3 五个验收测试同时开工；审查每次约 1 分钟，第二轮先核对上次的问题；没有空转。
+    - 修复（各自单独提交）：
+      1. **租约检查只在 /flow resume 时启动**（bug）：冒烟用 `/flow approve`、`/flow next` 启动引擎，挂起的子进程永远不会被结束（一次 `node --test` 挂了 6 小时）。改为 `engineFor` 创建引擎后总是 `startLeaseWatch`。
+      2. **bash 没有超时**：子进程扩展在 guard 放行后把 bash 的 `timeout`（秒，Pi 1.0.0 `tools/bash.d.ts`）改成不超过 `limits.bash_timeout_s`（默认 300）；Pi 文档：`tool_call` 的 `event.input` 可原地修改。真实 pi 端到端测试验证。冒烟脚本的测试命令加 `--test-timeout=60000`。
+      3. **测试产物卡住提交**：测试运行在工作区根部生成 `data/ledger.json`（未跟踪、不在 writes 内），实施者无权删除，提交又因越界被拒，只能阻塞求助。改为 `flow_submit` 先 `cleanStrayUntracked`：删除未被 git 跟踪（且未被忽略）、不在 writes 内的文件，记入 handoff 与提交结果。已跟踪文件的越界改动仍被拒。
+      4. **Serena 严格模式拖慢弱模型**：模板中实施角色的 `PI_SERENA_STRICT=1` 让 pi-serena 拦下直接读代码（T-004 第一次运行 32 次失败里 24 次是它）。模板去掉，需要时仍可按角色在 `env` 中开启。
+      5. **底座测试锁死后续任务**：T-004 写了"src/server 下没有任何功能路由"的断言，三个功能实现都因改不了它而阻塞。`rules/testing.md` 补四条：关闭测试中启动的服务器、数据写临时目录、不断言后续任务一定会改变的全局状态、上游测试有误时 flow_block 并写"建议修订计划"；冒烟脚本遇到"修订计划"时代为 `/flow replan`。（缓存提醒见下）
+      6. **高风险审查过宽**：16 次审查 14 次用了强模型，其中 10 次是先行验收测试。先行验收测试不再算高风险（"先失败"已由程序在审查前验证）。注：用户的 reviewer 显式设为 gpt，这次两档模型相同。
+      7. **接续对话的上下文过长**：接续 T-004 的两次运行缓存读上千万 token。`MAX_FORK_BYTES` 1.5 MB → 400 KB。
+      8. **底座任务对弱模型太大**：T-004 第一次 44 分钟、175 轮，后面 11 个任务都在等它。新增 `escalation.critical_fanout`（默认 3）：被至少这么多任务直接硬依赖的非测试任务第一次派发就用升级模型。
+    - 验收：单元 151、端到端 67 全部通过（含新增：bash 超时（真实 pi）、提交前清理、关键底座升级）。
+
 ## 第三轮优化设计要点
 
 - **A 模型暂停**（第 88 条）。验收见该条。
@@ -489,6 +503,7 @@
 
 ## 缓存提醒
 
+- 2026-10-02（第 97 条）：`rules/testing.md` 增加四条（新项目 `/flow init` 时复制，已有项目不受影响）；用到 testing 规则的子进程提示缓存失效一次。
 - 2026-10-02（第三轮后续 5）：`agents/orchestrator.md` 改为"任务由程序派发，用 flow_wait 等待"；主会话进入调度模式后的提示缓存失效一次。
 - 2026-10-02（第三轮后续 1）：`agents/reviewer.md` 改为"派审查前已验证"；reviewer 子进程提示缓存失效一次。
 - 2026-10-02（第三轮 D）：`skills/decompose-dag` 增加"尽早并行"；architect 在 S1/F1 与计划修订时的子进程提示缓存失效一次。

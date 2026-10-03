@@ -130,3 +130,24 @@ test('失败后升级模型：第 2 次失败后的派发使用升级模型并�
     assert.equal(p.store.readTask(p.flowId, 'T-002').status, 'done');
   } finally { p.cleanup(); }
 });
+
+test('关键底座：被至少 3 个任务硬依赖的实施任务第一次就用升级模型；普通任务照常；可关闭', async () => {
+  const deps = ['T-002', 'T-003', 'T-004'].map((id) => mkTask(id, { verify: [], writes: [`src/server/${id.toLowerCase()}/**`], deps: [{ task: 'T-001', type: 'hard', reason: '需要底座' }] }));
+  for (const [yaml, expected] of [[MODELS(PROJECT_YAML), 'f/strong'], [MODELS(PROJECT_YAML).replace('critical_fanout: 3 ', 'critical_fanout: 0 '), 'f/medium']] as const) {
+    const p = await setupProject({ yaml, tasks: [mkTask('T-001', { verify: [] }), ...deps] });
+    try {
+      const { engine, launcher } = makeEngine(p, async (role, _n, a) => {
+        if (role === 'reviewer') { assert.ok((await a.call('flow_approve', { decision: 'pass', notes: 'ok' })).ok); return; }
+        return implement(a, `src/server/${a.env.task.toLowerCase()}/a.ts`);
+      }, SETTINGS);
+      await engine.next(p.flowId);
+      await engine.idle();
+      const first = launcher.launched.find((s) => s.env['PI_FLOW_TASK'] === 'T-001' && s.env['PI_FLOW_ROLE'] === 'backend-engineer')!;
+      assert.equal(first.model, expected);
+      assert.equal(!!p.store.listRuns().find((r) => r.task === 'T-001' && r.role === 'backend-engineer')!.escalated, expected === 'f/strong');
+      await engine.next(p.flowId);
+      await engine.idle();
+      assert.equal(launcher.launched.find((s) => s.env['PI_FLOW_TASK'] === 'T-002' && s.env['PI_FLOW_ROLE'] === 'backend-engineer')!.model, 'f/medium', '普通任务照常');
+    } finally { p.cleanup(); }
+  }
+});

@@ -421,6 +421,10 @@
         "after_failures": {
           "type": "integer",
           "minimum": 1
+        },
+        "critical_fanout": {
+          "type": "integer",
+          "minimum": 0
         }
       },
       "additionalProperties": false

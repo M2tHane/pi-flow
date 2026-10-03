@@ -38,6 +38,7 @@ review:                         # 按风险审查（可选，以下为默认值�
     paths: []
   # max_rounds: 3               # 审查轮次上限（可选）：到达时只剩建议类问题就通过，建议记入 handoff
 escalation:                     # 同一任务失败 after_failures 次后，下一次实施换成升级模型
+  critical_fanout: 3            # 被至少 3 个任务硬依赖的实施任务（底座）第一次就用升级模型；0 关闭
   after_failures: 2             # 升级模型：/flow-config escalate > roles.<角色>.escalate_model > 上一档（cheap→medium→strong）
 # budget:                       # 每个流程的预算（可选；也可以用 /flow budget 为单个流程设置）
 #   tokens: 5000000             # 输入 + 输出，不含缓存

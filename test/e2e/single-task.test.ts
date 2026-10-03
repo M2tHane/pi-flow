@@ -101,7 +101,7 @@ test('无 token 或错 token 的提交被拒；审查者不能用实施者的身
   } finally { p.cleanup(); }
 });
 
-test('diff 越界被拒；还原后再提交通过', async () => {
+test('diff 越界被拒（改了已跟踪的文件）；还原后再提交通过', async () => {
   const p = await setupProject({ tasks: [task1()] });
   try {
     let rejected = '';
@@ -109,21 +109,22 @@ test('diff 越界被拒；还原后再提交通过', async () => {
       if (role === 'reviewer') return approve(a);
       await a.call('flow_claim');
       await a.call('write', { path: 'src/server/t-001/a.ts', content: 'x' });
-      // write 工具越界会被 guard 拦下；bash 可以绕过工具层，靠提交时的 diff 检查兜底
-      assert.equal((await a.call('write', { path: 'src/web/x.ts', content: 'x' })).ok, false);
-      assert.ok((await a.call('bash', { command: 'mkdir -p src/web && echo x > src/web/x.ts' })).ok);
+      // write 工具越界会被 guard 拦下；绕过工具层的改动（例如程序运行改写了已跟踪的文件）靠提交时的 diff 检查兜底。
+      // 未被跟踪的新文件会在提交前被清理（见下一个测试），已跟踪文件的改动不会被清理
+      assert.equal((await a.call('write', { path: 'README.md', content: 'x' })).ok, false);
+      writeFileSync(path.join(a.spec.cwd, 'README.md'), 'changed by a test run');
       await a.call('flow_note', { text: 'n' });
       const r = await a.call('flow_submit', { summary: 'x' });
       assert.equal(r.ok, false);
       rejected = r.text;
-      assert.ok((await a.call('bash', { command: 'git rm -q src/web/x.ts' })).ok);
+      assert.ok((await a.call('bash', { command: 'git checkout HEAD~1 -- README.md' })).ok);
       const r2 = await a.call('flow_submit', { summary: 'x' });
       assert.ok(r2.ok, r2.text);
     });
     await engine.next(p.flowId);
     await engine.idle();
-    assert.match(rejected, /越出任务 writes：src\/web\/x\.ts/);
-    assert.match(rejected, /git rm/);
+    assert.match(rejected, /越出任务 writes：README\.md/);
+    assert.match(rejected, /git checkout/);
     assert.equal(p.store.readTask(p.flowId, 'T-001').status, 'done');
   } finally { p.cleanup(); }
 });

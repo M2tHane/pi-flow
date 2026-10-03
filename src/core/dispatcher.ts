@@ -14,7 +14,7 @@ import { assemblePrompt, ruleFilesFor, type PreviousReview } from './prompt-asse
 import { formatEntry, selectKnowledge } from './knowledge.ts';
 import { findSessionFile, sessionDirOf } from './session-log.ts';
 import { heldByRevision } from './revision.ts';
-import { assessRisk, budgetState, diffNumstat, escalationModel, escalationPolicy, resolveModelRef, reviewPolicy, strongReviewModel } from './cost-control.ts';
+import { assessRisk, budgetState, diffNumstat, escalationModel, escalationPolicy, hardFanout, resolveModelRef, reviewPolicy, strongReviewModel } from './cost-control.ts';
 import { carriedTestOf, computeReady, isLeadingTest } from './dag.ts';
 import { selectDispatchable } from './scheduler.ts';
 import { createTaskWorktree, ensureLocalExcludes, scratchDir, worktreesRoot } from './worktree.ts';
@@ -261,7 +261,9 @@ export class Engine {
     // 失败后升级模型（I）：同一任务失败达到次数后，实施换成升级模型
     let escalated = false;
     const esc = escalationPolicy(this.d.config);
-    if (role !== REVIEWER_ROLE && esc.enabled && task.attempts >= esc.afterFailures) {
+    // 关键底座（被多个任务硬依赖）第一次就用升级模型：它卡住时后面的任务全部等待
+    const critical = esc.criticalFanout > 0 && task.kind !== 'test' && hardFanout(task, this.d.store.listTasks(flowId)) >= esc.criticalFanout;
+    if (role !== REVIEWER_ROLE && esc.enabled && (task.attempts >= esc.afterFailures || critical)) {
       const up = escalationModel(this.d.config, this.d.roleSettings(), role, model);
       if (up) { model = up; escalated = true; }
     }

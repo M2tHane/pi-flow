@@ -114,9 +114,14 @@ export function strongReviewModel(config: FlowConfig, settings: RoleSettingsFile
 
 const TIER_ORDER = ['cheap', 'medium', 'strong'];
 
-export function escalationPolicy(config: FlowConfig): { enabled: boolean; afterFailures: number } {
+export function escalationPolicy(config: FlowConfig): { enabled: boolean; afterFailures: number; criticalFanout: number } {
   const e = config.raw.escalation ?? {};
-  return { enabled: e.enabled ?? true, afterFailures: e.after_failures ?? 2 };
+  return { enabled: e.enabled ?? true, afterFailures: e.after_failures ?? 2, criticalFanout: e.critical_fanout ?? 3 };
+}
+
+/** 直接硬依赖这个任务的任务数（不含已取消的） */
+export function hardFanout(t: TaskFile, tasks: readonly TaskFile[]): number {
+  return tasks.filter((x) => x.status !== 'cancelled' && x.depends_on.some((d) => d.type === 'hard' && d.task === t.id)).length;
 }
 
 /**

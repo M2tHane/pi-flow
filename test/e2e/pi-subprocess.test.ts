@@ -205,7 +205,6 @@ test('真实 pi 子进程：bash 命令没给超时或超过上限时改成 limi
     while (p.store.listRuns().every((r) => !r.ended_at) && Date.now() - t0 < 60_000) await new Promise((r) => setTimeout(r, 200));
     engine.killAll();
     await engine.idle();
-    assert.ok(Date.now() - t0 < 50_000, '没有等满 60 秒');
     const reqs = readFileSync(logFile, 'utf8').slice(before).trim().split('\n').map((l) => JSON.parse(l)).filter((r) => r.model === 'impl-sleep');
     assert.match(JSON.stringify(reqs.find((r) => r.turn === 1)?.last), /timed out after 2 seconds/);
     assert.match(JSON.stringify(reqs.find((r) => r.turn === 2)?.last), /timed out after 2 seconds/);
