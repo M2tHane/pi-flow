@@ -111,3 +111,37 @@ test('会话留档：run 记录会话目录；/flow run 显示工具调用摘要
     assert.ok(!existsSync(impl.session_dir!));
   } finally { p.cleanup(); }
 });
+
+test('原地打转：连续 5 次相同的工具调用被拦下并提示换思路，第 10 次结束本次运行（计一次失败，重新派发后完成）', async () => {
+  const p = await setupProject({ tasks: [mkTask('T-001', { verify: ['test'] })] });
+  try {
+    const seen: string[] = [];
+    const { engine } = makeEngine(p, async (role, nth, a) => {
+      if (role === 'reviewer') { await a.call('flow_approve', { decision: 'pass' }); return; }
+      await a.call('flow_claim');
+      if (nth === 1) {
+        // 同一条调用反复执行：第 5 次起被拦下，第 10 次本次运行被结束
+        for (let i = 1; i <= 12; i++) {
+          const r = await a.call('read', { path: 'README.md' }).catch((e) => ({ ok: false, text: String(e) }));
+          seen.push(`${i}:${r.ok ? 'ok' : r.text.slice(0, 40)}`);
+          if (/原地打转/.test(r.text)) return;
+        }
+        return;
+      }
+      // 换一种调用后计数重置
+      await a.call('write', { path: 'src/server/t-001/a.ts', content: 'ok' });
+      await a.call('flow_note', { text: '完成' });
+      await a.call('flow_submit', { summary: 's' });
+    });
+    await engine.next(p.flowId);
+    await engine.idle();
+    assert.deepEqual(seen.slice(0, 4).map((x) => x.split(':')[1]), ['ok', 'ok', 'ok', 'ok']);
+    assert.match(seen[4]!, /连续 5 次/);
+    assert.match(seen.at(-1)!, /10.*原地打转|原地打转/);
+    assert.equal(seen.length, 10);
+    const t = p.store.readTask(p.flowId, 'T-001');
+    assert.equal(t.status, 'done');
+    assert.equal(t.attempts, 1);
+    assert.ok(p.store.readEvents().some((e) => e.type === 'note' && /原地打转/.test(e.reason ?? '')));
+  } finally { p.cleanup(); }
+});

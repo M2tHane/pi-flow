@@ -11,11 +11,20 @@ import { FlowToolError, SUBAGENT_TOOLS, type RunEnv, type SubagentToolName, type
 
 export type GateResult = { block: false } | { block: true; reason: string; terminate: boolean };
 
+/**
+ * 原地打转（第四轮复跑看板发现：glm 连续 281 次执行同一条调试命令，心跳续租让租约永不过期）：
+ * 连续这么多次完全相同的工具调用时拦下并提示换思路；到上限结束本次运行（计一次失败，重新派发，失败多次后升级模型）。
+ */
+export const REPEAT_WARN = 5;
+export const REPEAT_LIMIT = 10;
+
 export class SubagentRuntime {
   readonly env: RunEnv;
   readonly store: StateStore;
   readonly config: FlowConfig;
   private readonly now?: () => Date;
+  private lastCall = '';
+  private repeats = 0;
 
   constructor(env: RunEnv, store: StateStore, config: FlowConfig, now?: () => Date) {
     this.env = env;
@@ -73,7 +82,20 @@ export class SubagentRuntime {
   async gate(call: ToolCall, cwd: string): Promise<GateResult> {
     await this.heartbeat();
     const r = await enforceToolCall(call, this.guardContext(cwd), this.store, { flow: this.env.flow, task: this.env.task, run: this.env.run });
-    return r.allow ? { block: false } : { block: true, reason: r.reason, terminate: r.terminate };
+    if (!r.allow) return { block: true, reason: r.reason, terminate: r.terminate };
+    // 只统计被放行的调用：被 guard 拦下的照常计违规
+    const sig = `${call.toolName}\u0000${JSON.stringify(call.input ?? null)}`;
+    this.repeats = sig === this.lastCall ? this.repeats + 1 : 1;
+    this.lastCall = sig;
+    if (this.repeats >= REPEAT_LIMIT) {
+      const reason = `连续 ${this.repeats} 次执行完全相同的 ${call.toolName} 调用，判定为原地打转，本次运行结束；任务会重新派发。`;
+      await this.store.recordEvent({ flow: this.env.flow, task: this.env.task, actor: `run:${this.env.run}`, type: 'note', reason, data: { run: this.env.run, tool: call.toolName } }).catch(() => {});
+      return { block: true, reason, terminate: true };
+    }
+    if (this.repeats >= REPEAT_WARN) {
+      return { block: true, terminate: false, reason: `你已连续 ${this.repeats} 次执行完全相同的 ${call.toolName} 调用，结果不会变化。换一个思路（读相关代码、改变输入、缩小问题），或者用 flow_block 说明卡在哪里；再重复 ${REPEAT_LIMIT - this.repeats} 次本次运行会被结束。` };
+    }
+    return { block: false };
   }
 
   isFlowTool(name: string): name is SubagentToolName {
