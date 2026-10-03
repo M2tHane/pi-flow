@@ -164,7 +164,7 @@ export interface CreateFlowInput {
 }
 
 export type TaskInput = Pick<TaskFile, 'id' | 'stage' | 'kind' | 'title' | 'role' | 'scopes' | 'depends_on' | 'inputs'
-  | 'writes' | 'acceptance' | 'verify'> & Partial<Pick<TaskFile, 'merge_fix_for' | 'conflict_files' | 'worktree' | 'branch' | 'base_sha' | 'sync_main' | 'replan'>>;
+  | 'writes' | 'acceptance' | 'verify'> & Partial<Pick<TaskFile, 'merge_fix_for' | 'conflict_files' | 'worktree' | 'branch' | 'base_sha' | 'sync_main' | 'replan' | 'contract_change'>>;
 
 export type Findings = NonNullable<TaskFile['findings']>;
 
@@ -525,7 +525,7 @@ export class StateStore {
         queue_head: mq.queue[0] ? key(mq.queue[0]) === me : false,
         handoff_written: (tx.readText(handoffRel(flowId, taskId)) ?? '').trim().length > 0,
         evidence_saved: this.hasEvidence(tx, flowId, taskId),
-        contracts_locked: 'S1' in flow.approvals || 'F1' in flow.approvals,
+        contracts_locked: ('S1' in flow.approvals || 'F1' in flow.approvals) && !task.contract_change,
       };
       const plan = planTransition(task, req.to, req.trigger, facts, req.patch);
       if (!plan.ok) throw new StateError(`转移被拒（${me} ${task.status} -> ${req.to}）`, plan.errors);
@@ -887,6 +887,8 @@ export class StateStore {
           acceptance: [...t.acceptance], verify: [...t.verify], status: 'pending', attempts: 0, violations: 0,
           lease_expirations: 0, lease: null, impl_run: null, branch: null, worktree: null, base_sha: null,
           blocked_reason: null, last_failure: null, created_by: 'architect', version: 1,
+          // 改 API 文档的任务只能由用户批准的修订创建（提案与普通任务没有这个字段）
+          ...(t.contract_change ? { contract_change: true } : {}),
         });
       }
       for (const r of input.rewire) {

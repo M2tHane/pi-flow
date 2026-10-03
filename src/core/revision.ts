@@ -8,6 +8,7 @@ import { leadingTestErrors, normalizeLeadingTests, validateDag } from './dag.ts'
 import { isSettled } from './state-machine.ts';
 import { DESIGN_STAGES } from '../modes/plan.ts';
 import { removeWorktree } from './worktree.ts';
+import { CONTRACTS_PATH } from './paths.ts';
 
 export interface RevisionDeps { root: string; store: StateStore; config: FlowConfig }
 
@@ -111,6 +112,13 @@ export function checkRevision(config: FlowConfig, flowStages: readonly string[],
     if (at < 0 || at < cur || DESIGN_STAGES.has(t.stage)) errors.push(`${t.id}：stage ${t.stage} 不合法，只能是 ${flowStages.slice(cur).filter((s) => !DESIGN_STAGES.has(s)).join('、')}`);
     if (['merge-fix', 'review-fix', 'analysis'].includes(t.kind)) errors.push(`${t.id}：kind ${t.kind} 不能用于新增任务`);
     if (t.role === 'orchestrator' || t.role === 'reviewer') errors.push(`${t.id}：角色 ${t.role} 不能承担任务`);
+    // 改 API 文档：契约锁定后只有标了 contract_change 的文档任务能写 docs/contracts/
+    const writesContracts = t.writes.some((w) => w === CONTRACTS_PATH || w.startsWith('docs/contracts'));
+    if (writesContracts && !t.contract_change) errors.push(`${t.id}：要写 docs/contracts/，请标 contract_change: true（改 API 文档的任务）`);
+    if (t.contract_change) {
+      if (t.kind !== 'doc') errors.push(`${t.id}：改 API 文档的任务 kind 必须是 doc`);
+      if (!t.writes.every((w) => w.startsWith('docs/'))) errors.push(`${t.id}：改 API 文档的任务只能写 docs/ 下的文件（实现的修改另建任务，硬依赖它）`);
+    }
     for (const d of t.depends_on) if (!byId.has(d.task) && !input.add.some((x) => x.id === d.task)) errors.push(`${t.id}：依赖的任务 ${d.task} 不存在`);
   }
   const touched = new Map<string, string>();
@@ -183,7 +191,8 @@ export function checkRevision(config: FlowConfig, flowStages: readonly string[],
 export function formatRevision(rev: RevisionFile): string {
   return [
     `计划修订（由 ${rev.task} 提出，原因：${rev.reason}）：`,
-    ...rev.add.map((t) => `+ ${t.id} [${t.stage}/${t.kind}] ${t.title}（${t.role}）writes: ${t.writes.join(', ')}${t.depends_on.length ? `；依赖 ${t.depends_on.map((d) => `${d.task}${d.type === 'soft' ? '~' : ''}`).join(',')}` : ''}`),
+    ...(rev.impact ? [`影响分析：${rev.impact}`] : []),
+    ...rev.add.map((t) => `+ ${t.id} [${t.stage}/${t.kind}]${t.contract_change ? '【改 API 文档】' : ''} ${t.title}（${t.role}）writes: ${t.writes.join(', ')}${t.depends_on.length ? `；依赖 ${t.depends_on.map((d) => `${d.task}${d.type === 'soft' ? '~' : ''}`).join(',')}` : ''}`),
     ...rev.rewire.map((r) => `~ ${r.task} 依赖改为 ${r.depends_on.map((d) => `${d.task}${d.type === 'soft' ? '~' : ''}`).join(',') || '无'}`),
     ...rev.cancel.map((c) => `- 取消 ${c.task}：${c.reason}`),
   ].join('\n');

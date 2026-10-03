@@ -116,6 +116,8 @@ export const TaskFile = Type.Object({
   last_failure: Nullable(Type.String()),
   /** 计划修订任务（只读 analysis，由 architect 提交修订）：用户提出的修订原因 */
   replan: Type.Optional(Type.String({ minLength: 1 })),
+  /** 修改已锁定契约的任务（由批准的计划修订创建）：只有它在契约锁定后可以写 docs/contracts/ */
+  contract_change: Type.Optional(Type.Boolean()),
   // scout（analysis 任务）提交的结构化结论（fix 模式）
   findings: Type.Optional(Type.Object({
     location: Type.String(),
@@ -383,6 +385,8 @@ export const RevisionTask = Type.Object({
   writes: Type.Array(Type.String(), { minItems: 1 }),
   acceptance: Type.Array(Type.String(), { minItems: 1 }),
   verify: Type.Array(Type.String()),
+  /** 修改已锁定的 API 文档（docs/contracts/）的任务：只能由批准的计划修订创建，只有它能写契约 */
+  contract_change: Type.Optional(Type.Boolean()),
 }, { additionalProperties: false });
 export type RevisionTask = Static<typeof RevisionTask>;
 
@@ -398,6 +402,8 @@ export const RevisionFile = Type.Object({
   rewire: Type.Array(Type.Object({ task: TaskId, depends_on: Type.Array(RevisionDependency) }, { additionalProperties: false })),
   cancel: Type.Array(Type.Object({ task: TaskId, reason: Type.String({ minLength: 1 }) }, { additionalProperties: false })),
   summary: Type.String(),
+  /** 影响分析：受影响的接口、模块，以及已完成、进行中、未开始的任务各自怎么处理 */
+  impact: Type.Optional(Type.String()),
   /** 批准时新增任务的编号映射 N-xxx → T-xxx */
   mapping: Type.Optional(Type.Record(Type.String(), TaskId)),
   version: Type.Integer({ minimum: 1 }),

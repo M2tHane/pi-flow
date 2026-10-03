@@ -155,6 +155,9 @@
             "items": {
               "type": "string"
             }
+          },
+          "contract_change": {
+            "type": "boolean"
           }
         },
         "additionalProperties": false
@@ -231,6 +234,9 @@
       }
     },
     "summary": {
+      "type": "string"
+    },
+    "impact": {
       "type": "string"
     },
     "mapping": {

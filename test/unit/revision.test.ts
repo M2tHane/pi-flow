@@ -70,3 +70,15 @@ test('调整依赖可以指向本次新增的任务，批准时改写为正式�
   assert.deepEqual(r.errors, []);
   assert.deepEqual(r.revision.rewire[0]!.depends_on.map((d) => d.task), ['N-001'], '保存时仍是临时编号');
 });
+
+test('改 API 文档：写 docs/contracts 必须标 contract_change；标了的必须是只写 docs/ 的文档任务', () => {
+  const tasks = [mkTask('T-001', { status: 'done' })];
+  const doc = { kind: 'doc' as const, role: 'architect', scopes: ['docs'], inputs: [], verify: [], depends_on: [], acceptance: ['a'], stage: 'S3', title: '改接口' };
+  const missing = checkRevision(config, STAGES, 'S3', tasks, { add: [{ ...doc, id: 'N-001', writes: ['docs/contracts/**'] }], rewire: [], cancel: [] });
+  assert.ok(missing.errors.some((e) => /contract_change/.test(e)), missing.errors.join('\n'));
+  const wrongKind = checkRevision(config, STAGES, 'S3', tasks, { add: [{ ...doc, id: 'N-001', kind: 'impl', role: 'backend-engineer', scopes: ['backend'], writes: ['src/server/x/**'], contract_change: true }], rewire: [], cancel: [] });
+  assert.ok(wrongKind.errors.some((e) => /kind 必须是 doc/.test(e)) && wrongKind.errors.some((e) => /只能写 docs\//.test(e)), wrongKind.errors.join('\n'));
+  const ok = checkRevision(config, STAGES, 'S3', tasks, { add: [{ ...doc, id: 'N-001', writes: ['docs/contracts/**'], contract_change: true }], rewire: [], cancel: [] });
+  assert.deepEqual(ok.errors, []);
+  assert.equal(ok.revision.add[0]!.contract_change, true);
+});

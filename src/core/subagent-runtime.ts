@@ -43,7 +43,8 @@ export class SubagentRuntime {
       cwd,
       workspaceRoot: t.worktree ?? this.env.root,
       mainRoot: this.env.root,
-      contractsLocked: 'S1' in flow.approvals || 'F1' in flow.approvals,
+      // 批准的计划修订创建的"改 API 文档"任务可以写契约，其余任务在契约锁定后只读
+      contractsLocked: ('S1' in flow.approvals || 'F1' in flow.approvals) && !t.contract_change,
       ...(role.writes.length ? { writes: t.conflict_files ?? t.writes, scratchDir: scratchDir(this.env.root, this.env.run) } : {}),
     };
   }

@@ -407,6 +407,7 @@
     - 用户据此决定三项改动：① 实施者边写边测、只测自己的功能，合并后跑大范围测试；② 讨论完先把所有功能和 API 落成文档（契约不超出需求）；③ 运行中改需求：分析影响 → 改 API 文档 → 取消受影响的未开始任务 → 派发新任务。
     - **① 已实现**：`workflow.yaml` 新增 `testing.leading_tests`（默认 false）。关闭时 `flow_propose_tasks` 与计划修订拒绝"测试任务被同阶段实现任务硬依赖"的拆法（`dag.ts` 的 `leadingTestErrors`），提示把测试并入实现任务；先行验收测试的整套机制保留，开启后照旧。实施角色（backend、frontend、db）提示改为边写边测，契约有缺口时 flow_block 并写"建议修订计划"；test-engineer 改为功能实现之后的联调与端到端测试及复现测试；reviewer 检查实施任务是否带了覆盖验收标准的测试；`rules/testing.md`、`decompose-dag`、`revise-plan`、`design-contract` 同步；模板 database scope 增加 `tests/db/**`。覆盖先行验收测试机制的端到端用例显式开启 `leading_tests`。
     - **② 已实现（契约不超出需求）**：`flow_propose_tasks` 新增 `extras`（文档中超出需求的设计，逐条写明是什么、为什么），保存在提案里。批准规划阶段时，`/flow status --detail` 与 orchestrator 的状态列出这些设计并提示"不同意就 /flow reject"，"需要你处理"里注明有几项要确认。审查 S1/F1 设计任务时，提示附上申报的 extras，未申报的超出部分按缺陷打回。`design-contract` 技能写明"契约是把需求落成文档，不是扩展需求"、实现手段不写进契约、需求不清在需求阶段问清；reviewer 检查项增加一条。
+    - **③ 已实现（运行中改 API 文档）**：修订任务（RevisionTask）新增 `contract_change`：kind 必须是 doc、只写 docs/ 下的文件；新增任务要写 docs/contracts/ 必须标它，否则校验拒绝。只有批准的修订能创建这种任务（提案与普通任务没有这个字段，`applyRevision` 才写入）；它的提交检查与 guard 都视契约为未锁定（`state-store` 的 contracts_locked、`subagent-runtime` 的 contractsLocked），其余任务照旧只读。`flow_revise_plan` 新增必填的 `impact`（影响分析：接口、模块，已完成、进行中、未开始的任务各自怎么处理），保存在修订里，批准时展示，改文档任务标【改 API 文档】。`revise-plan` 技能按"分析影响 → 改 API 文档 → 取消未开始的、进行中的做完再接修改任务、已完成的新增修改任务 → 新任务硬依赖改文档任务"重写；实施角色遇到契约缺口时阻塞并写"建议修订计划"。验收：`test/e2e/replan.test.ts` 新增用例（契约锁定后，修订新增改文档任务与两个按新接口实现的任务、取消未开始的 T-002；未标 contract_change 写契约被拒；批准后改文档任务能写契约并合入，普通任务写契约被拦）；`test/unit/revision.test.ts`。
 
 ## 第三轮优化设计要点
 
@@ -525,7 +526,7 @@
 
 ## 缓存提醒
 
-- 2026-10-03（第 100 条 ①②）：`agents/` 中 backend、frontend、db、test、reviewer 与 `skills/design-contract`（契约不超出需求）、 `rules/testing.md`、`skills/decompose-dag`、`revise-plan`、`design-contract` 改为"实施者边写边测"；相关子进程提示缓存失效一次。
+- 2026-10-03（第 100 条 ①②③，含 `skills/revise-plan` 重写）：`agents/` 中 backend、frontend、db、test、reviewer 与 `skills/design-contract`（契约不超出需求）、 `rules/testing.md`、`skills/decompose-dag`、`revise-plan`、`design-contract` 改为"实施者边写边测"；相关子进程提示缓存失效一次。
 - 2026-10-02（第 97 条）：`rules/testing.md` 增加四条（新项目 `/flow init` 时复制，已有项目不受影响）；用到 testing 规则的子进程提示缓存失效一次。
 - 2026-10-02（第三轮后续 5）：`agents/orchestrator.md` 改为"任务由程序派发，用 flow_wait 等待"；主会话进入调度模式后的提示缓存失效一次。
 - 2026-10-02（第三轮后续 1）：`agents/reviewer.md` 改为"派审查前已验证"；reviewer 子进程提示缓存失效一次。

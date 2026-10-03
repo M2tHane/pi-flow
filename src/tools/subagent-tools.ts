@@ -192,6 +192,7 @@ export const ReviseParams = Type.Object({
     reason: Type.String({ minLength: 1, description: '为什么取消' }),
   }), { description: '取消未开始的任务' })),
   summary: Type.String({ minLength: 1, maxLength: 500, description: '一句话说明这次修订' }),
+  impact: Type.String({ minLength: 1, maxLength: 3000, description: '影响分析：要改哪些 API 接口与模块；已完成、进行中、未开始的受影响任务各自怎么处理（取消、调整、新增修改任务）' }),
 });
 
 export async function flowRevisePlan(ctx: ToolContext, p: Static<typeof ReviseParams>): Promise<ToolResult> {
@@ -202,7 +203,7 @@ export async function flowRevisePlan(ctx: ToolContext, p: Static<typeof RevisePa
   if (c.errors.length) throw new FlowToolError(`修订校验失败，未保存：\n${c.errors.map((e) => `- ${e}`).join('\n')}\n建议：逐条修正后重新调用 flow_revise_plan。`);
   await ctx.store.saveRevision(ctx.env.flow, {
     task: t.id, reason: t.replan, run: ctx.env.run, created_at: (ctx.now?.() ?? new Date()).toISOString(), status: 'proposed',
-    add: c.revision.add, rewire: c.revision.rewire, cancel: c.revision.cancel, summary: `${p.summary}：${c.summary}`.slice(0, 2000),
+    add: c.revision.add, rewire: c.revision.rewire, cancel: c.revision.cancel, summary: `${p.summary}：${c.summary}`.slice(0, 2000), impact: p.impact,
   }, actor(ctx));
   return { text: `修订已保存（用户批准后生效，批准前可重新提交覆盖）：\n${c.summary}${c.notes.length ? `\n程序调整：\n${c.notes.map((n) => `- ${n}`).join('\n')}` : ''}\n接下来 flow_note 写明理由，然后 flow_submit。` };
 }
