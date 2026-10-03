@@ -13,7 +13,7 @@
 
 ## 安装
 
-按顺序做四步。每一步做完都可以用 `/flow doctor` 自检，它会逐项报告"已安装 / 未安装 / 版本未经验证"，并给出安装命令和链接。
+按顺序做下面几步。装好后在任意项目里执行 `/flow doctor` 自检，它会逐项报告"已安装 / 未安装 / 版本未经验证"，并给出安装命令和链接。
 
 ### 1. 基础环境
 
@@ -25,16 +25,31 @@
 
 低于 0.99 时 `/flow-build`、`/flow-fix` 会拒绝开始；高于验证范围时只提醒。
 
-### 2. 安装 pi-flow
+### 2. 获取并安装 pi-flow
+
+目前从源码安装，尚未发布到 npm。
 
 ```bash
-pi install /path/to/pi-flow        # 全局
-pi install -l /path/to/pi-flow     # 只装到当前项目（写入 .pi/settings.json）
+git clone <pi-flow 仓库地址> ~/tools/pi-flow
+cd ~/tools/pi-flow
+npm install --omit=dev          # 必须：Pi 不会替本地包安装依赖（minimatch、proper-lockfile、yaml）
+pi install ~/tools/pi-flow      # 全局安装：所有项目都能用
+pi list                         # 确认列表里有 pi-flow
 ```
 
-目前从本地目录安装，尚未发布到 npm。
+- `pi install` 把这个目录登记到 `~/.pi/agent/settings.json`，**不复制文件**，Pi 每次启动直接从这个目录加载。以后 `git pull` 更新后重启 pi 即生效；`package.json` 的依赖有变化时再执行一次 `npm install --omit=dev`。
+- 只想在某个项目里用：在那个项目目录执行 `pi install -l ~/tools/pi-flow`，登记到项目的 `.pi/settings.json`（Pi 会先请你信任这个项目）。
+- 不想安装、临时试用：`pi -e ~/tools/pi-flow/src/pi-adapter/extension.ts`。
+- 卸载：`pi remove ~/tools/pi-flow`。
+- 要跑 pi-flow 自己的测试（开发用）时执行完整的 `npm install`。
 
-### 3. 安装插件（按需）
+### 3. 在 Pi 中配置模型
+
+pi-flow 不管理模型账号，只使用你在 Pi 中已经能用的模型：在 pi 里执行 `/login` 登录提供商，或在 `~/.pi/agent/models.json` 中添加自定义提供商（例如本地代理）。配置好后 `pi --list-models` 能看到它们。
+
+然后在 pi 中执行 `/flow-config`，为各角色选择模型和思考级别（见下文"为各角色选择模型"）。这是全局设置，只需做一次，所有项目共用。
+
+### 4. 安装插件（按需）
 
 只有 `workflow.yaml` 中有角色用到的插件才会被检查；没装时对应工具不可用，流程照常运行（开始流程时会提醒）。
 
@@ -48,11 +63,28 @@ pi install -l /path/to/pi-flow     # 只装到当前项目（写入 .pi/settings
 
 版本不在验证范围时只提醒：pi-flow 只启用配置里列出的工具名，写操作取不到路径就阻断，所以插件改了工具名或参数时，相关工具会失效，但安全检查不会放宽。想用验证过的版本，在安装命令后加 `@版本号`（例如 `pi install npm:@vndv/pi-codegraph@0.1.10`）。子进程启动时如果发现角色配置的工具没有注册，会记一条事件，`/flow doctor` 会提示是哪个角色缺了哪些工具。
 
-### 4. 初始化项目
-
-在项目的 git 仓库里执行 `/flow init`：生成 `workflow.yaml`、规则与文档骨架，并运行上面所有检查。然后用 `/flow-config` 为各角色选择模型。
-
 验证过的版本登记在 `src/core/dependencies.ts`，升级依赖并验证后只改那里。
+
+### 5. 在一个项目里开始
+
+```bash
+cd ~/code/my-app            # 必须是 git 仓库；全新项目先 git init
+pi                          # 正常启动 pi，pi-flow 随之加载
+```
+
+然后在 pi 里：
+
+```
+/flow init                                   可选：生成 workflow.yaml、规则与文档骨架并自检（/flow-build 会自动做）
+/flow-build "做一个个人记账服务……"           新项目
+/flow-build --feature "给导出加上按月筛选"     已有项目加功能
+/flow-fix "导出的 CSV 中文乱码"                修复问题
+```
+
+- 开始流程后，当前会话进入**调度模式**：切换到 orchestrator 的模型，你只和主 agent 对话，它向你汇报进度、转达你的修改要求；写代码的是后台的各个角色。`/flow status` 随时看进度，`/flow off` 退出调度模式（流程不受影响）。
+- 关掉 pi 后流程不会丢：重新打开 pi，执行 `/flow resume` 接着做。
+- **已有项目请先改 `workflow.yaml` 的 `commands`**：模板写的是 pnpm 命令（`pnpm test` 等），换成你项目真实的安装、类型检查、lint、测试命令。新项目可以不改：S1 阶段 architect 会按选定的技术栈起草命令和规则，你批准时一并应用。
+- 只是小改动（单文件、几十行）时不必走流程，直接用 pi 即可：pi-flow 只在你执行它的命令后才接管会话。
 
 ### 为各角色选择模型：`/flow-config`
 
@@ -215,6 +247,34 @@ architect、reviewer、scout 默认启用 Pi 的 codemode：模型可以写一�
 开始流程或执行 `/flow resume` 后，当前会话进入**调度模式**：会话切换到你在 `/flow-config` 中为 orchestrator 设置的模型，只能查看状态、派发任务和等待结果，不能自己改代码；每轮开头会看到"当前状态与唯一允许的下一步"。ready 的任务默认由程序自动派发（`limits.auto_dispatch`），主 agent 只在任务完成或阻塞、需要你处理、阶段变化时醒来向你汇报，审查、验证、合并这些中间步骤不会唤醒它；主会话的 token 用量记在 `/flow status --cost` 的 orchestrator 一行（它的"耗时"是会话跨度）。自动派发之后主 agent 只负责沟通，可以用 `/flow-config` 给 orchestrator 选中等模型。流程结束、中止或执行 `/flow off` 后恢复原来的模型与工具。普通的 pi 会话不受影响。
 
 ---
+
+## 设置文件一览
+
+| 文件 | 位置 | 谁来写 | 作用 |
+|---|---|---|---|
+| `settings.json` | `~/.pi/agent/` | `pi install` | Pi 加载哪些包（pi-flow 与插件）。项目级的在 `<项目>/.pi/settings.json`（`pi install -l`） |
+| 模型与账号 | `~/.pi/agent/`（`models.json`、`/login` 保存的凭据） | Pi 的 `/login` 或你手写 | 有哪些模型可用；pi-flow 只通过 Pi 查询可用的模型，不读取也不打印密钥 |
+| `pi-flow.json` | `~/.pi/agent/` | `/flow-config` | **各角色用哪个模型、思考级别、失败后升级用的模型**（reviewer 的升级模型用于高风险审查）。全局，所有项目共用，优先于项目里的模型档位 |
+| `workflow.yaml` | 项目根目录 | `/flow init` 生成，**你修改** | 项目的流程配置，见下表 |
+| `rules/*.md` | 项目根目录 | 你（或批准 architect 起草的草案） | 按 scope 注入给各角色的编码规则 |
+| `docs/`、`AGENTS.md` | 项目根目录 | 流程中的各角色 | PRD、架构、ADR、契约、功能说明；批准后的 `docs/contracts/` 只读 |
+| `.flow/` | 项目根目录 | **只有程序** | 流程状态、任务、运行记录、事件日志；不要手改（会被完整性校验发现） |
+| `<项目>.worktrees/` | 项目目录旁边 | 只有程序 | 每个任务的 worktree、子进程会话留档、临时目录 |
+
+`~/.pi/agent` 可用环境变量 `PI_CODING_AGENT_DIR` 改到别处（`pi-flow.json` 随之移动）。
+
+`workflow.yaml` 各部分：
+
+| 部分 | 内容 |
+|---|---|
+| `main_branch`、`commands` | 主分支名；install、typecheck、lint、test、test_affected、e2e 的实际命令。verify 与闸门只能引用这里的命令名 |
+| `limits` | 实施并发 `max_parallel`、失败上限 `max_attempts`、租约 `lease_minutes`、单条 bash 超时 `bash_timeout_s`、自动派发 `auto_dispatch`、返工接续对话 `continue_session`、违规上限等 |
+| `models` | 档位（strong、medium、cheap）对应的具体模型；`/flow-config` 设置过的角色以它为准 |
+| `review` | 审查并发、先验证再审查 `verify_first`、低风险与高风险的判定和模型、轮次上限 |
+| `escalation` | 失败几次后升级模型 `after_failures`、关键底座第一次就升级 `critical_fanout` |
+| `budget` | 每个流程的 token 或金额预算（可选） |
+| `modes` | build、feature 的阶段与闸门 |
+| `scopes`、`tool_groups`、`roles` | 每个 scope 的可写路径与规则；工具组；每个角色的档位、scope、可用工具与环境变量 |
 
 ## 项目里会多出什么
 
