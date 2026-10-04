@@ -14,6 +14,10 @@ import { git } from '../core/git.ts';
 import { perTaskReview } from '../core/cost-control.ts';
 import { testAdjustEnabled, testAdjustments } from '../core/test-adjust.ts';
 import { MAX_STAGE_ISSUES, formatIssues, issueFileErrors } from '../core/stage-review.ts';
+import { NOTES_DESCRIPTION, NotesError, NotesParams, applyNoteOps, renderNotes } from '../core/notes.ts';
+import { HISTORY_DESCRIPTION, HistoryParams, formatSearch, loadHistory, readHistoryEntry, searchHistory } from '../core/history.ts';
+import { listSessionFiles, sessionDirOf } from '../core/session-log.ts';
+import { taskNotesRel } from '../core/state-store.ts';
 
 export const NOTE_LIMIT = 4000;
 
@@ -391,7 +395,45 @@ export async function flowReviewConfirm(ctx: ToolContext, p: Static<typeof Revie
     : '已记录：全部问题已解决。你的工作已完成，请直接结束。' };
 }
 
+/** 结构化笔记（第五轮）：本任务所有运行共用一份 */
+export async function flowNotes(ctx: ToolContext, p: Static<typeof NotesParams>): Promise<ToolResult> {
+  checkRun(ctx);
+  const rel = taskNotesRel(ctx.env.flow, ctx.env.task);
+  if (p.action === 'read') return { text: renderNotes(ctx.store.readNotes(rel)) };
+  if (!p.ops?.length) throw new FlowToolError('update 需要 ops：每条写 section、op 与 text / index / items。');
+  try {
+    const n = await ctx.store.writeNotes(rel, (cur) => { applyNoteOps(cur, p.ops!); return cur; }, { actor: actor(ctx), flow: ctx.env.flow, task: ctx.env.task, reason: '更新笔记' });
+    return { text: `已更新。\n${renderNotes(n)}` };
+  } catch (e) {
+    if (e instanceof NotesError) throw new FlowToolError(e.message);
+    throw e;
+  }
+}
+
+/** 本任务所有运行的会话文件（返工、恢复之前的历史也能查到） */
+export function taskSessionFiles(store: StateStore, root: string, flow: string, task: string): string[] {
+  const runs = store.listRuns().filter((r) => r.flow === flow && r.task === task).sort((a, b) => a.started_at.localeCompare(b.started_at));
+  return runs.flatMap((r) => listSessionFiles(sessionDirOf(root, r.run_id)));
+}
+
+export function historyTool(files: readonly string[], p: Static<typeof HistoryParams>): ToolResult {
+  const entries = loadHistory(files);
+  if (p.action === 'search') {
+    if (!p.query) throw new FlowToolError('search 需要 query。');
+    return { text: formatSearch(searchHistory(entries, p.query, p.limit ?? 10), entries.length) };
+  }
+  if (!p.id) throw new FlowToolError('read 需要 id（search 结果中 # 后面的编号）。');
+  return { text: readHistoryEntry(entries, p.id, p.offset ?? 0) };
+}
+
+export function flowHistory(ctx: ToolContext, p: Static<typeof HistoryParams>): ToolResult {
+  checkRun(ctx);
+  return historyTool(taskSessionFiles(ctx.store, ctx.env.root, ctx.env.flow, ctx.env.task), p);
+}
+
 export const SUBAGENT_TOOLS = {
+  notes: { params: NotesParams, description: NOTES_DESCRIPTION, run: (c: ToolContext, p: Static<typeof NotesParams>) => flowNotes(c, p) },
+  history: { params: HistoryParams, description: HISTORY_DESCRIPTION, run: (c: ToolContext, p: Static<typeof HistoryParams>) => flowHistory(c, p) },
   flow_claim: { params: ClaimParams, description: '确认任务与租约，返回任务说明、输入文件、验收标准、可写范围与 verify 命令。开始工作前先调用。', run: (c: ToolContext) => flowClaim(c) },
   flow_note: { params: NoteParams, description: '追加 handoff 笔记（做到哪、下一步、踩过的坑、未决问题）。提交前必须至少写一次。', run: (c: ToolContext, p: Static<typeof NoteParams>) => flowNote(c, p) },
   flow_submit: { params: SubmitParams, description: '提交本任务进入审查。程序会检查改动是否都在可写范围内。只读探查任务（scout）用它提交 findings。', run: (c: ToolContext, p: Static<typeof SubmitParams>) => flowSubmit(c, p) },

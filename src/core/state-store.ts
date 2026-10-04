@@ -8,7 +8,7 @@ import { execFileSync } from 'node:child_process';
 import lockfile from 'proper-lockfile';
 import {
   validate, type FlowFile, type MergeQueueFile, type RunFile, type ProposalFile, type BriefFile, type KnowledgeFile, type ModelPausesFile, type RevisionFile, type SchemaKind, type StageStatus, type StateFile,
-  type TaskFile, type TaskStatus, type FlowEvent, type StageReviewFile,
+  type TaskFile, type TaskStatus, type FlowEvent, type StageReviewFile, type NotesFile,
 } from './schemas.ts';
 import {
   IN_FLIGHT, planStageTransition, planTransition, type Facts, type StageTrigger, type TaskPatch, type Trigger,
@@ -65,6 +65,10 @@ export const stageEvidenceRel = (flow: string, stage: string) => `flows/${flow}/
 export const stageReviewRel = (flow: string, stage: string) => `flows/${flow}/stage-review-${stage}.json`;
 const MQ_REL = 'merge-queue.json';
 export const KNOWLEDGE_REL = 'knowledge.json';
+/** 任务的结构化笔记：同一任务的所有运行共用一份 */
+export const taskNotesRel = (flow: string, task: string) => `flows/${flow}/notes/${task}.json`;
+/** 主 agent 的结构化笔记：跨流程保留 */
+export const MAIN_NOTES_REL = 'notes/main.json';
 export const MODEL_PAUSES_REL = 'model-pauses.json';
 
 export function schemaKindOf(rel: string): SchemaKind | null {
@@ -77,6 +81,7 @@ export function schemaKindOf(rel: string): SchemaKind | null {
   if (rel === 'brief.json') return 'brief';
   if (rel === KNOWLEDGE_REL) return 'knowledge';
   if (rel === MODEL_PAUSES_REL) return 'model-pauses';
+  if (rel === MAIN_NOTES_REL || /^flows\/[^/]+\/notes\/[^/]+\.json$/.test(rel)) return 'notes';
   return null;
 }
 
@@ -793,6 +798,25 @@ export class StateStore {
       const result = mutate(f, tx.ts);
       tx.putJson(MODEL_PAUSES_REL, 'model-pauses', f);
       tx.event({ flow: event.flow ?? null, ...(event.task ? { task: event.task } : {}), actor: event.actor, type: 'note', reason: event.reason, ...(event.data ? { data: event.data } : {}) });
+      return result;
+    });
+  }
+
+  /** 结构化笔记（taskNotesRel 或 MAIN_NOTES_REL）；还没有时返回 null */
+  readNotes(rel: string): NotesFile | null {
+    return this.readJsonRel<NotesFile>(rel);
+  }
+
+  /** 修改结构化笔记：mutate 在事务内收到当前笔记（没有时为空笔记，可原地修改）；业务校验见 core/notes.ts */
+  async writeNotes<T>(rel: string, mutate: (n: NotesFile, ts: string) => T, event: { actor: string; flow?: string | null; task?: string; reason: string }): Promise<T> {
+    if (schemaKindOf(rel) !== 'notes') throw new StateError(`不是笔记文件：${rel}`);
+    return this.transaction((tx) => {
+      const cur = tx.readJson<NotesFile>(rel);
+      const n: NotesFile = cur ?? { goal: [], done: [], todo: [], current: [], decisions: [], pitfalls: [], updated_at: tx.ts, version: 1 };
+      const result = mutate(n, tx.ts);
+      n.updated_at = tx.ts;
+      tx.putJson(rel, 'notes', n);
+      tx.event({ flow: event.flow ?? null, ...(event.task ? { task: event.task } : {}), actor: event.actor, type: 'note', reason: event.reason });
       return result;
     });
   }

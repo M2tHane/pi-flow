@@ -13,6 +13,8 @@ import { loadAgent } from './agents.ts';
 import { assemblePrompt, ruleFilesFor, type AssembleStageReview, type PreviousReview } from './prompt-assembler.ts';
 import { formatEntry, selectKnowledge } from './knowledge.ts';
 import { findSessionFile, sessionDirOf } from './session-log.ts';
+import { seedTaskNotes } from './notes.ts';
+import { taskNotesRel } from './state-store.ts';
 import { heldByRevision } from './revision.ts';
 import { assessRisk, budgetState, diffNumstat, escalationModel, escalationPolicy, hardFanout, resolveModelRef, reviewPolicy, strongReviewModel } from './cost-control.ts';
 import { carriedTestOf, computeReady, isLeadingTest } from './dag.ts';
@@ -198,6 +200,12 @@ export class Engine {
       task = await store.acquireLease(flowId, taskId, lease, 'dispatcher');
     } else {
       throw new DispatchError(`任务 ${taskId} 当前是 ${task.status}${task.lease ? `（run ${task.lease.run_id} 运行中）` : ''}，不能派发`);
+    }
+
+    // 任务第一次运行前填入初始笔记（第五轮）：目标是任务说明与验收标准，待完成是验收标准逐条
+    if (!store.readNotes(taskNotesRel(flowId, taskId))) {
+      const seed = seedTaskNotes(task);
+      await store.writeNotes(taskNotesRel(flowId, taskId), (n) => { n.goal = seed.goal; n.todo = seed.todo; }, { actor: 'dispatcher', flow: flowId, task: taskId, reason: '初始笔记' });
     }
 
     const sessionDir = sessionDirOf(root, runId);

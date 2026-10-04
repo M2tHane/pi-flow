@@ -26,6 +26,11 @@ import { DispatchParams, ReplanParams, WaitParams, activeFlowId, flowDispatch, f
 import { PiLauncher } from './launcher.ts';
 import { lastFailureKind, notices, snapshotOf, statusLine, visibleFlows } from '../core/status-view.ts';
 import { packageRoots, pluginExtensionsFor } from './plugins.ts';
+import { installMemory } from './memory.ts';
+import { NOTES_DESCRIPTION, NotesError, NotesParams, applyNoteOps, notesContextMessage, renderNotes } from '../core/notes.ts';
+import { HISTORY_DESCRIPTION, HistoryParams } from '../core/history.ts';
+import { historyTool } from '../tools/subagent-tools.ts';
+import { MAIN_NOTES_REL } from '../core/state-store.ts';
 
 export const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const TEMPLATE_WORKFLOW = path.join(PACKAGE_ROOT, 'templates', 'workflow.yaml');
@@ -290,6 +295,41 @@ export default function piFlow(pi: ExtensionAPI): void {
         const r = await flowWait(h.store, h.engine, checked(WaitParams, p, 'flow_wait'), h.config);
         return toolResult(r.text, r.details);
       },
+    });
+  }
+
+  // 主 agent 的结构化笔记与历史检索（第五轮）：只在已初始化 pi-flow 的项目中注册；笔记跨流程保留在 .flow/notes/main.json
+  if (initialized(process.cwd())) {
+    const mainStore = (cwd: string) => sessions.get(cwd)?.handle?.store ?? new StateStore(cwd);
+    pi.registerTool({
+      name: 'notes', label: 'notes', description: `${NOTES_DESCRIPTION} 主会话的笔记跨流程保留：记录用户的偏好、讨论的结论、进行中的事项。`,
+      parameters: NotesParams,
+      async execute(_id, p, _s, _u, ctx) {
+        const params = checked<{ action: 'read' | 'update'; ops?: Parameters<typeof applyNoteOps>[1] }>(NotesParams, p, 'notes');
+        const store = mainStore(ctx.cwd);
+        if (params.action === 'read') return toolResult(renderNotes(store.readNotes(MAIN_NOTES_REL), '主会话笔记'));
+        if (!params.ops?.length) throw new Error('update 需要 ops：每条写 section、op 与 text / index / items。');
+        try {
+          const n = await store.writeNotes(MAIN_NOTES_REL, (cur) => { applyNoteOps(cur, params.ops!); return cur; }, { actor: 'orchestrator', reason: '更新主会话笔记' });
+          return toolResult(`已更新。\n${renderNotes(n, '主会话笔记')}`);
+        } catch (e) {
+          if (e instanceof NotesError) throw new Error(e.message);
+          throw e;
+        }
+      },
+    });
+    pi.registerTool({
+      name: 'history', label: 'history', description: HISTORY_DESCRIPTION,
+      parameters: HistoryParams,
+      async execute(_id, p, _s, _u, ctx) {
+        const file = ctx.sessionManager.getSessionFile();
+        return toolResult(historyTool(file ? [file] : [], checked(HistoryParams, p, 'history')).text);
+      },
+    });
+    installMemory(pi, {
+      active: (ctx) => initialized(ctx.cwd),
+      notesMessage: (ctx, near) => notesContextMessage(mainStore(ctx.cwd).readNotes(MAIN_NOTES_REL), { title: '主会话笔记', nearCompaction: near }),
+      compactAt: (ctx) => { try { return loadProjectConfig(ctx.cwd).config.compactAt; } catch { return 0.7; } },
     });
   }
 

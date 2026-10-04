@@ -62,7 +62,7 @@ test('调度模式：orchestrator 不能自己写代码，只能 dispatch/wait�
     const reqs = all.filter((x) => x.model === 'orch');
     assert.match(JSON.stringify(reqs[1].last), /Tool write not found/);
     // 只启用了 orchestrator 的工具
-    assert.deepEqual([...reqs[0].tools].sort(), ['flow_dispatch', 'flow_replan', 'flow_status', 'flow_wait', 'read']);
+    assert.deepEqual([...reqs[0].tools].sort(), ['flow_dispatch', 'flow_replan', 'flow_status', 'flow_wait', 'history', 'notes', 'read']);
     const sys = JSON.stringify(reqs[0].system);
     assert.match(sys, /你是 pi-flow 的调度者/);
     assert.match(sys, /唯一允许的下一步.*flow_dispatch\(T-001\)/);

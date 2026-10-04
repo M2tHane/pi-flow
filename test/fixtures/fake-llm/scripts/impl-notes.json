@@ -1,0 +1,9 @@
+{ "steps": [
+  { "tool_calls": [ { "name": "flow_claim", "arguments": {} } ] },
+  { "tool_calls": [ { "name": "notes", "arguments": { "action": "update", "ops": [ { "section": "current", "op": "add", "text": "正在写 a.ts" } ] } } ] },
+  { "tool_calls": [ { "name": "history", "arguments": { "action": "search", "query": "flow_claim" } } ] },
+  { "tool_calls": [ { "name": "write", "arguments": { "path": "src/server/t-001/a.ts", "content": "export const a = 1;\n" } } ] },
+  { "tool_calls": [ { "name": "flow_note", "arguments": { "text": "完成 a.ts" } } ] },
+  { "tool_calls": [ { "name": "flow_submit", "arguments": { "summary": "实现 a.ts" } } ] },
+  { "text": "已提交" }
+] }

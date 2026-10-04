@@ -7,6 +7,9 @@ import { StateStore } from '../core/state-store.ts';
 import { SubagentRuntime } from '../core/subagent-runtime.ts';
 import { SUBAGENT_TOOLS, runEnvFrom, type SubagentToolName } from '../tools/subagent-tools.ts';
 import { MISSING_TOOLS_REASON } from '../core/dependencies.ts';
+import { notesContextMessage } from '../core/notes.ts';
+import { taskNotesRel } from '../core/state-store.ts';
+import { installMemory } from './memory.ts';
 
 /** 子进程 bash 命令的超时上限（秒），workflow.yaml 的 limits.bash_timeout_s，默认 300 */
 export const DEFAULT_BASH_TIMEOUT_S = 300;
@@ -36,6 +39,13 @@ export default function piFlowSubagent(pi: ExtensionAPI): void {
       },
     });
   }
+
+  // 结构化笔记放回上下文、按阈值压缩（第五轮）
+  installMemory(pi, {
+    active: () => true,
+    notesMessage: (_ctx, near) => notesContextMessage(store.readNotes(taskNotesRel(env.flow, env.task)), { title: `任务 ${env.task} 的笔记`, nearCompaction: near }),
+    compactAt: () => config.compactAt,
+  });
 
   pi.on('session_start', async () => {
     const registered = new Set(pi.getAllTools().map((t) => t.name));

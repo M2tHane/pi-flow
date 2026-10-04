@@ -15,6 +15,8 @@ export interface Step {
   error?: { status: number; message: string; code?: string };
 }
 
+const isNotes = (m: { content: unknown }) => JSON.stringify(m.content ?? '').includes('由程序在每次请求时放回上下文');
+
 export interface FakeLlm { url: string; close(): Promise<void> }
 
 export function startFakeLlm(opts: { scriptsDir: string; logFile?: string; port?: number }): Promise<FakeLlm> {
@@ -34,7 +36,9 @@ export function startFakeLlm(opts: { scriptsDir: string; logFile?: string; port?
           model: payload.model, turn,
           system: payload.messages.filter((m) => m.role === 'system' || m.role === 'developer').map((m) => m.content),
           tools: (payload.tools ?? []).map((t) => t.function.name),
-          last: payload.messages.at(-1),
+          // pi-flow 每次请求在末尾放回的笔记单独记录；last 是笔记之前的最后一条消息
+          last: payload.messages.filter((m) => !isNotes(m)).at(-1),
+          notes: payload.messages.filter(isNotes).map((m) => m.content).at(-1) ?? null,
         }) + '\n');
       }
       const file = path.join(opts.scriptsDir, `${payload.model}.json`);

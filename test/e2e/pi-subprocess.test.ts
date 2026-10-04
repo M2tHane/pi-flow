@@ -280,3 +280,44 @@ test('真实 pi 子进程：bash 命令没给超时或超过上限时改成 limi
     assert.match(JSON.stringify(reqs.find((r) => r.turn === 2)?.last), /timed out after 2 seconds/);
   } finally { p.cleanup(); }
 });
+
+test('真实 pi 子进程：notes 与 history 工具可用；任务笔记由程序预填，每次请求放在消息末尾', { skip: !piAvailable && 'pi 不可用', timeout: 240_000 }, async () => {
+  const log = `/tmp/pi-flow-e2e-notes-${process.pid}.log`;
+  const local = await startFakeLlm({ scriptsDir: SCRIPTS, logFile: log });
+  const prev = process.env['FAKE_LLM_URL'];
+  process.env['FAKE_LLM_URL'] = local.url;
+  const p = await setupProject({ yaml: DIRECT_YAML, tasks: [mkTask('T-001', { verify: ['typecheck', 'test'], acceptance: ['导出 a = 1'] })] });
+  try {
+    const errors: unknown[] = [];
+    const engine = new Engine({
+      root: p.dir, store: p.store, config: p.config, launcher: new PiLauncher(),
+      roleSettings: () => ({ version: 1, roles: { 'backend-engineer': { model: 'fakellm/impl-notes' } } }),
+      packageAgentsDir: path.join(ROOT, 'agents'),
+      subagentExtension: path.join(ROOT, 'src/pi-adapter/subagent.ts'),
+      extraExtensions: () => [path.join(ROOT, 'test/fixtures/fake-llm/provider.ts')],
+      onError: (e) => errors.push(e),
+    });
+    await engine.next(p.flowId);
+    await engine.idle();
+    assert.deepEqual(errors, []);
+    const t = p.store.readTask(p.flowId, 'T-001');
+    assert.equal(t.status, 'done', `${t.status} ${t.last_failure ?? ''} ${t.blocked_reason ?? ''}`);
+    const notes = p.store.readNotes(`flows/${p.flowId}/notes/T-001.json`)!;
+    assert.deepEqual(notes.todo, ['导出 a = 1']);
+    assert.equal(notes.goal[0], `任务：${t.title}`);
+    assert.deepEqual(notes.current, ['正在写 a.ts']);
+    const reqs = readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as { model: string; turn: number; notes: unknown; tools: string[] })
+      .filter((r) => r.model === 'impl-notes');
+    assert.ok(reqs[0]!.tools.includes('notes') && reqs[0]!.tools.includes('history'));
+    const lastText = (r: { notes: unknown }) => JSON.stringify(r.notes);
+    assert.match(lastText(reqs[0]!), /任务 T-001 的笔记[\s\S]*验收：导出 a = 1/, '第一次请求就带着预填的笔记');
+    assert.match(lastText(reqs.find((r) => r.turn === 2)!), /正在写 a\.ts/, '更新后的笔记在下一次请求里');
+    // history search 的结果作为工具输出出现在第 3 轮请求中（倒数第二条之前），在会话文件里能找到
+    const session = readFileSync(p.store.listRuns().find((r) => r.task === 'T-001')!.session_file!, 'utf8');
+    assert.match(session, /找到 \d+ 条（共 \d+ 条历史）[\s\S]*flow_claim/);
+  } finally {
+    p.cleanup();
+    process.env['FAKE_LLM_URL'] = prev;
+    await local.close();
+  }
+});

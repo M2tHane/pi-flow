@@ -339,6 +339,8 @@ export const WorkflowFile = Type.Object({
   testing: Type.Optional(Type.Object({ leading_tests: Type.Optional(Type.Boolean()), adjust_tests: Type.Optional(Type.Boolean()) }, { additionalProperties: false })),
   /** 项目知识库：auto_candidates 为 true 时，审查打回与合并后验证失败会提炼为知识候选（默认关闭：真实冒烟中这些候选多是一次性细节） */
   knowledge: Type.Optional(Type.Object({ auto_candidates: Type.Optional(Type.Boolean()) }, { additionalProperties: false })),
+  /** 上下文管理（第五轮）：compact_at 为触发压缩的上下文占比（默认 0.7）；压缩后靠 notes 与 history 延续 */
+  context: Type.Optional(Type.Object({ compact_at: Type.Optional(Type.Number({ minimum: 0.3, maximum: 0.95 })) }, { additionalProperties: false })),
   /** 每个流程的成本预算（第二轮 I）：tokens 计输入 + 输出；cost 为 Pi 报告的金额。超出后暂停派发新任务 */
   budget: Type.Optional(Type.Object({
     tokens: Type.Optional(PosInt),
@@ -558,6 +560,26 @@ export const ModelPausesFile = Type.Object({
 }, { additionalProperties: false });
 export type ModelPausesFile = Static<typeof ModelPausesFile>;
 
+// —— 结构化笔记（.flow/flows/<流程>/notes/<任务>.json、.flow/notes/main.json）：agent 用 notes 工具维护，每次请求原样放回上下文 ——
+
+export const NOTE_SECTIONS = ['goal', 'done', 'todo', 'current', 'decisions', 'pitfalls'] as const;
+export type NoteSection = (typeof NOTE_SECTIONS)[number];
+export const NOTE_ITEM_MAX = 1000;
+export const NOTE_SECTION_MAX_ITEMS = 60;
+
+const NoteItems = Type.Array(Type.String({ minLength: 1, maxLength: NOTE_ITEM_MAX }), { maxItems: NOTE_SECTION_MAX_ITEMS });
+export const NotesFile = Type.Object({
+  goal: NoteItems,
+  done: NoteItems,
+  todo: NoteItems,
+  current: NoteItems,
+  decisions: NoteItems,
+  pitfalls: NoteItems,
+  updated_at: IsoTime,
+  version: Type.Integer({ minimum: 1 }),
+}, { additionalProperties: false });
+export type NotesFile = Static<typeof NotesFile>;
+
 // —— ~/.pi/agent/pi-flow.json：用户通过 /flow-config 设置的角色模型与思考级别 ——
 
 export const RoleSettingsFile = Type.Object({
@@ -587,6 +609,7 @@ export const SCHEMAS = {
   revision: RevisionFile,
   'model-pauses': ModelPausesFile,
   'stage-review': StageReviewFile,
+  notes: NotesFile,
 } as const;
 export type SchemaKind = keyof typeof SCHEMAS;
 

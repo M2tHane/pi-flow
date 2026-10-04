@@ -476,6 +476,17 @@
       },
       "additionalProperties": false
     },
+    "context": {
+      "type": "object",
+      "properties": {
+        "compact_at": {
+          "type": "number",
+          "minimum": 0.3,
+          "maximum": 0.95
+        }
+      },
+      "additionalProperties": false
+    },
     "budget": {
       "type": "object",
       "properties": {
