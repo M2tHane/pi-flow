@@ -25,7 +25,7 @@ import { MergeQueue, type MergeHooks, type MergeResult, type SyncResult } from '
 import { runStageGate, gateFailedWithoutChange, type GateOutcome } from './gates.ts';
 import { ensureStageTasks } from './stages.ts';
 import { stageGateFailed, stageGatePassed, stageReviewStep } from './stage-review.ts';
-import { STAGE_SKILLS } from '../modes/plan.ts';
+import { PROPOSAL_STAGES, STAGE_SKILLS } from '../modes/plan.ts';
 import { fixStep } from '../modes/fix.ts';
 import { existsSync, readFileSync } from 'node:fs';
 import { killStrays } from './strays.ts';
@@ -383,6 +383,7 @@ export class Engine {
       ...(fork && mode === 'impl' && fork.task !== task.id ? { priorTask: { id: fork.task, title: store.readTask(flowId, fork.task).title, run: fork.run_id } } : {}),
       ...(existingWork ? { existingWork } : {}),
       ...(stageReview ? { stageReview } : {}),
+      ...(mode === 'impl' && (PROPOSAL_STAGES.has(task.stage) || task.replan) ? { implModels: this.implModels(role) } : {}),
     });
     const runDir = path.join(worktreesRoot(root), '.runs', runId);
     mkdirSync(runDir, { recursive: true });
@@ -403,6 +404,20 @@ export class Engine {
         [RUN_ENV_KEYS.run]: runId, [RUN_ENV_KEYS.token]: token, [RUN_ENV_KEYS.role]: role,
       },
     };
+  }
+
+  /** 各实施角色（有 flow_submit 与可写范围，不含 architect）实际会用的模型；与 architect 同模型或是 strong 档视为强模型 */
+  private implModels(architectRole: string): { role: string; model: string; strong: boolean }[] {
+    const { config } = this.d;
+    const arch = resolveRoleModel(config, this.d.roleSettings(), architectRole).model;
+    const strongTier = resolveModelRef(config, 'strong');
+    const out: { role: string; model: string; strong: boolean }[] = [];
+    for (const r of Object.values(config.roles)) {
+      if (r.name === architectRole || r.name === 'orchestrator' || !r.tools.has('flow_submit') || !r.writes.length) continue;
+      const m = resolveRoleModel(config, this.d.roleSettings(), r.name).model;
+      if (m) out.push({ role: r.name, model: m, strong: m === arch || m === strongTier });
+    }
+    return out;
   }
 
   private async failRun(flowId: string, taskId: string, runId: string, reason: string): Promise<void> {

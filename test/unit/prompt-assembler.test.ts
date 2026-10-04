@@ -132,3 +132,11 @@ test('重新派发时提示工作区已有的改动，位于任务说明之后�
   const review = assemblePrompt({ agent, rules: [], task: mkTask('T-001'), flowId: 'B-001', handoff: '', mode: 'review', commands: config.commands, existingWork: 'x' });
   assert.doesNotMatch(review.user, /工作区已有的改动/, '审查提示不需要');
 });
+
+test('拆任务时附上各实施角色的模型：全是强模型提示拆大任务，否则提示拆小任务', () => {
+  const agent = { name: 'architect', tier: 'strong', thinking: null, description: '', prompt: 'A' };
+  const base = { agent, rules: [], task: mkTask('T-002', { stage: 'S1', kind: 'doc', role: 'architect' }), flowId: 'B-001', handoff: '', mode: 'impl' as const, commands: config.commands };
+  assert.match(assemblePrompt({ ...base, implModels: [{ role: 'backend-engineer', model: 'p/gpt', strong: true }] }).user, /实施角色的模型[\s\S]*backend-engineer：p\/gpt（强模型）[\s\S]*拆大任务/);
+  assert.match(assemblePrompt({ ...base, implModels: [{ role: 'backend-engineer', model: 'p/glm', strong: false }] }).user, /不是强模型：任务要小/);
+  assert.doesNotMatch(assemblePrompt(base).user, /实施角色的模型/);
+});

@@ -86,6 +86,8 @@ export interface AssembleInput {
   proposalExtras?: string[];
   /** 审查模式：直接附上的 diff（有上一轮审查时是上次审查之后的改动，否则是全部改动）；太大时不给 */
   inlineDiff?: string;
+  /** 拆任务时（S1/F1、计划修订）：各实施角色用的模型，决定任务粒度；strong 表示与 architect 同档（强模型） */
+  implModels?: { role: string; model: string; strong: boolean }[];
   /** 实施模式：对话接在另一个任务（写过这些代码的任务）的最后一次运行之后 */
   priorTask?: { id: string; title: string; run: string };
   /** 实施模式：接着上一次运行（run）的对话继续，只给简短的续做说明 */
@@ -207,6 +209,10 @@ export function assemblePrompt(i: AssembleInput): AssembledPrompt {
   }
   if (i.mode === 'review') {
     parts.push(`## 待审查的改动\n基线提交 base_sha：${t.base_sha ?? '（未知）'}\n用 \`git diff ${t.base_sha ?? '<base_sha>'} HEAD\` 查看完整改动。${i.evidenceDir ? `verify 输出在 \`${i.evidenceDir}\`（precheck-*.log 是派审查前对这份代码的验证）。` : ''}\n\n\`\`\`\n${(i.diffStat ?? '').trim() || '（无）'}\n\`\`\``);
+  }
+  if (i.implModels?.length) {
+    const strong = i.implModels.filter((m) => m.strong).length;
+    parts.push(`## 实施角色的模型（决定任务粒度，见技能 decompose-dag）\n${i.implModels.map((m) => `- ${m.role}：${m.model}${m.strong ? '（强模型）' : ''}`).join('\n')}\n${strong === i.implModels.length ? '实施角色都是强模型：按模块或按层拆大任务，任务数越少越好。' : strong ? '部分实施角色是强模型：给它们大任务，给其他角色小任务。' : '实施角色不是强模型：任务要小（一次会话能完成）。'}`);
   }
   if (i.mode === 'impl' && i.priorTask) {
     parts.push(`## 接着你之前的对话\n上面的对话是你完成 ${i.priorTask.id}「${i.priorTask.title}」时的过程（run ${i.priorTask.run}），你熟悉这些代码，不必从头重读。那个任务已经合入；现在是一个新任务、新的 worktree（集成分支最新代码，可能包含别人之后的改动），文件路径与可写范围以本次说明为准。先调用 flow_claim。`);

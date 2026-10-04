@@ -92,11 +92,13 @@ test('build 模式全流程：闸门逐个人工批准，agent 不能批准；�
     await p.store.transitionStage(p.flowId, { to: 'aborted', trigger: 'abort', actor: 'human' });
     const flow = await startFlow({ root: p.dir, store: p.store, config: p.config }, 'build', '做一个待办应用');
     assert.deepEqual(flow.stages, ['S0', 'S1', 'S2', 'S3', 'S4', 'S5']);
-    const { engine, errors } = makeEngine({ ...p, flowId: flow.id }, scripts(p, () => BUILD_DAG), SETTINGS);
+    const { engine, errors, launcher } = makeEngine({ ...p, flowId: flow.id }, scripts(p, () => BUILD_DAG), SETTINGS);
     const seen: string[] = [];
     await drive(p, engine, flow.id, async (stage) => {
       seen.push(stage);
       if (stage === 'S1') {
+        const s1 = launcher.launched.find((x) => x.env['PI_FLOW_ROLE'] === 'architect' && /架构、ADR/.test(x.prompt))!;
+        assert.match(s1.prompt, /实施角色的模型[\s\S]*backend-engineer：fake\/m（强模型）[\s\S]*拆大任务/);
         assert.equal(p.store.listTasks(flow.id).length, 3, '批准前提案不落为任务（S0、S0 修订、S1 各一个）');
         assert.match(statusText(p.store, null, flow.id), /任务提案（S1）[\s\S]*关键路径长度[\s\S]*超出需求的设计（1 项，需要你确认[\s\S]*1\. 待办 id 用 UUID/);
         assert.ok(actionsNeeded(p.store, p.config).some((x) => /其中 1 项设计超出了需求，需要你确认/.test(x.text)));
