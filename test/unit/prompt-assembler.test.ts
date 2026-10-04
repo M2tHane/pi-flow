@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { loadAgent, parseAgentFile } from '../../src/core/agents.ts';
-import { assemblePrompt, ruleFilesFor } from '../../src/core/prompt-assembler.ts';
+import { assemblePrompt, ruleFilesFor, stageReviewSections } from '../../src/core/prompt-assembler.ts';
 import { parseConfig } from '../../src/core/config.ts';
 import { TEST_YAML } from '../helpers/config.ts';
 import { mkTask } from '../helpers/tasks.ts';
@@ -139,4 +139,14 @@ test('拆任务时附上各实施角色的模型：全是强模型提示拆大�
   assert.match(assemblePrompt({ ...base, implModels: [{ role: 'backend-engineer', model: 'p/gpt', strong: true }] }).user, /实施角色的模型[\s\S]*backend-engineer：p\/gpt（强模型）[\s\S]*拆大任务/);
   assert.match(assemblePrompt({ ...base, implModels: [{ role: 'backend-engineer', model: 'p/glm', strong: false }] }).user, /不是强模型：任务要小/);
   assert.doesNotMatch(assemblePrompt(base).user, /实施角色的模型/);
+});
+
+test('适配已有测试：阶段审查与确认列出改了别的角色已有测试的任务，要求核对没有削弱', () => {
+  const adj = [{ task: 'T-003', files: ['tests/acceptance/api.test.js'] }];
+  const review = stageReviewSections({ kind: 'review', baseSha: null, testAdjustments: adj }).join('\n');
+  assert.match(review, /修改了别的角色已有测试的改动\n- T-003：tests\/acceptance\/api\.test\.js/);
+  assert.match(review, /削弱测试，作为问题提出/);
+  const confirm = stageReviewSections({ kind: 'confirm', baseSha: null, issues: [], testAdjustments: adj }).join('\n');
+  assert.match(confirm, /判为未解决/);
+  assert.doesNotMatch(stageReviewSections({ kind: 'review', baseSha: null }).join('\n'), /已有测试的改动/);
 });

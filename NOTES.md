@@ -194,6 +194,7 @@
 115. 纯测试阶段的审查（`review.test_stages`，默认 skip）：阶段内合入的任务都是 test/integration 时不做阶段审查（闸门照样跑全量测试；全 gpt 复跑中这类审查 0 个问题），light 用普通档，strong 用强模型。
 116. 批量合并（`limits.merge_batch`，默认 3；修订第 81 条"合并列车暂不实现"：不逐任务审查后每次合并都跑全量测试，瓶颈变了）：队首连续的普通任务先在临时 worktree 依次 cherry-pick，只跑一次全量验证，通过后逐个 merging → done、集成分支依次快进（仍只有一个 merging）；冲突、验证失败或含 merge-fix、承载先行测试、同步修复、fix 流程时退回逐个合并。
 117. 阶段审查按角色分批提前开始（修订第 103 条）：某角色在本阶段的实施任务全部合入就开一批审查（与其他角色的任务并行），记录改为 `batches[]`，每批各自审查 → 修复 → 确认 → 再修一轮，问题编号跨批连续；修复任务不再触发新批；所有批次完成、阶段任务全部结束后才进入 gating。全 gpt 复跑中功能阶段的审查要等最后一个前端任务（第 101 分钟）才开始。
+118. 适配已有测试（`testing.adjust_tests`，默认开）：实施类任务（不含只读、文档、merge-fix）可以修改基线上已有、writes 之外的测试文件（guard 按基线 ls-tree 放行，只改不增删，flow_submit 用 `diff --name-status` 只认 M），改过的记在任务 `test_adjustments`，逐任务审查与阶段审查/确认要求核对没有削弱；冲突时算任务自己的文件交给 merge-fix。复跑三中合并全量测试与可写范围冲突（后端加字段让旧验收测试失败，有权改的任务排在后面）。
 
 ## 真实模型实验
 
@@ -225,6 +226,7 @@
 
 修改 `agents/`、`rules/`、`skills/` 会改变子进程系统提示的稳定前缀，提供商的提示缓存失效一次；`rules/` 的改动只影响之后 `/flow init` 的新项目。改动时在此追加一行。
 
+- 10-04（第 118 条）：backend、db、frontend、infra、test-engineer 角色提示（可以适配别的角色已有的测试）；reviewer（核对适配没有削弱测试）；`decompose-dag`（不必为兼容旧测试单独拆任务）。
 - 10-03（第 112–114 条）：architect 角色提示；`decompose-dag`（粒度）；`design-contract`、`write-prd`、`write-feature-spec` 技能；工具参数多了 assumptions。
 - 10-03（第 108、109 条）：architect 与各实施角色、reviewer 角色提示；`design-contract`、`decompose-dag` 技能。
 - 10-03（第 103 条）：reviewer（阶段审查）、orchestrator、backend、frontend、db、infra、test、ui 角色提示（review-fix 只修分到的问题）；`decompose-dag` 技能；工具声明多了 flow_review_report、flow_review_confirm。

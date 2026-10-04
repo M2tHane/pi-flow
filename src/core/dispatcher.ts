@@ -359,7 +359,12 @@ export class Engine {
         try { const s = git(task.worktree, ['diff', '--stat', from, 'HEAD']).trim(); return s.length > 8000 ? `${s.slice(0, 8000)}\n…` : s; } catch { return undefined; }
       };
       const batch = sr ? batchOfTask(sr, task.id) : undefined;
+      // 审查看本批任务、确认看修复任务各自适配过的已有测试
+      const adjIds = !batch ? [] : task.stage_review === 'review' ? batch.tasks : [...batch.fix_tasks, ...batch.refix_tasks];
+      const testAdjustments = adjIds.map((id) => tasks.find((x) => x.id === id)).filter((x): x is TaskFile => !!x?.test_adjustments?.length)
+        .map((x) => ({ task: x.id, files: x.test_adjustments! }));
       stageReview = { kind: task.stage_review, baseSha: sr?.base_sha ?? null, diffStat: stat(sr?.base_sha),
+        ...(testAdjustments.length ? { testAdjustments } : {}),
         ...(task.stage_review === 'confirm' ? { issues: batch?.issues ?? [], fixBase: batch?.fix_base ?? null, fixDiffStat: stat(batch?.fix_base) } : {}) };
     }
     // 实施类角色的临时目录（项目与 worktree 之外）：做实验、建临时文件，run 结束后删除

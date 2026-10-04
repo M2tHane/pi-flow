@@ -278,3 +278,12 @@ test('禁止后台运行：单独的 & 被拦下，&& 与 2>&1 不受影响；se
   allowed(checkToolCall(bash('node --test 2>&1 | tail -5'), c));
   allowed(checkToolCall(bash('ls && echo ok'), c));
 });
+
+test('适配已有测试：列出的已有测试文件可以写（不受角色可写范围限制），其他测试与受保护路径照旧', () => {
+  const c = ctx('backend-engineer', { writes: ['src/server/a.ts'], adjustableTests: ['tests/acceptance/api.test.js'] });
+  allowed(checkToolCall(call('write', { path: 'tests/acceptance/api.test.js', content: '' }), c));
+  allowed(checkToolCall(call('edit', { path: 'tests/acceptance/api.test.js', edits: [] }), c));
+  blocked(checkToolCall(call('write', { path: 'tests/acceptance/new.test.js', content: '' }), c), 'write_paths');
+  blocked(checkToolCall(bash('rm tests/acceptance/api.test.js'), c), 'bash');
+  blocked(checkToolCall(call('write', { path: 'tests/acceptance/api.test.js', content: '' }), ctx('backend-engineer', { writes: ['src/server/a.ts'] })), 'write_paths');
+});

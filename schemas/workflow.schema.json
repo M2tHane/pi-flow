@@ -460,6 +460,9 @@
       "properties": {
         "leading_tests": {
           "type": "boolean"
+        },
+        "adjust_tests": {
+          "type": "boolean"
         }
       },
       "additionalProperties": false

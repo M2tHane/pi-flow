@@ -41,6 +41,8 @@ export interface Facts {
   reason?: string;
   /** 阶段审查修复任务改动了契约中已有的行（只允许新增）：文件列表，由 flow_submit 计算 */
   contract_rewrites?: string[];
+  /** 修改过的、writes 之外的已有测试文件（testing.adjust_tests），由 flow_submit 计算；允许越出 writes */
+  test_adjustments?: string[];
   /** 按 review.per_task 判定本任务不逐任务审查，提交后直接进入合并队列（submit_direct，由 flow_submit 的程序判定） */
   direct_merge?: boolean;
   /** 引擎按风险规则判定为低风险（review_skip） */
@@ -89,12 +91,22 @@ function submitErrors(t: TaskFile, f: Facts): string[] {
     const prot = diff.filter((p) => isProtected(p, { contractsLocked: f.contracts_locked ?? true }));
     if (prot.length) errs.push(`diff 含受保护路径：${prot.join('、')}`);
     // 阶段审查的修复任务可以补充契约（第四轮）；只能新增由 flow_submit 检查（contract_rewrites）
-    const outside = diff.filter((p) => !matchesAny(p, t.writes) && !(t.kind === 'review-fix' && matchesAny(p, [CONTRACTS_PATH])));
+    // 适配已有测试（第四轮后续）：只修改、不新增删除的已有测试文件由 flow_submit 算出，不算越界
+    const adjusted = new Set(f.test_adjustments ?? []);
+    const outside = diff.filter((p) => !matchesAny(p, t.writes) && !adjusted.has(p) && !(t.kind === 'review-fix' && matchesAny(p, [CONTRACTS_PATH])));
     if (outside.length) errs.push(`diff 越出任务 writes：${outside.join('、')}`);
     if (f.contract_rewrites?.length) errs.push(`只能在契约中新增内容，不能修改或删除已有内容：${f.contract_rewrites.join('、')}`);
   }
   errs.push(...need(f.handoff_written, '尚未写 handoff，请先调用 flow_note'));
   return errs;
+}
+
+/** 提交的共同效果：记录实施 run、收回租约、记下适配过的已有测试（审查时核对） */
+function submitEffect(t: TaskFile, f: Facts): void {
+  t.impl_run = t.lease!.run_id;
+  t.lease = null;
+  if (f.test_adjustments?.length) t.test_adjustments = [...f.test_adjustments];
+  else delete t.test_adjustments;
 }
 
 export const TRANSITIONS: readonly Rule[] = [
@@ -123,13 +135,13 @@ export const TRANSITIONS: readonly Rule[] = [
   {
     from: ['in_progress'], to: 'review', trigger: 'submit',
     check: (t, f) => [...need(f.direct_merge !== true, '本任务不逐任务审查，应直接进入合并队列'), ...submitErrors(t, f)],
-    effect: (t) => { t.impl_run = t.lease!.run_id; t.lease = null; },
+    effect: submitEffect,
   },
   {
     // 偏离（第四轮）：关闭逐任务审查时提交后直接进入合并队列，合并时跑全量测试，质量由阶段末审查把关
     from: ['in_progress'], to: 'queued_merge', trigger: 'submit_direct',
     check: (t, f) => [...need(f.direct_merge === true, '本任务需要逐任务审查'), ...submitErrors(t, f)],
-    effect: (t) => { t.impl_run = t.lease!.run_id; t.lease = null; },
+    effect: submitEffect,
   },
   {
     from: ['review'], to: 'verifying', trigger: 'review_pass',

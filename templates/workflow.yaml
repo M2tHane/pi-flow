@@ -43,6 +43,7 @@ review:                         # 审查（可选，以下为默认值）
   # max_rounds: 3               # 审查轮次上限（可选）：到达时只剩建议类问题就通过，建议记入 handoff
 testing:
   leading_tests: false          # 默认实施者为自己的功能边写边测，合并后程序跑全量测试；true 时允许"先行验收测试 → 实现"的拆法
+  adjust_tests: true            # 实施任务可以修改别的角色已有的测试来适配按契约变化的接口（只改不增删，审查时核对）；false 时只能改 writes 内的文件
 escalation:                     # 同一任务失败 after_failures 次后，下一次实施换成升级模型
   critical_fanout: 3            # 被至少 3 个任务硬依赖的实施任务（底座）第一次就用升级模型；0 关闭
   after_failures: 2             # 升级模型：/flow-config escalate > roles.<角色>.escalate_model > 上一档（cheap→medium→strong）

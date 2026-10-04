@@ -13,6 +13,8 @@ import { carriedTestOf } from './dag.ts';
 import { proposeCandidate } from './knowledge.ts';
 import { evidenceText, runShell } from './verify-runner.ts';
 import { perTaskReview } from './cost-control.ts';
+import { testAdjustEnabled } from './test-adjust.ts';
+
 
 export interface MergeHooks {
   /** 受影响的测试文件（codegraph 影响面分析）；拿不到返回 null，退回全量 test */
@@ -343,7 +345,8 @@ export class MergeQueue {
       if (r.exit_code !== 0) {
         // 全量验证（不逐任务审查时）的失败多半是任务自己的问题，日志多给一些
         const why = full ? `已 rebase 到集成分支最新，全量 ${plan.map((x) => x.name).join('、')} 中 ` : '可能与已合入的其他任务存在语义冲突：';
-        return { ok: false as const, results, reason: `合并后验证失败（${why}${c.name} 退出码 ${r.exit_code}）\n${r.output.trim().split('\n').slice(full ? -40 : -15).join('\n')}` };
+        const adjust = full && testAdjustEnabled(this.config, t) ? '\n失败的如果是别的角色已有的测试、原因是本任务按契约改了接口，可以直接修改那些测试来适配（不删用例、不放宽断言）。' : '';
+        return { ok: false as const, results, reason: `合并后验证失败（${why}${c.name} 退出码 ${r.exit_code}）\n${r.output.trim().split('\n').slice(full ? -40 : -15).join('\n')}${adjust}` };
       }
     }
     return { ok: true as const, results, reason: '' };
@@ -364,7 +367,8 @@ export class MergeQueue {
   /** 冲突分类：全部在 writes 内且不涉及契约/受保护路径 → merge-fix；否则 blocked */
   private async conflict(flowId: string, t: TaskFile, conflicts: string[], squashed: string, integHead: string): Promise<MergeResult> {
     const contracts = conflicts.filter((f) => matchesAny(f, [CONTRACTS_PATH]) || isProtected(f, { contractsLocked: true }));
-    const outside = conflicts.filter((f) => !matchesAny(f, t.writes));
+    // 适配过的已有测试（testing.adjust_tests）也算任务自己的文件，冲突交给 merge-fix
+    const outside = conflicts.filter((f) => !matchesAny(f, t.writes) && !(t.test_adjustments ?? []).includes(f));
     if (!conflicts.length || contracts.length || outside.length) {
       const why = contracts.length ? `冲突涉及契约或受保护文件：${contracts.join('、')}`
         : outside.length ? `冲突文件不在任务 writes 内：${outside.join('、')}` : 'rebase 失败但没有冲突文件';

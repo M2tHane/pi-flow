@@ -12,6 +12,7 @@ import { validateDag, dagReport, formatDagReport, leadingTestErrors, normalizeLe
 import { changedFiles, cleanStrayUntracked, snapshot } from '../core/worktree.ts';
 import { git } from '../core/git.ts';
 import { perTaskReview } from '../core/cost-control.ts';
+import { testAdjustEnabled, testAdjustments } from '../core/test-adjust.ts';
 import { MAX_STAGE_ISSUES, formatIssues, issueFileErrors } from '../core/stage-review.ts';
 
 export const NOTE_LIMIT = 4000;
@@ -147,17 +148,20 @@ export async function flowSubmit(ctx: ToolContext, p: Static<typeof SubmitParams
   const diff = changedFiles(t.worktree, t.base_sha);
   // 阶段审查的修复任务只能在契约中新增内容：有删除行（含修改）的契约文件由状态机拒绝
   const rewrites = t.kind === 'review-fix' ? contractRewrites(t.worktree, t.base_sha) : [];
+  // 适配已有测试：writes 之外只修改过的已有测试文件不算越界，记在任务上供审查核对
+  const adjusted = testAdjustEnabled(ctx.config, t) ? testAdjustments(t.worktree, t.base_sha, t.writes) : [];
   // 关闭逐任务审查时直接进入合并队列（合并时跑全量测试）
   const direct = !perTaskReview(ctx.config, ctx.store.readFlow(ctx.env.flow).mode, t, ctx.store.listTasks(ctx.env.flow));
   try {
     await ctx.store.transitionTask(ctx.env.flow, t.id, direct
-      ? { to: 'queued_merge', trigger: 'submit_direct', actor: actor(ctx), facts: { token: ctx.env.token, diff_files: diff, direct_merge: true, contract_rewrites: rewrites } }
-      : { to: 'review', trigger: 'submit', actor: actor(ctx), facts: { token: ctx.env.token, diff_files: diff, contract_rewrites: rewrites } });
+      ? { to: 'queued_merge', trigger: 'submit_direct', actor: actor(ctx), facts: { token: ctx.env.token, diff_files: diff, direct_merge: true, contract_rewrites: rewrites, test_adjustments: adjusted } }
+      : { to: 'review', trigger: 'submit', actor: actor(ctx), facts: { token: ctx.env.token, diff_files: diff, contract_rewrites: rewrites, test_adjustments: adjusted } });
   } catch (e) {
     if (rewrites.length) rethrow(e, `契约只能新增条目或说明。还原对已有内容的修改：git checkout ${t.base_sha} -- ${rewrites.join(' ')}，再只追加需要的内容；确需修改已有接口时调用 flow_block 说明，由用户决定是否修订计划。`);
-    rethrow(e, `只修改 writes 内的文件。还原越界改动：新增的文件用 git rm <文件>，修改过的文件用 git checkout ${t.base_sha} -- <文件>。先 flow_note 写 handoff，然后再次 flow_submit。`);
+    rethrow(e, `只修改 writes 内的文件${testAdjustEnabled(ctx.config, t) ? '（别的角色已有的测试可以修改来适配接口变化，但不能新增或删除 writes 之外的文件）' : ''}。还原越界改动：新增的文件用 git rm <文件>，修改过或删除的文件用 git checkout ${t.base_sha} -- <文件>。先 flow_note 写 handoff，然后再次 flow_submit。`);
   }
   await ctx.store.appendHandoff(ctx.env.flow, t.id, `提交说明：${p.summary}`, actor(ctx));
+  if (adjusted.length) await ctx.store.appendHandoff(ctx.env.flow, t.id, `修改了可写范围外的已有测试（适配接口变化，审查时核对没有削弱）：${adjusted.join('、')}`, 'flow-submit');
   await ctx.store.updateRun(ctx.env.run, { outcome: 'submitted' }, actor(ctx), '提交');
   return { text: `${direct ? '已提交合并' : '已提交审查'}（改动 ${diff.length} 个文件${stray.length ? `；已清理可写范围外、未被跟踪的文件 ${stray.length} 个：${stray.slice(0, 5).join('、')}` : ''}）。你的工作已完成，请直接结束，不要再调用工具。`, details: { files: diff, cleaned: stray } };
 }

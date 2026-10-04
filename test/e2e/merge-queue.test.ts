@@ -332,3 +332,48 @@ test('批量合并：队列里的 3 个任务一起叠加、只跑一次全量�
     } finally { p.cleanup(); }
   }
 });
+
+test('适配已有测试：接口变化让别的角色的旧测试失败时，实施任务可以直接修改基线上已有的测试并一起合入；不能新增、删除可写范围外的文件；testing.adjust_tests 关闭时不能改', async () => {
+  // 全量 test：旧测试还在断言 OLD、而实现已经是 NEW 时失败
+  const yaml = DIRECT_YAML.replace(/  test:      ".*"/, '  test:      "! grep -qs OLD tests/acceptance/api.test.js || ! grep -rqs NEW src/server"');
+  const files = { 'tests/acceptance/api.test.js': 'assert OLD\n', 'tests/acceptance/other.test.js': 'keep\n' };
+  const p = await setupProject({ yaml, tasks: [mkTask('T-001', { verify: ['test'] })], files });
+  try {
+    const attempts: string[] = [];
+    const { engine, errors } = makeEngine(p, async (_role, _nth, a) => {
+      await a.call('flow_claim');
+      const created = await a.call('write', { path: 'tests/acceptance/new.test.js', content: 'x' });
+      assert.ok(!created.ok, '不能新建可写范围外的测试');
+      const removed = await a.call('bash', { command: 'rm tests/acceptance/other.test.js' });
+      assert.ok(!removed.ok, '不能删除可写范围外的测试');
+      assert.ok((await a.call('write', { path: 'tests/acceptance/api.test.js', content: 'assert NEW\n' })).ok);
+      assert.ok((await a.call('write', { path: 'src/server/t-001/a.ts', content: 'NEW' })).ok);
+      await a.call('flow_note', { text: '完成' });
+      const r = await a.call('flow_submit', { summary: '接口加字段并适配旧测试' });
+      attempts.push(r.text);
+      assert.ok(r.ok, r.text);
+    });
+    await engine.next(p.flowId);
+    await engine.idle();
+    assert.deepEqual(errors, []);
+    const t = p.store.readTask(p.flowId, 'T-001');
+    assert.equal(t.status, 'done');
+    assert.equal(t.attempts, 0, '一次合入，没有因全量测试失败退回');
+    assert.deepEqual(t.test_adjustments, ['tests/acceptance/api.test.js']);
+    assert.equal(p.git('show', `flow/${p.flowId}/integration:tests/acceptance/api.test.js`), 'assert NEW');
+    assert.match(p.store.readHandoff(p.flowId, 'T-001'), /修改了可写范围外的已有测试.*tests\/acceptance\/api\.test\.js/);
+  } finally { p.cleanup(); }
+
+  const off = await setupProject({ yaml: yaml.replace(/^  adjust_tests: true .*$/m, '  adjust_tests: false'), tasks: [mkTask('T-001', { verify: ['test'] })], files });
+  try {
+    let blocked = '';
+    const { engine } = makeEngine(off, async (_role, nth, a) => {
+      await a.call('flow_claim');
+      if (nth === 1) blocked = (await a.call('write', { path: 'tests/acceptance/api.test.js', content: 'assert NEW\n' })).text;
+      await a.call('flow_block', { reason: '需要改别人的测试' });
+    });
+    await engine.next(off.flowId);
+    await engine.idle();
+    assert.match(blocked, /不在本任务可写范围内/);
+  } finally { off.cleanup(); }
+});

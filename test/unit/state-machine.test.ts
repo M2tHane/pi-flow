@@ -91,6 +91,17 @@ test('in_progress -> queued_merge（submit_direct）：不逐任务审查时提�
   assert.equal(r.task.impl_run, 'r-1');
 });
 
+test('适配已有测试：flow_submit 算出的 test_adjustments 不算越出 writes，记在任务上；不在其中的仍被拒', () => {
+  const t = inProgress();
+  const good = facts({ token: TOKEN, diff_files: ['src/server/t-001/a.ts', 'tests/acceptance/api.test.js'], direct_merge: true });
+  bad(planTransition(t, 'queued_merge', 'submit_direct', good), /越出任务 writes：tests\/acceptance\/api\.test\.js/);
+  const r = ok(planTransition(t, 'queued_merge', 'submit_direct', { ...good, test_adjustments: ['tests/acceptance/api.test.js'] }));
+  assert.deepEqual(r.task.test_adjustments, ['tests/acceptance/api.test.js']);
+  bad(planTransition(t, 'queued_merge', 'submit_direct', { ...good, diff_files: [...good.diff_files!, 'tests/acceptance/b.test.js'], test_adjustments: ['tests/acceptance/api.test.js'] }), /tests\/acceptance\/b\.test\.js/);
+  const again = ok(planTransition({ ...inProgress(), test_adjustments: ['old.test.js'] }, 'review', 'submit', facts({ token: TOKEN, diff_files: ['src/server/t-001/a.ts'] })));
+  assert.equal(again.task.test_adjustments, undefined, '重新提交时按本次的改动重算');
+});
+
 test('阶段审查的修复任务可以在契约中新增内容，改动已有内容被拒；其他任务仍不能改契约', () => {
   const fix = inProgress({ kind: 'review-fix' });
   const good = facts({ token: TOKEN, diff_files: ['src/server/t-001/a.ts', 'docs/contracts/web.md'], direct_merge: true, contracts_locked: false });

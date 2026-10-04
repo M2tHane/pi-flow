@@ -6,6 +6,8 @@ import type { StateStore } from './state-store.ts';
 import type { TaskFile } from './schemas.ts';
 import { hashToken } from './state-machine.ts';
 import { scratchDir } from './worktree.ts';
+import { TEST_GLOBS, adjustableTests, testAdjustEnabled } from './test-adjust.ts';
+import { matchesAny } from './paths.ts';
 import { enforceToolCall, type GuardContext, type ToolCall } from './guard.ts';
 import { FlowToolError, SUBAGENT_TOOLS, type RunEnv, type SubagentToolName, type ToolResult } from '../tools/subagent-tools.ts';
 
@@ -57,7 +59,23 @@ export class SubagentRuntime {
       contractsLocked: ('S1' in flow.approvals || 'F1' in flow.approvals) && !t.contract_change && t.kind !== 'review-fix',
       ...(t.kind === 'review-fix' ? { contractAdditions: true } : {}),
       ...(role.writes.length ? { writes: t.conflict_files ?? t.writes, scratchDir: scratchDir(this.env.root, this.env.run) } : {}),
+      ...(testAdjustEnabled(this.config, t) && t.worktree && t.base_sha ? { adjustableTests: this.adjustable(t.worktree, t.base_sha, t.writes) } : {}),
+      // merge-fix：冲突文件里原任务适配过的已有测试不在角色可写范围内，也要能改
+      ...(t.kind === 'merge-fix' && t.conflict_files ? { adjustableTests: t.conflict_files.filter((f) => matchesAny(f, TEST_GLOBS)) } : {}),
     };
+  }
+
+  private adjustableCache: { key: string; files: string[] } | null = null;
+
+  /** 基线上已有、writes 之外的测试文件；每次工具调用都会用到，按 base_sha 缓存 */
+  private adjustable(worktree: string, base: string, writes: readonly string[]): string[] {
+    const key = `${base}\0${writes.join('\0')}`;
+    if (this.adjustableCache?.key !== key) {
+      let files: string[] = [];
+      try { files = adjustableTests(worktree, base, writes); } catch { /* 取不到时不放行任何额外文件 */ }
+      this.adjustableCache = { key, files };
+    }
+    return this.adjustableCache.files;
   }
 
   /**

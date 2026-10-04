@@ -29,6 +29,8 @@ export interface GuardContext {
   writes?: string[];
   /** 阶段审查的修复任务（第四轮）：可以在契约中补充缺失的条目（只能新增，提交时由程序检查），不受角色可写范围限制 */
   contractAdditions?: boolean;
+  /** 可以修改的已有测试文件（testing.adjust_tests，第四轮后续）：基线上已有、writes 之外；新增删除由 flow_submit 拒绝 */
+  adjustableTests?: readonly string[];
   /** 本 run 的临时目录（项目与 worktree 之外）：可以 cd、写入、删除、移动 */
   scratchDir?: string;
   /** 给 orchestrator 的指引中填入的 ready 任务 */
@@ -139,7 +141,8 @@ class Evaluator {
     if (a.area === 'outside') return deny('write_paths', `只能写当前 worktree 内的文件，${a.abs} 在其外。${this.hint()}`);
     const writes = this.effectiveWrites();
     const inTask = (matchesAny(a.rel, writes) && matchesAny(a.rel, this.role.writes))
-      || (!!this.ctx.contractAdditions && matchesAny(a.rel.toLowerCase(), [CONTRACTS_PATH]));
+      || (!!this.ctx.contractAdditions && matchesAny(a.rel.toLowerCase(), [CONTRACTS_PATH]))
+      || (this.ctx.adjustableTests?.includes(a.rel) ?? false);
     if (!inTask) {
       return deny('write_paths', `${a.rel} 不在本任务可写范围内（${writes.join(', ') || '无'}）。${tool} 被阻断。${this.hint()}`);
     }

@@ -138,6 +138,8 @@ export const TaskFile = Type.Object({
   review_issues: Type.Optional(Type.Array(Type.String({ pattern: '^R-[0-9]+$' }))),
   /** 修复任务接着写过这些代码的任务的对话继续（第四轮后续）：同角色、同模型、会话不太大时 fork 它最后一次提交的会话 */
   fork_from_task: Type.Optional(TaskId),
+  /** 最近一次提交修改过的、writes 之外的已有测试文件（第四轮后续，testing.adjust_tests） */
+  test_adjustments: Type.Optional(Type.Array(Type.String())),
   created_by: Type.String({ minLength: 1 }),
   version: Type.Integer({ minimum: 1 }),
 }, { additionalProperties: false });
@@ -333,7 +335,8 @@ export const WorkflowFile = Type.Object({
     critical_fanout: Type.Optional(Type.Integer({ minimum: 0 })),
   }, { additionalProperties: false })),
   /** 测试方式（第三轮后续）：默认由实施者边写边测、合并后跑全量；leading_tests 为 true 时才允许"先行验收测试 → 实现"的拆法 */
-  testing: Type.Optional(Type.Object({ leading_tests: Type.Optional(Type.Boolean()) }, { additionalProperties: false })),
+  /** adjust_tests（第四轮后续，默认开）：实施任务可以修改别的角色已有的测试来适配按契约变化的接口（只改不增删，审查时核对） */
+  testing: Type.Optional(Type.Object({ leading_tests: Type.Optional(Type.Boolean()), adjust_tests: Type.Optional(Type.Boolean()) }, { additionalProperties: false })),
   /** 项目知识库：auto_candidates 为 true 时，审查打回与合并后验证失败会提炼为知识候选（默认关闭：真实冒烟中这些候选多是一次性细节） */
   knowledge: Type.Optional(Type.Object({ auto_candidates: Type.Optional(Type.Boolean()) }, { additionalProperties: false })),
   /** 每个流程的成本预算（第二轮 I）：tokens 计输入 + 输出；cost 为 Pi 报告的金额。超出后暂停派发新任务 */

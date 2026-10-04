@@ -54,6 +54,13 @@ export interface AssembleStageReview {
   /** 确认：修复开始时的提交与之后的改动 */
   fixBase?: string | null;
   fixDiffStat?: string | undefined;
+  /** 修改了可写范围外已有测试的任务（testing.adjust_tests）：审查时核对没有削弱 */
+  testAdjustments?: { task: string; files: string[] }[];
+}
+
+/** 适配已有测试的核对要求（逐任务审查与阶段审查共用） */
+export function testAdjustmentSection(list: { task: string; files: string[] }[], verdict: string): string {
+  return `## 修改了别的角色已有测试的改动\n${list.map((x) => `- ${x.task}：${x.files.join('、')}`).join('\n')}\n这些测试不在任务的可写范围内，是为适配按契约变化的接口而改的。逐个用 git diff 核对：只能是跟着接口调整（例如精确对象断言加上新字段）；删除用例、去掉断言、把精确断言放宽成只看状态码、跳过测试，都算削弱测试，${verdict}。`;
 }
 
 export interface AssembleInput {
@@ -157,8 +164,10 @@ export function stageReviewSections(s: AssembleStageReview): string[] {
       '4. 每条问题写明 module（模块名）、location（文件:行）、problem、expected（期望的修改）、files（修复要改的文件，具体路径，只涉及一个模块）。程序按模块把问题分给负责的角色并行修复，修复者只能改 files 里的文件。',
       '5. 这是本阶段唯一一次提出问题的机会：之后的确认只能核对这份清单，不能补充新问题。所以要一次看全，但不要为了凑数提问题。',
     ].join('\n'));
+    if (s.testAdjustments?.length) out.push(testAdjustmentSection(s.testAdjustments, '作为问题提出（files 写这个测试文件）'));
   } else {
     const issues = s.issues ?? [];
+    if (s.testAdjustments?.length) out.push(testAdjustmentSection(s.testAdjustments, '把对应问题判为未解决并在 note 里说明'));
     out.push(`## 待确认的问题\n${issues.length ? issues.map((x) => `- ${x.id}［${x.module}］${x.location}：${x.problem}；期望：${x.expected}（文件：${x.files.join('、')}）`).join('\n') : '（无）'}`);
     if (s.fixBase) out.push(`## 修复开始后的改动\n用 \`git diff ${s.fixBase.slice(0, 12)} HEAD -- <文件>\` 查看。\n\n\`\`\`\n${(s.fixDiffStat ?? '（无法取得）').trim() || '（没有改动）'}\n\`\`\``);
     out.push('## 确认的要求\n只核对上面每条问题是否已按"期望"解决。不要提出新问题，也不要因为别处的代码打回；清单之外的发现写在 note 里也不会被处理。');
@@ -210,6 +219,7 @@ export function assemblePrompt(i: AssembleInput): AssembledPrompt {
   if (i.mode === 'review') {
     parts.push(`## 待审查的改动\n基线提交 base_sha：${t.base_sha ?? '（未知）'}\n用 \`git diff ${t.base_sha ?? '<base_sha>'} HEAD\` 查看完整改动。${i.evidenceDir ? `verify 输出在 \`${i.evidenceDir}\`（precheck-*.log 是派审查前对这份代码的验证）。` : ''}\n\n\`\`\`\n${(i.diffStat ?? '').trim() || '（无）'}\n\`\`\``);
   }
+  if (i.mode === 'review' && t.test_adjustments?.length) parts.push(testAdjustmentSection([{ task: t.id, files: t.test_adjustments }], '按缺陷打回'));
   if (i.implModels?.length) {
     const strong = i.implModels.filter((m) => m.strong).length;
     parts.push(`## 实施角色的模型（决定任务粒度，见技能 decompose-dag）\n${i.implModels.map((m) => `- ${m.role}：${m.model}${m.strong ? '（强模型）' : ''}`).join('\n')}\n${strong === i.implModels.length ? '实施角色都是强模型：按模块或按层拆大任务，任务数越少越好。' : strong ? '部分实施角色是强模型：给它们大任务，给其他角色小任务。' : '实施角色不是强模型：任务要小（一次会话能完成）。'}`);
