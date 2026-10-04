@@ -3,7 +3,7 @@
 import { createHash } from 'node:crypto';
 import type { Lease, StageStatus, TaskFile, TaskStatus } from './schemas.ts';
 import { hardDepsDone } from './dag.ts';
-import { isProtected, matchesAny } from './paths.ts';
+import { CONTRACTS_PATH, isProtected, matchesAny } from './paths.ts';
 
 export type Trigger =
   | 'schedule' | 'dispatch' | 'submit' | 'review_pass' | 'review_reject'
@@ -39,6 +39,8 @@ export interface Facts {
   fast_forwarded?: boolean;
   worktree_clean?: boolean;
   reason?: string;
+  /** 阶段审查修复任务改动了契约中已有的行（只允许新增）：文件列表，由 flow_submit 计算 */
+  contract_rewrites?: string[];
   /** 按 review.per_task 判定本任务不逐任务审查，提交后直接进入合并队列（submit_direct，由 flow_submit 的程序判定） */
   direct_merge?: boolean;
   /** 引擎按风险规则判定为低风险（review_skip） */
@@ -86,8 +88,10 @@ function submitErrors(t: TaskFile, f: Facts): string[] {
   else {
     const prot = diff.filter((p) => isProtected(p, { contractsLocked: f.contracts_locked ?? true }));
     if (prot.length) errs.push(`diff 含受保护路径：${prot.join('、')}`);
-    const outside = diff.filter((p) => !matchesAny(p, t.writes));
+    // 阶段审查的修复任务可以补充契约（第四轮）；只能新增由 flow_submit 检查（contract_rewrites）
+    const outside = diff.filter((p) => !matchesAny(p, t.writes) && !(t.kind === 'review-fix' && matchesAny(p, [CONTRACTS_PATH])));
     if (outside.length) errs.push(`diff 越出任务 writes：${outside.join('、')}`);
+    if (f.contract_rewrites?.length) errs.push(`只能在契约中新增内容，不能修改或删除已有内容：${f.contract_rewrites.join('、')}`);
   }
   errs.push(...need(f.handoff_written, '尚未写 handoff，请先调用 flow_note'));
   return errs;

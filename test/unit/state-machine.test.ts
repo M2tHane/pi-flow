@@ -91,6 +91,14 @@ test('in_progress -> queued_merge（submit_direct）：不逐任务审查时提�
   assert.equal(r.task.impl_run, 'r-1');
 });
 
+test('阶段审查的修复任务可以在契约中新增内容，改动已有内容被拒；其他任务仍不能改契约', () => {
+  const fix = inProgress({ kind: 'review-fix' });
+  const good = facts({ token: TOKEN, diff_files: ['src/server/t-001/a.ts', 'docs/contracts/web.md'], direct_merge: true, contracts_locked: false });
+  ok(planTransition(fix, 'queued_merge', 'submit_direct', good));
+  bad(planTransition(fix, 'queued_merge', 'submit_direct', { ...good, contract_rewrites: ['docs/contracts/web.md'] }), /只能在契约中新增/);
+  bad(planTransition(inProgress(), 'queued_merge', 'submit_direct', { ...good, contracts_locked: true }), /受保护|越出/);
+});
+
 test('review -> verifying：reviewer run 不同于实施 run', () => {
   const t = mkTask('T-001', { status: 'review', impl_run: 'r-1', lease: lease('r-2', RTOKEN) });
   bad(planTransition(t, 'verifying', 'review_pass', facts({ token: 'x' })), /token/);

@@ -17,6 +17,8 @@ export const STAGE_REVIEW_ROLE = 'reviewer';
 export const MAX_TEST_ROUNDS = 2;
 /** 一次审查最多提交的问题数 */
 export const MAX_STAGE_ISSUES = 30;
+/** 修复任务可以补契约（第四轮后续）：契约漏了修复需要的条目、又不改变需求时直接补上，不走计划修订 */
+export const CONTRACT_ADDITION_HINT = '契约（docs/contracts/）漏了修复需要的条目（例如缺一个回调或参数说明）、补上也不改变需求时，可以直接在对应契约文件里新增，程序只允许新增、不允许修改或删除已有内容，审查者确认时会核对；需要改已有接口时才用 flow_block。';
 
 export interface StageReviewDeps { root: string; store: StateStore; config: FlowConfig }
 
@@ -87,7 +89,7 @@ export function planFixTasks(config: FlowConfig, tasks: readonly TaskFile[], sta
       acceptance: [...g.issues.map(issueLine), '只修上面这些问题，不顺手改别处；修好后全量测试仍然通过'],
       review_issues: g.issues.map((i) => i.id),
     });
-    handoffs[id] = `阶段 ${stage} 末审查发现的问题（程序生成${round === 2 ? '；上一轮修复后确认仍未解决' : ''}）：\n${formatIssues(g.issues)}\n\n只修这些问题，可写范围限定在相关文件。问题描述有误或无法在这些文件内修好时，用 flow_block 说明。`;
+    handoffs[id] = `阶段 ${stage} 末审查发现的问题（程序生成${round === 2 ? '；上一轮修复后确认仍未解决' : ''}）：\n${formatIssues(g.issues)}\n\n只修这些问题，可写范围限定在相关文件。${CONTRACT_ADDITION_HINT}问题描述有误或无法在这些文件内修好时，用 flow_block 说明。`;
   });
   return { tasks: out, handoffs };
 }
@@ -174,9 +176,10 @@ export async function stageReviewStep(d: StageReviewDeps, flowId: string): Promi
       const [id] = nextIds(tasks, 1);
       const fixes = stageTasks.filter((t) => sr.fix_tasks.includes(t.id));
       const diff = sr.fix_base ? safeGit(d.root, ['diff', '--stat', sr.fix_base, flow.integration_branch]) : '';
+      const contractAdds = sr.fix_base ? safeGit(d.root, ['diff', sr.fix_base, flow.integration_branch, '--', 'docs/contracts']) : '';
       await store.updateStageReview(flowId, { ...sr, status: 'confirming', confirm_task: id! }, {
         tasks: [reviewerTask(id!, stage, 'confirm', changedTasks(tasks, stage))],
-        handoffs: { [id!]: `待确认的问题：\n${formatIssues(sr.issues)}\n\n修复任务：\n${fixes.map((t) => `- ${t.id}（${t.role}）${t.status === 'done' ? '已合入' : t.status}：${t.review_issues?.join('、') ?? ''}`).join('\n')}${diff ? `\n\n修复开始后的改动（git diff --stat ${sr.fix_base!.slice(0, 12)} HEAD）：\n${diff}` : ''}` },
+        handoffs: { [id!]: `待确认的问题：\n${formatIssues(sr.issues)}\n\n修复任务：\n${fixes.map((t) => `- ${t.id}（${t.role}）${t.status === 'done' ? '已合入' : t.status}：${t.review_issues?.join('、') ?? ''}`).join('\n')}${diff ? `\n\n修复开始后的改动（git diff --stat ${sr.fix_base!.slice(0, 12)} HEAD）：\n${diff}` : ''}${contractAdds ? `\n\n修复时补充的契约（只允许新增；请确认没有改变需求、没有超出修复所需，否则把对应问题判为未解决并在 note 里说明）：\n${contractAdds.slice(0, 6000)}` : ''}` },
         actor: 'engine', reason: `阶段 ${stage} 的审查修复已合入，派审查者确认（${id}）`,
       });
       return 'wait';
@@ -277,7 +280,7 @@ export async function stageGateFailed(d: StageReviewDeps, flowId: string, stage:
       acceptance: [`阶段闸门的全量 ${failed.command} 失败，日志中涉及 ${[...g.files].join('、')}：找到原因并修复，修好后全量 ${failed.command} 通过`,
         '只修导致失败的问题；原因不在你的可写范围内时，用 flow_block 写明是哪个模块、什么输入、期望与实际'],
     });
-    handoffs[id] = `阶段 ${stage} 的全量测试失败（程序生成，第 ${round}/${MAX_TEST_ROUNDS} 轮）。${g.owners.size ? `相关任务：${[...g.owners].join('、')}。` : ''}\n命令：${failed.command}\n输出（最后部分）：\n\`\`\`\n${tail.slice(-4000)}\n\`\`\``;
+    handoffs[id] = `阶段 ${stage} 的全量测试失败（程序生成，第 ${round}/${MAX_TEST_ROUNDS} 轮）。${g.owners.size ? `相关任务：${[...g.owners].join('、')}。` : ''}${CONTRACT_ADDITION_HINT}\n命令：${failed.command}\n输出（最后部分）：\n\`\`\`\n${tail.slice(-4000)}\n\`\`\``;
   });
   await store.updateStageReview(flowId, { ...sr, status: 'test_fixing', test_rounds: [...sr.test_rounds, { command: failed.command, tasks: ids, at: new Date().toISOString() }] }, {
     tasks: inputs, handoffs, actor: 'engine', reason: `阶段 ${stage} 全量 ${failed.command} 失败，生成第 ${round} 轮修复任务 ${ids.join('、')}`,

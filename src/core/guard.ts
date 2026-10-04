@@ -7,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { minimatch } from 'minimatch';
 import { BUILTIN_READ_TOOLS, BUILTIN_WRITE_TOOLS, type FlowConfig, type ResolvedRole } from './config.ts';
-import { globsOverlap, isProtected, matchesAny, protectedGlobs } from './paths.ts';
+import { CONTRACTS_PATH, globsOverlap, isProtected, matchesAny, protectedGlobs } from './paths.ts';
 import { parseShell, type SimpleCommand, type Word } from './shell.ts';
 
 export type GuardRule = 'tool_whitelist' | 'read_paths' | 'write_paths' | 'protected' | 'bash' | 'sensitive';
@@ -27,6 +27,8 @@ export interface GuardContext {
   contractsLocked: boolean;
   /** 任务 writes（merge-fix 为冲突文件列表）；与角色 writes 同时生效 */
   writes?: string[];
+  /** 阶段审查的修复任务（第四轮）：可以在契约中补充缺失的条目（只能新增，提交时由程序检查），不受角色可写范围限制 */
+  contractAdditions?: boolean;
   /** 本 run 的临时目录（项目与 worktree 之外）：可以 cd、写入、删除、移动 */
   scratchDir?: string;
   /** 给 orchestrator 的指引中填入的 ready 任务 */
@@ -135,7 +137,8 @@ class Evaluator {
     if (a.area === 'main') return deny('write_paths', `不能写主工作区（${a.rel}），只能修改当前 worktree 内的文件。${this.hint()}`);
     if (a.area === 'outside') return deny('write_paths', `只能写当前 worktree 内的文件，${a.abs} 在其外。${this.hint()}`);
     const writes = this.effectiveWrites();
-    const inTask = matchesAny(a.rel, writes) && matchesAny(a.rel, this.role.writes);
+    const inTask = (matchesAny(a.rel, writes) && matchesAny(a.rel, this.role.writes))
+      || (!!this.ctx.contractAdditions && matchesAny(a.rel.toLowerCase(), [CONTRACTS_PATH]));
     if (!inTask) {
       return deny('write_paths', `${a.rel} 不在本任务可写范围内（${writes.join(', ') || '无'}）。${tool} 被阻断。${this.hint()}`);
     }

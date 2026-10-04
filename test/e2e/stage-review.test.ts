@@ -195,3 +195,37 @@ test('崩溃恢复：确认中强杀后 /flow resume，确认任务重新派发�
     }
   } finally { p.cleanup(); }
 });
+
+test('修复任务补契约：改动契约已有内容被拒，只新增被接受并合入；确认任务的 handoff 列出补充的契约', async () => {
+  const p = await setupProject({ yaml: AUTO, tasks: [mkTask('T-001')], files: { 'docs/contracts/server.md': '# server\n\n## createThing\n参数：name\n' } });
+  try {
+    const attempts: string[] = [];
+    const { engine, errors } = makeEngine(p, script(p, {
+      report: async (a) => { assert.ok((await a.call('flow_review_report', { summary: 's', issues: ISSUES.slice(0, 1) })).ok); },
+      confirm: async (a) => { assert.ok((await a.call('flow_review_confirm', { results: [{ id: 'R-1', resolved: true }] })).ok); },
+      fix: async (a) => {
+        await a.call('flow_claim');
+        assert.ok((await a.call('write', { path: 'src/server/t-001/a.ts', content: 'fixed' })).ok);
+        // 先改已有行：提交被拒
+        assert.ok((await a.call('write', { path: 'docs/contracts/server.md', content: '# server\n\n## createThing\n参数：name, extra\n' })).ok);
+        await a.call('flow_note', { text: '补契约' });
+        const bad = await a.call('flow_submit', { summary: '改已有行' });
+        assert.equal(bad.ok, false);
+        attempts.push(bad.text);
+        // 改成只追加
+        assert.ok((await a.call('write', { path: 'docs/contracts/server.md', content: '# server\n\n## createThing\n参数：name\n\n## validateThing\n参数：input；错误：ValidationError\n' })).ok);
+        const good = await a.call('flow_submit', { summary: '只追加' });
+        assert.ok(good.ok, good.text);
+      },
+    }));
+    await engine.next(p.flowId);
+    await engine.idle();
+    assert.deepEqual(errors, []);
+    assert.match(attempts[0]!, /只能在契约中新增[\s\S]*git checkout/);
+    const sr = p.store.readStageReview(p.flowId, 'S3')!;
+    assert.equal(sr.status, 'done');
+    assert.match(p.git('show', `flow/${p.flowId}/integration:docs/contracts/server.md`), /## validateThing/);
+    assert.match(p.store.readHandoff(p.flowId, sr.confirm_task!), /修复时补充的契约[\s\S]*\+## validateThing/);
+    assert.match(p.store.readHandoff(p.flowId, sr.fix_tasks[0]!), /可以直接在对应契约文件里新增/);
+  } finally { p.cleanup(); }
+});

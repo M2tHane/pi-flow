@@ -260,3 +260,12 @@ test('同一命令中字面量赋值的变量会被代入后校验；含命令�
   blocked(checkToolCall(bash('S=$(pwd); rm -rf $S/x'), c), 'bash');
   blocked(checkToolCall(bash('rm -rf $UNKNOWN/x'), c), 'bash');
 });
+
+test('阶段审查的修复任务可以写契约（不受角色可写范围限制），其他路径照旧；没有该标记时契约不可写', () => {
+  const fix = ctx('backend-engineer', { contractsLocked: false, contractAdditions: true, writes: ['src/server/a.ts'] });
+  allowed(checkToolCall(call('write', { path: 'docs/contracts/web.md', content: '' }), fix));
+  allowed(checkToolCall(call('write', { path: 'src/server/a.ts', content: '' }), fix));
+  blocked(checkToolCall(call('write', { path: 'docs/PRD.md', content: '' }), fix), 'write_paths');
+  blocked(checkToolCall(call('write', { path: 'workflow.yaml', content: '' }), fix));
+  blocked(checkToolCall(call('write', { path: 'docs/contracts/web.md', content: '' }), ctx('backend-engineer', { contractsLocked: false, writes: ['src/server/a.ts'] })), 'write_paths');
+});

@@ -145,18 +145,27 @@ export async function flowSubmit(ctx: ToolContext, p: Static<typeof SubmitParams
   }
   snapshot(t.worktree, `[${ctx.env.flow}/${t.id}] ${p.summary.split('\n')[0]}`);
   const diff = changedFiles(t.worktree, t.base_sha);
+  // 阶段审查的修复任务只能在契约中新增内容：有删除行（含修改）的契约文件由状态机拒绝
+  const rewrites = t.kind === 'review-fix' ? contractRewrites(t.worktree, t.base_sha) : [];
   // 关闭逐任务审查时直接进入合并队列（合并时跑全量测试）
   const direct = !perTaskReview(ctx.config, ctx.store.readFlow(ctx.env.flow).mode, t, ctx.store.listTasks(ctx.env.flow));
   try {
     await ctx.store.transitionTask(ctx.env.flow, t.id, direct
-      ? { to: 'queued_merge', trigger: 'submit_direct', actor: actor(ctx), facts: { token: ctx.env.token, diff_files: diff, direct_merge: true } }
-      : { to: 'review', trigger: 'submit', actor: actor(ctx), facts: { token: ctx.env.token, diff_files: diff } });
+      ? { to: 'queued_merge', trigger: 'submit_direct', actor: actor(ctx), facts: { token: ctx.env.token, diff_files: diff, direct_merge: true, contract_rewrites: rewrites } }
+      : { to: 'review', trigger: 'submit', actor: actor(ctx), facts: { token: ctx.env.token, diff_files: diff, contract_rewrites: rewrites } });
   } catch (e) {
+    if (rewrites.length) rethrow(e, `契约只能新增条目或说明。还原对已有内容的修改：git checkout ${t.base_sha} -- ${rewrites.join(' ')}，再只追加需要的内容；确需修改已有接口时调用 flow_block 说明，由用户决定是否修订计划。`);
     rethrow(e, `只修改 writes 内的文件。还原越界改动：新增的文件用 git rm <文件>，修改过的文件用 git checkout ${t.base_sha} -- <文件>。先 flow_note 写 handoff，然后再次 flow_submit。`);
   }
   await ctx.store.appendHandoff(ctx.env.flow, t.id, `提交说明：${p.summary}`, actor(ctx));
   await ctx.store.updateRun(ctx.env.run, { outcome: 'submitted' }, actor(ctx), '提交');
   return { text: `${direct ? '已提交合并' : '已提交审查'}（改动 ${diff.length} 个文件${stray.length ? `；已清理可写范围外、未被跟踪的文件 ${stray.length} 个：${stray.slice(0, 5).join('、')}` : ''}）。你的工作已完成，请直接结束，不要再调用工具。`, details: { files: diff, cleaned: stray } };
+}
+
+/** 相对基线删除或修改过已有行的契约文件 */
+function contractRewrites(worktree: string, base: string): string[] {
+  return git(worktree, ['diff', '--numstat', '--no-renames', base, 'HEAD', '--', 'docs/contracts']).split('\n').filter(Boolean)
+    .map((l) => l.split('\t')).filter(([, del]) => del !== '0').map(([, , p]) => p!);
 }
 
 async function submitAnalysis(ctx: ToolContext, t: TaskFile, p: Static<typeof SubmitParams>): Promise<ToolResult> {

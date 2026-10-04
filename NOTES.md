@@ -184,6 +184,8 @@
 105. 闸门失败（auto 命令）时从输出中提取仓库里的文件，按写过它的任务找角色（writes 取那些任务的 writes），生成第 n 轮修复任务；两轮后或定位不到时转 needs_human（"需要你处理"，`/flow gate` 重跑不再自动修）。阶段审查结束后被修订重新打开的阶段不再审查。
 106. `/flow next` 先 pump 再派发（复跑看板时发现）：提交直接进合并队列后，引擎在"提交"与"合并"之间重启，任务会停在 queued_merge，只有 pump 会处理它。
 107. 原地打转检测（复跑看板时 glm 连续 281 次执行同一条命令，心跳续租让租约永不过期）：被放行的工具调用连续 5 次完全相同就拦下并提示换思路，10 次结束本次运行（计失败、重新派发）。
+108. 契约只写模块之间的边界（全 gpt 复跑中一个前端内部回调引出 3 次计划修订）：技能、architect 提示与 S1 验收标准写明前端只写它调用的后端接口与页面入口，组件装配不写；同一模块内部互相调用的部分不拆成对着契约并行的任务。
+109. 阶段审查的修复任务（review-fix）可以补契约：guard 放行写 `docs/contracts/`（不受角色可写范围限制、不计入 writes，避免修复任务互斥），提交时有删除或修改已有行的契约文件被拒（只能新增）；确认任务的 handoff 附上补充的契约，由审查者核对是否改变需求。
 
 ## 真实模型实验
 
@@ -212,6 +214,7 @@
 
 修改 `agents/`、`rules/`、`skills/` 会改变子进程系统提示的稳定前缀，提供商的提示缓存失效一次；`rules/` 的改动只影响之后 `/flow init` 的新项目。改动时在此追加一行。
 
+- 10-03（第 108、109 条）：architect 与各实施角色、reviewer 角色提示；`design-contract`、`decompose-dag` 技能。
 - 10-03（第 103 条）：reviewer（阶段审查）、orchestrator、backend、frontend、db、infra、test、ui 角色提示（review-fix 只修分到的问题）；`decompose-dag` 技能；工具声明多了 flow_review_report、flow_review_confirm。
 - 10-03（第 101 条）：architect 角色提示；`design-contract`、`decompose-dag` 技能。
 - 10-03（第 100 条）：backend、frontend、db、test、reviewer 角色提示；`rules/testing.md`；`decompose-dag`、`revise-plan`（重写）、`design-contract` 技能。

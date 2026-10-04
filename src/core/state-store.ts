@@ -555,7 +555,7 @@ export class StateStore {
         queue_head: mq.queue[0] ? key(mq.queue[0]) === me : false,
         handoff_written: (tx.readText(handoffRel(flowId, taskId)) ?? '').trim().length > 0,
         evidence_saved: this.hasEvidence(tx, flowId, taskId),
-        contracts_locked: ('S1' in flow.approvals || 'F1' in flow.approvals) && !task.contract_change,
+        contracts_locked: ('S1' in flow.approvals || 'F1' in flow.approvals) && !task.contract_change && task.kind !== 'review-fix',
       };
       const plan = planTransition(task, req.to, req.trigger, facts, req.patch);
       if (!plan.ok) throw new StateError(`转移被拒（${me} ${task.status} -> ${req.to}）`, plan.errors);

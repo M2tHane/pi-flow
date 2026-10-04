@@ -36,7 +36,7 @@ export function designTasks(mode: FlowMode, stage: string, description: string):
       inputs: ['docs/PRD.md'], acceptance: [
         'docs/ARCHITECTURE.md 写明模块边界、依赖方向与数据模型',
         '重大技术选型各写一条 ADR（docs/adr/），给出对比与建议，不替用户拍板',
-        'docs/contracts/ 中有数据模型 schema，每个模块一个契约文件，写到函数级：对外函数的名字、参数（名、类型、约束）、返回值、可能的错误；REST 接口写路径、方法、请求与响应、错误码（批准后只读）',
+        'docs/contracts/ 中有数据模型 schema，每个模块一个契约文件，只写模块之间的边界（前端组件之间的装配不写），写到函数级：对外函数的名字、参数（名、类型、约束）、返回值、可能的错误；REST 接口写路径、方法、请求与响应、错误码（批准后只读）',
         '经 flow_propose_tasks 提交覆盖 S2 至 S4 的任务 DAG：实现任务自带测试；inputs 列出依赖的契约条目；硬依赖写 reason；软依赖配 integration 任务',
         '针对选定的技术栈，在 docs/rules-draft/ 写规则草案（与 rules/ 同名表示替换）；工具链与 workflow.yaml 的命令不符时写 docs/rules-draft/commands.yaml',
       ] }];
