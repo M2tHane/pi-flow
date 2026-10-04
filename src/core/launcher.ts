@@ -34,9 +34,11 @@ export interface SubagentHandle {
   /** 结束后的汇总：按每条 assistant message_end 的 usage 累加；模型取最后一条的 provider/model */
   done: Promise<RunOutcome>;
   kill(): void;
+  /** 运行中插话（第五轮 /flow-add）：在当前回合的工具调用结束后、下一次调用模型前送达；子进程已结束或不支持时返回 false */
+  steer?(message: string): boolean;
 }
 
-/** 子进程启动（pi --mode json -p --session-dir <留档目录> ...，stdin 必须关闭，否则 -p 会等待输入） */
+/** 子进程启动（第五轮起：pi --mode rpc --session-dir <留档目录> ...，经 stdin 发送提示与插话） */
 export interface SubagentLauncher {
   launch(spec: SubagentSpec): SubagentHandle;
 }

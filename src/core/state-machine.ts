@@ -22,7 +22,8 @@ export interface Facts {
   actor: string;
   // —— 由 StateStore 推导 ——
   stage_active?: boolean;
-  status_of?: ReadonlyMap<string, TaskStatus>;
+  /** 依赖判断用的状态（dag.depStatus：验收中的模块为 accepting） */
+  status_of?: ReadonlyMap<string, string>;
   running_count?: number;
   conflicting_running?: string[];
   merging_other?: string | null;
@@ -77,7 +78,7 @@ function leaseValid(lease: Lease | null, f: Facts, what: string): string[] {
   if (!lease) return [`${what}：任务没有有效租约`];
   if (!f.token) return [`${what}：缺少 run token，请确认在 pi-flow 派发的子进程中调用`];
   if (hashToken(f.token) !== lease.token_hash) return [`${what}：run token 无效`];
-  if (f.now.getTime() >= Date.parse(lease.expires_at)) return [`${what}：租约已过期，请联系用户执行 /flow resume`];
+  if (f.now.getTime() >= Date.parse(lease.expires_at)) return [`${what}：租约已过期，请联系用户执行 /flow-resume`];
   return [];
 }
 
@@ -93,7 +94,8 @@ function submitErrors(t: TaskFile, f: Facts): string[] {
     // 阶段审查的修复任务可以补充契约（第四轮）；只能新增由 flow_submit 检查（contract_rewrites）
     // 适配已有测试（第四轮后续）：只修改、不新增删除的已有测试文件由 flow_submit 算出，不算越界
     const adjusted = new Set(f.test_adjustments ?? []);
-    const outside = diff.filter((p) => !matchesAny(p, t.writes) && !adjusted.has(p) && !(t.kind === 'review-fix' && matchesAny(p, [CONTRACTS_PATH])));
+    const owned = [...t.writes, ...(t.shared ?? [])];
+    const outside = diff.filter((p) => !matchesAny(p, owned) && !adjusted.has(p) && !(t.kind === 'review-fix' && matchesAny(p, [CONTRACTS_PATH])));
     if (outside.length) errs.push(`diff 越出任务 writes：${outside.join('、')}`);
     if (f.contract_rewrites?.length) errs.push(`只能在契约中新增内容，不能修改或删除已有内容：${f.contract_rewrites.join('、')}`);
   }
@@ -249,7 +251,7 @@ export const TRANSITIONS: readonly Rule[] = [
       ...need(t.kind === 'analysis', '只有 analysis 任务可以直接提交结论'),
       ...need((f.diff_files ?? []).length === 0, `只读任务不得有改动：${(f.diff_files ?? []).join('、')}`),
       ...need(f.handoff_written, '尚未写 handoff，请先调用 flow_note'),
-      ...need(!!t.findings || !!t.replan || !!t.stage_review, '缺少结构化结论（findings）'),
+      ...need(!!t.findings || !!t.replan || !!t.stage_review || !!t.advocate || !!t.accept_of, '缺少结构化结论（findings）'),
     ],
     effect: (t) => { t.impl_run = t.lease!.run_id; t.lease = null; t.worktree = null; },
   },
@@ -405,6 +407,6 @@ export const STAGE_TRANSITIONS: readonly StageRule[] = [
 export function planStageTransition(from: StageStatus, to: StageStatus, trigger: StageTrigger, facts: StageFacts): string[] {
   const rule = STAGE_TRANSITIONS.find((r) => r.trigger === trigger && r.to === to && r.from.includes(from));
   if (!rule) return [`非法的阶段转移：${from} -> ${to}（触发 ${trigger}）`];
-  if (rule.humanOnly && facts.actor !== 'human') return ['阶段闸门只能由用户执行 /flow approve，agent 无权审批'];
+  if (rule.humanOnly && facts.actor !== 'human') return ['阶段闸门只能由用户执行 /flow-approve，agent 无权审批'];
   return rule.check?.(facts) ?? [];
 }

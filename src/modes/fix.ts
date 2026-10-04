@@ -172,7 +172,7 @@ async function writeFixLog(c: FixContext, flow: FlowFile, scout: TaskFile, repro
   await c.store.writeFixLog(name, content, flow.id);
 }
 
-/** /flow approve 用于 fix 的升级确认：用户决定仍按 fix 处理 */
+/** /flow-approve 用于 fix 的升级确认：用户决定仍按 fix 处理 */
 export async function continueFix(store: StateStore, flowId: string): Promise<string> {
   const flow = store.readFlow(flowId);
   if (flow.mode !== 'fix' || flow.stage_status !== 'awaiting_human') throw new Error('没有等待确认的修复');

@@ -7,6 +7,7 @@ import type { Engine } from '../core/dispatcher.ts';
 import { TASK_STATUSES, type TaskFile } from '../core/schemas.ts';
 import { FlowToolError, type ToolResult } from './subagent-tools.ts';
 import { proposalSummary } from '../core/stages.ts';
+import { PROPOSAL_STAGES } from '../modes/plan.ts';
 import type { FlowConfig } from '../core/config.ts';
 import { RevisionError, formatRevision, openReplan, startReplan } from '../core/revision.ts';
 import { actionsNeeded } from '../core/status-view.ts';
@@ -21,7 +22,7 @@ export const ReplanParams = Type.Object({
   reason: Type.String({ minLength: 1, maxLength: 2000, description: '用户提出的修订要求，尽量用用户的原话：要加什么、改什么、为什么' }),
 });
 
-/** 转达用户的修订要求：生成修订任务并派给 architect；修订需要用户 /flow approve 才生效 */
+/** 转达用户的修订要求：生成修订任务并派给 architect；修订需要用户 /flow-approve 才生效 */
 export async function flowReplan(root: string, store: StateStore, config: FlowConfig, engine: Engine, p: Static<typeof ReplanParams>): Promise<ToolResult> {
   const flowId = activeFlowId(store);
   let id: string;
@@ -32,7 +33,7 @@ export async function flowReplan(root: string, store: StateStore, config: FlowCo
     throw e;
   }
   await engine.promote(flowId);
-  const after = 'architect 提交修订后，请用户查看并执行 /flow approve 批准（或 /flow reject "<意见>"）。';
+  const after = 'architect 提交修订后，请用户查看并执行 /flow-approve 批准（或 /flow-reject "<意见>"）。';
   try {
     const d = await engine.dispatch(flowId, id);
     return { text: `已生成修订任务 ${id} 并派给 ${d.role}（run ${d.run_id}）。${after}用 flow_wait 等待。`, details: { task: id, run_id: d.run_id } };
@@ -70,12 +71,12 @@ export function statusText(store: StateStore, engine: Engine | null, flowId: str
   const failing = tasks.filter((t) => t.last_failure && !['blocked', 'done', 'cancelled'].includes(t.status));
   if (failing.length) lines.push(`最近失败：\n${failing.map((t) => `- ${t.id}（第 ${t.attempts} 次）：${one(t.last_failure!)}`).join('\n')}`);
   if (flow.stage_status === 'awaiting_human') {
-    lines.push(`等待用户：阶段 ${flow.stage} 的闸门待批准 → /flow approve（或 /flow reject "<意见>"）`);
+    lines.push(`等待用户：阶段 ${flow.stage} 的闸门待批准 → /flow-approve（或 /flow-reject "<意见>"）`);
     const p = proposalSummary(store, flowId);
-    if (p && ['S1', 'F1'].includes(flow.stage)) lines.push(p);
+    if (p && PROPOSAL_STAGES.has(flow.stage)) lines.push(p);
   }
   const rev = openReplan(store, flowId)?.revision;
-  if (rev) lines.push(`等待用户：计划修订待批准 → /flow approve（或 /flow reject "<意见>"）\n${formatRevision(rev)}`);
+  if (rev) lines.push(`等待用户：计划修订待批准 → /flow-approve（或 /flow-reject "<意见>"）\n${formatRevision(rev)}`);
   const sr = flow.mode !== 'fix' ? store.readStageReview(flowId, flow.stage) : null;
   if (sr && sr.status !== 'done') {
     const answer = (id: string) => { const c = sr.batches.flatMap((b) => b.confirm).find((x) => x.id === id); return c ? (c.resolved ? ' ✓已解决' : ` ✗未解决${c.note ? `：${one(c.note, 80)}` : ''}`) : ''; };

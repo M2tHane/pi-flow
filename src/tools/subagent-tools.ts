@@ -18,72 +18,13 @@ import { NOTES_DESCRIPTION, NotesError, NotesParams, applyNoteOps, renderNotes }
 import { HISTORY_DESCRIPTION, HistoryParams, formatSearch, loadHistory, readHistoryEntry, searchHistory } from '../core/history.ts';
 import { listSessionFiles, sessionDirOf } from '../core/session-log.ts';
 import { taskNotesRel } from '../core/state-store.ts';
+import { PROTOTYPE_STAGE } from '../modes/plan.ts';
+import { AcceptConfirmParams, AcceptParams, ProposeModulesParams, SyncParams, flowAccept, flowAcceptConfirm, flowProposeModules, flowSync } from './module-tools.ts';
 
-export const NOTE_LIMIT = 4000;
+export const NOTE_LIMIT = 8000;
 
-export interface RunEnv {
-  root: string;
-  flow: string;
-  task: string;
-  run: string;
-  token: string;
-  role: string;
-}
-
-export const RUN_ENV_KEYS = {
-  root: 'PI_FLOW_ROOT', flow: 'PI_FLOW_FLOW', task: 'PI_FLOW_TASK', run: 'PI_FLOW_RUN', token: 'PI_FLOW_RUN_TOKEN', role: 'PI_FLOW_ROLE',
-} as const;
-
-export function runEnvFrom(env: NodeJS.ProcessEnv | Record<string, string | undefined>): RunEnv | null {
-  const out: Partial<RunEnv> = {};
-  for (const [k, v] of Object.entries(RUN_ENV_KEYS)) {
-    const val = env[v];
-    if (!val) return null;
-    out[k as keyof RunEnv] = val;
-  }
-  return out as RunEnv;
-}
-
-export interface ToolContext {
-  store: StateStore;
-  config: FlowConfig;
-  env: RunEnv;
-  now?: () => Date;
-}
-
-export interface ToolResult { text: string; details?: Record<string, unknown> }
-
-export class FlowToolError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'FlowToolError';
-  }
-}
-
-const actor = (ctx: ToolContext) => `run:${ctx.env.run}`;
-
-/** 校验 run token 与租约；返回当前任务 */
-function checkRun(ctx: ToolContext): TaskFile {
-  let task: TaskFile;
-  try {
-    task = ctx.store.readTask(ctx.env.flow, ctx.env.task);
-  } catch {
-    throw new FlowToolError(`任务 ${ctx.env.flow}/${ctx.env.task} 不存在。本次运行无效，请停止工作。`);
-  }
-  const lease = task.lease;
-  if (!lease || lease.run_id !== ctx.env.run || hashToken(ctx.env.token) !== lease.token_hash) {
-    throw new FlowToolError('run token 无效或租约已被收回：本次运行已失效，请停止工作，不要再调用任何工具。');
-  }
-  if ((ctx.now?.() ?? new Date()).getTime() >= Date.parse(lease.expires_at)) {
-    throw new FlowToolError('租约已过期：请停止工作，由用户执行 /flow resume 处理。');
-  }
-  return task;
-}
-
-function rethrow(e: unknown, hint: string): never {
-  if (e instanceof StateError) throw new FlowToolError(`${e.message}\n建议：${hint}`);
-  throw e;
-}
+export { RUN_ENV_KEYS, runEnvFrom, FlowToolError, checkRunOf, type RunEnv, type ToolContext, type ToolResult } from './tool-common.ts';
+import { RUN_ENV_KEYS, runEnvFrom, FlowToolError, actor, checkRun, rethrow, type RunEnv, type ToolContext, type ToolResult } from './tool-common.ts';
 
 export const ClaimParams = Type.Object({});
 export const NoteParams = Type.Object({ text: Type.String({ minLength: 1, maxLength: NOTE_LIMIT, description: 'handoff 笔记：做到哪、下一步、踩过的坑、未决问题' }) });
@@ -98,6 +39,7 @@ export const Findings = Type.Object({
 export const SubmitParams = Type.Object({
   summary: Type.String({ minLength: 1, maxLength: 500, description: '一句话总结本次改动（只读探查任务：一句话结论）' }),
   findings: Type.Optional(Findings),
+  prototype: Type.Optional(Type.Boolean({ description: '（仅需求阶段的汇总者）是否需要原型阶段：没有界面或只改后端时为 false' })),
 });
 export const Issue = Type.Object({
   location: Type.String({ minLength: 1, description: '位置，例如 src/server/a.ts:42' }),
@@ -144,7 +86,7 @@ export async function flowSubmit(ctx: ToolContext, p: Static<typeof SubmitParams
   if (t.kind === 'analysis') return submitAnalysis(ctx, t, p);
   if (t.status !== 'in_progress') throw new FlowToolError(`任务当前是 ${t.status}，不能提交。`);
   if (!t.worktree || !t.base_sha) throw new FlowToolError('任务没有 worktree 或 base_sha，无法提交，请调用 flow_block 报告。');
-  const stray = cleanStrayUntracked(t.worktree, t.conflict_files ?? t.writes);
+  const stray = cleanStrayUntracked(t.worktree, t.conflict_files ?? [...t.writes, ...(t.shared ?? [])]);
   if (stray.length) {
     await ctx.store.appendHandoff(ctx.env.flow, t.id, `提交前程序清理了可写范围外、未被 git 跟踪的文件：${stray.slice(0, 20).join('、')}${stray.length > 20 ? ` 等 ${stray.length} 个` : ''}（多为测试或运行产生的数据；测试应把数据写到临时目录）`, 'flow-submit');
   }
@@ -165,6 +107,12 @@ export async function flowSubmit(ctx: ToolContext, p: Static<typeof SubmitParams
     rethrow(e, `只修改 writes 内的文件${testAdjustEnabled(ctx.config, t) ? '（别的角色已有的测试可以修改来适配接口变化，但不能新增或删除 writes 之外的文件）' : ''}。还原越界改动：新增的文件用 git rm <文件>，修改过或删除的文件用 git checkout ${t.base_sha} -- <文件>。先 flow_note 写 handoff，然后再次 flow_submit。`);
   }
   await ctx.store.appendHandoff(ctx.env.flow, t.id, `提交说明：${p.summary}`, actor(ctx));
+  // 需求阶段的汇总者判断要不要原型阶段（用户批准时可以用 --prototype / --no-prototype 改）
+  if (t.stage === 'D0' && p.prototype !== undefined) {
+    const f = ctx.store.readFlow(ctx.env.flow);
+    const skip = (f.skip_stages ?? []).filter((x) => x !== PROTOTYPE_STAGE);
+    if (f.stages.includes(PROTOTYPE_STAGE)) await ctx.store.setSkipStages(ctx.env.flow, p.prototype ? skip : [...skip, PROTOTYPE_STAGE], actor(ctx), p.prototype ? '需要原型阶段' : '不需要原型阶段（没有界面）');
+  }
   if (adjusted.length) await ctx.store.appendHandoff(ctx.env.flow, t.id, `修改了可写范围外的已有测试（适配接口变化，审查时核对没有削弱）：${adjusted.join('、')}`, 'flow-submit');
   await ctx.store.updateRun(ctx.env.run, { outcome: 'submitted' }, actor(ctx), '提交');
   return { text: `${direct ? '已提交合并' : '已提交审查'}（改动 ${diff.length} 个文件${stray.length ? `；已清理可写范围外、未被跟踪的文件 ${stray.length} 个：${stray.slice(0, 5).join('、')}` : ''}）。你的工作已完成，请直接结束，不要再调用工具。`, details: { files: diff, cleaned: stray } };
@@ -177,6 +125,18 @@ function contractRewrites(worktree: string, base: string): string[] {
 }
 
 async function submitAnalysis(ctx: ToolContext, t: TaskFile, p: Static<typeof SubmitParams>): Promise<ToolResult> {
+  if (t.accept_of) throw new FlowToolError(t.accept_kind === 'confirm' ? '复查用 flow_accept_confirm 提交。' : '验收用 flow_accept 提交。');
+  // 需求讨论（第五轮 D0）：意见已写进 handoff，提交即完成
+  if (t.advocate) {
+    // handoff 里程序写的部分（用户的描述）不算：必须有本次运行用 flow_note 写的意见
+    if (!/^## \S+ run:/m.test(ctx.store.readHandoff(ctx.env.flow, t.id))) throw new FlowToolError('还没有写意见：先用 flow_note 写下你的完整意见，再 flow_submit。');
+    await ctx.store.appendHandoff(ctx.env.flow, t.id, `总结：${p.summary}`, actor(ctx));
+    try {
+      await ctx.store.transitionTask(ctx.env.flow, t.id, { to: 'done', trigger: 'report', actor: actor(ctx), facts: { token: ctx.env.token, diff_files: [] } });
+    } catch (e) { rethrow(e, '先 flow_note 写下意见再提交。'); }
+    await ctx.store.updateRun(ctx.env.run, { outcome: 'submitted' }, actor(ctx), '提交意见');
+    return { text: '意见已提交。你的工作已完成，请直接结束。' };
+  }
   if (t.stage_review) throw new FlowToolError(t.stage_review === 'review' ? '阶段审查用 flow_review_report 提交问题清单。' : '确认修复用 flow_review_confirm 提交。');
   if (t.replan) return submitReplan(ctx, t, p);
   if (!p.findings) throw new FlowToolError('只读探查任务必须附 findings：location、root_cause、impact_files、suggested_role、contract_change、estimated_files。');
@@ -432,6 +392,10 @@ export function flowHistory(ctx: ToolContext, p: Static<typeof HistoryParams>): 
 }
 
 export const SUBAGENT_TOOLS = {
+  flow_propose_modules: { params: ProposeModulesParams, description: '（仅 architect，仅规划阶段）提交模块清单：每个模块一个模型负责前端、后端与测试；写明可写范围、登记的公共文件、验收标准与依赖。用户批准规划阶段后生效。', run: (c: ToolContext, p: Static<typeof ProposeModulesParams>) => flowProposeModules(c, p) },
+  flow_sync: { params: SyncParams, description: '把集成分支的最新代码（其他模块已合入的改动）合进你的工作区：没有冲突直接完成；有冲突时冲突标记留在文件里，解决后再调用一次完成同步。依赖的模块刚合入、或想提前发现冲突时使用。', run: (c: ToolContext) => flowSync(c) },
+  flow_accept: { params: AcceptParams, description: '（仅验收任务）逐条提交验收结论：每条验收标准给出 passed 与证据。', run: (c: ToolContext, p: Static<typeof AcceptParams>) => flowAccept(c, p) },
+  flow_accept_confirm: { params: AcceptConfirmParams, description: '（仅复查任务）只对待复查的条目提交 passed 与证据，不能新增条目。', run: (c: ToolContext, p: Static<typeof AcceptConfirmParams>) => flowAcceptConfirm(c, p) },
   notes: { params: NotesParams, description: NOTES_DESCRIPTION, run: (c: ToolContext, p: Static<typeof NotesParams>) => flowNotes(c, p) },
   history: { params: HistoryParams, description: HISTORY_DESCRIPTION, run: (c: ToolContext, p: Static<typeof HistoryParams>) => flowHistory(c, p) },
   flow_claim: { params: ClaimParams, description: '确认任务与租约，返回任务说明、输入文件、验收标准、可写范围与 verify 命令。开始工作前先调用。', run: (c: ToolContext) => flowClaim(c) },

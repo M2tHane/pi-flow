@@ -58,7 +58,9 @@ export class SubagentRuntime {
       // 阶段审查的修复任务可以补充契约（只能新增，flow_submit 检查）
       contractsLocked: ('S1' in flow.approvals || 'F1' in flow.approvals) && !t.contract_change && t.kind !== 'review-fix',
       ...(t.kind === 'review-fix' ? { contractAdditions: true } : {}),
-      ...(role.writes.length ? { writes: t.conflict_files ?? t.writes, scratchDir: scratchDir(this.env.root, this.env.run) } : {}),
+      // 模块登记的公共文件（第五轮）也可以写；没有可写范围但能运行命令的角色（验收者）也有临时目录
+      ...(role.writes.length ? { writes: [...(t.conflict_files ?? t.writes), ...(t.conflict_files ? [] : t.shared ?? [])], scratchDir: scratchDir(this.env.root, this.env.run) } : {}),
+      ...(!role.writes.length && role.bash === 'full' ? { scratchDir: scratchDir(this.env.root, this.env.run) } : {}),
       ...(testAdjustEnabled(this.config, t) && t.worktree && t.base_sha ? { adjustableTests: this.adjustable(t.worktree, t.base_sha, t.writes) } : {}),
       // merge-fix：冲突文件里原任务适配过的已有测试不在角色可写范围内，也要能改
       ...(t.kind === 'merge-fix' && t.conflict_files ? { adjustableTests: t.conflict_files.filter((f) => matchesAny(f, TEST_GLOBS)) } : {}),

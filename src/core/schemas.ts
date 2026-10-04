@@ -67,6 +67,12 @@ export const FlowFile = Type.Object({
     files: Type.Optional(Type.Array(Type.String())),
     reason: Type.Optional(Type.String()),
   }, { additionalProperties: false })),
+  /** 实施阶段闸门的全量测试失败后自动生成的修复（第五轮，最多两轮） */
+  gate_rounds: Type.Optional(Type.Array(Type.Object({
+    stage: Type.String({ minLength: 1 }), command: Type.String(), tasks: Type.Array(TaskId), at: IsoTime,
+  }, { additionalProperties: false }))),
+  /** 跳过的阶段（第五轮：没有界面时跳过原型阶段 D1） */
+  skip_stages: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
   version: Type.Integer({ minimum: 1 }),
 }, { additionalProperties: false });
 export type FlowFile = Static<typeof FlowFile>;
@@ -140,6 +146,17 @@ export const TaskFile = Type.Object({
   fork_from_task: Type.Optional(TaskId),
   /** 最近一次提交修改过的、writes 之外的已有测试文件（第四轮后续，testing.adjust_tests） */
   test_adjustments: Type.Optional(Type.Array(Type.String())),
+  /** 模块登记的公共文件（第五轮：路由注册、菜单、迁移目录、文案等）：可以写，但不算进互斥，并行模块都可能改 */
+  shared: Type.Optional(Type.Array(Type.String())),
+  /** 模块任务（第五轮）：合并后要经独立验收；依赖它的任务等验收通过才开工 */
+  needs_acceptance: Type.Optional(Type.Boolean()),
+  /** 独立验收已通过 */
+  accepted: Type.Optional(Type.Boolean()),
+  /** 需求讨论（第五轮 D0）的只读任务：user 用户视角、dev 开发视角，意见写进 handoff */
+  advocate: Type.Optional(Type.Union([Type.Literal('user'), Type.Literal('dev')])),
+  /** 独立验收任务（第五轮，kind=analysis，角色 acceptor）：验收的模块任务与类型（check 逐条验收，confirm 只复查没通过的条目） */
+  accept_of: Type.Optional(TaskId),
+  accept_kind: Type.Optional(Type.Union([Type.Literal('check'), Type.Literal('confirm')])),
   created_by: Type.String({ minLength: 1 }),
   version: Type.Integer({ minimum: 1 }),
 }, { additionalProperties: false });
@@ -236,13 +253,14 @@ const Gate = Type.Object({
 }, { additionalProperties: false });
 
 /** 给人看的高层阶段；底层阶段（S0…S5、F0…）与任务 DAG 只给程序用 */
-export const PHASES = ['discovery', 'planning', 'execution', 'acceptance'] as const;
+/** 高层阶段（第五轮）：需求 → 原型 → 规划 → 实施；全部完成即"完成" */
+export const PHASES = ['requirements', 'prototype', 'planning', 'execution'] as const;
 export type Phase = (typeof PHASES)[number];
 
 const StageDef = Type.Object({
   id: Type.String({ minLength: 1 }),
   name: Type.String({ minLength: 1 }),
-  /** 可选：该阶段在 /flow status 中归入哪个高层阶段；缺省按阶段 id 推断 */
+  /** 可选：该阶段在 /flow-status 中归入哪个高层阶段；缺省按阶段 id 推断 */
   phase: Type.Optional(Type.Enum(PHASES)),
   gate: Gate,
 }, { additionalProperties: false });
@@ -364,6 +382,8 @@ export const ProposedTask = Type.Object({
   writes: Type.Array(Type.String(), { minItems: 1 }),
   acceptance: Type.Array(Type.String(), { minItems: 1 }),
   verify: Type.Array(Type.String()),
+  shared: Type.Optional(Type.Array(Type.String())),
+  needs_acceptance: Type.Optional(Type.Boolean()),
 }, { additionalProperties: false });
 export type ProposedTask = Static<typeof ProposedTask>;
 
@@ -384,7 +404,7 @@ export const ProposalFile = Type.Object({
 }, { additionalProperties: false });
 export type ProposalFile = Static<typeof ProposalFile>;
 
-// —— 执行中的计划修订：architect 经 flow_revise_plan 提交，用户 /flow approve 后由程序增删任务 ——
+// —— 执行中的计划修订：architect 经 flow_revise_plan 提交，用户 /flow-approve 后由程序增删任务 ——
 
 /** 修订中的依赖：可以指向现有任务（T-xxx）或本次新增的任务（N-xxx），批准时改写为正式编号 */
 export const RevisionDependency = Type.Object({
@@ -408,6 +428,8 @@ export const RevisionTask = Type.Object({
   verify: Type.Array(Type.String()),
   /** 修改已锁定的 API 文档（docs/contracts/）的任务：只能由批准的计划修订创建，只有它能写契约 */
   contract_change: Type.Optional(Type.Boolean()),
+  /** 模块登记的公共文件（第五轮） */
+  shared: Type.Optional(Type.Array(Type.String())),
 }, { additionalProperties: false });
 export type RevisionTask = Static<typeof RevisionTask>;
 
@@ -560,6 +582,32 @@ export const ModelPausesFile = Type.Object({
 }, { additionalProperties: false });
 export type ModelPausesFile = Static<typeof ModelPausesFile>;
 
+// —— 模块独立验收（第五轮，.flow/flows/<流程>/acceptance/<模块任务>.json）：只由程序写入 ——
+
+export const ACCEPTANCE_STATUSES = ['checking', 'fixing', 'confirming', 'accepted', 'needs_human'] as const;
+export const AcceptanceResult = Type.Object({
+  id: Type.String({ pattern: '^A-[0-9]+$' }),
+  passed: Type.Boolean(),
+  evidence: Type.String({ maxLength: 2000 }),
+}, { additionalProperties: false });
+export type AcceptanceResult = Static<typeof AcceptanceResult>;
+export const AcceptanceFile = Type.Object({
+  task: TaskId,
+  status: Type.Enum(ACCEPTANCE_STATUSES),
+  /** 第几轮修复（0：还没修过；最多 2 轮） */
+  round: Type.Integer({ minimum: 0, maximum: 2 }),
+  criteria: Type.Array(Type.Object({ id: Type.String({ pattern: '^A-[0-9]+$' }), text: Type.String() }, { additionalProperties: false })),
+  /** 每个条目最近一次的结论（复查只更新没通过的条目） */
+  results: Type.Array(AcceptanceResult),
+  check_task: Nullable(TaskId),
+  fix_tasks: Type.Array(TaskId),
+  confirm_tasks: Type.Array(TaskId),
+  summary: Type.Optional(Type.String({ maxLength: 2000 })),
+  reason: Type.Optional(Type.String()),
+  version: Type.Integer({ minimum: 1 }),
+}, { additionalProperties: false });
+export type AcceptanceFile = Static<typeof AcceptanceFile>;
+
 // —— 结构化笔记（.flow/flows/<流程>/notes/<任务>.json、.flow/notes/main.json）：agent 用 notes 工具维护，每次请求原样放回上下文 ——
 
 export const NOTE_SECTIONS = ['goal', 'done', 'todo', 'current', 'decisions', 'pitfalls'] as const;
@@ -610,6 +658,7 @@ export const SCHEMAS = {
   'model-pauses': ModelPausesFile,
   'stage-review': StageReviewFile,
   notes: NotesFile,
+  acceptance: AcceptanceFile,
 } as const;
 export type SchemaKind = keyof typeof SCHEMAS;
 

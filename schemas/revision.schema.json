@@ -158,6 +158,12 @@
           },
           "contract_change": {
             "type": "boolean"
+          },
+          "shared": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         },
         "additionalProperties": false

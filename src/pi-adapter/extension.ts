@@ -135,7 +135,7 @@ export function engineFor(root: string): EngineHandle {
   if (s.handle) return s.handle;
   if (!initialized(root)) throw new Error('当前项目尚未初始化 pi-flow（缺少 .flow/），请先执行 /flow init。');
   const holder = acquireEngineLock(root);
-  if (holder) throw new Error(`另一个 pi 会话（pid ${holder.pid}，自 ${holder.since}）正在运行该项目的流程。请在那个会话中操作，或关闭它后再执行 /flow resume。`);
+  if (holder) throw new Error(`另一个 pi 会话（pid ${holder.pid}，自 ${holder.since}）正在运行该项目的流程。请在那个会话中操作，或关闭它后再执行 /flow-resume。`);
   const config = loadConfig(path.join(root, 'workflow.yaml'));
   const store = new StateStore(root, { limits: config.limits });
   const extra = (process.env['PI_FLOW_EXTRA_EXTENSIONS'] ?? '').split(',').filter(Boolean);
@@ -151,7 +151,7 @@ export function engineFor(root: string): EngineHandle {
     onError: (e) => s.notify(`pi-flow 程序步骤出错：${(e as Error).message}`, 'warning'),
   });
   s.handle = { store, engine, config };
-  // 任何命令启动引擎都要检查租约：卡住的子进程（例如挂起的测试命令）到期会被结束，不只在 /flow resume 时
+  // 任何命令启动引擎都要检查租约：卡住的子进程（例如挂起的测试命令）到期会被结束，不只在 /flow-resume 时
   engine.startLeaseWatch();
   // 进程退出时（没有经过 session_shutdown 的情况）也结束子进程，避免留下无人管理的 subagent
   process.once('exit', () => engine.killAll());
@@ -201,7 +201,7 @@ export default function piFlow(pi: ExtensionAPI): void {
       pi.setActiveTools(saved.tools);
       if (saved.model) await pi.setModel(saved.model);
       pi.setThinkingLevel(saved.thinking);
-      return `已退出调度模式，恢复原来的模型${saved.model ? `（${saved.model.provider}/${saved.model.id}）` : ''}与工具。流程状态不变，/flow resume 可重新进入。`;
+      return `已退出调度模式，恢复原来的模型${saved.model ? `（${saved.model.provider}/${saved.model.id}）` : ''}与工具。流程状态不变，/flow-resume 可重新进入。`;
     };
   };
 
@@ -279,7 +279,7 @@ export default function piFlow(pi: ExtensionAPI): void {
       },
     });
     pi.registerTool({
-      name: 'flow_replan', label: 'flow_replan', description: '用户要求修改计划（漏了功能、要改需求、某个任务拆得不对）时调用：把用户的要求交给 architect 起草计划修订（新增任务、调整或取消未开始的任务）。修订需要用户 /flow approve 才生效；你不能自己改任务。',
+      name: 'flow_replan', label: 'flow_replan', description: '用户要求修改计划（漏了功能、要改需求、某个任务拆得不对）时调用：把用户的要求交给 architect 起草计划修订（新增任务、调整或取消未开始的任务）。修订需要用户 /flow-approve 才生效；你不能自己改任务。',
       parameters: ReplanParams,
       async execute(_id, p, _s, _u, ctx) {
         const h = engineFor(ctx.cwd);
@@ -351,7 +351,7 @@ export default function piFlow(pi: ExtensionAPI): void {
     if (!initialized(ctx.cwd)) return;
     try {
       const flow = new StateStore(ctx.cwd).readState().active_flow;
-      if (flow) report(ctx, `pi-flow：检测到进行中的流程 ${flow}。执行 /flow resume 恢复并进入调度模式；/flow status 查看进度。`);
+      if (flow) report(ctx, `pi-flow：检测到进行中的流程 ${flow}。执行 /flow-resume 恢复并进入调度模式；/flow-status 查看进度。`);
     } catch (e) {
       report(ctx, `pi-flow：读取状态失败（${(e as Error).message}），请执行 /flow doctor。`, 'warning');
     }
@@ -420,7 +420,7 @@ export default function piFlow(pi: ExtensionAPI): void {
 
   pi.registerCommand('flow', {
     description: 'pi-flow 管理：status、next、resume、approve、reject、unblock、gate、doctor、init',
-    getArgumentCompletions: (prefix) => ['status', 'next', 'resume', 'answer', 'rules', 'knowledge', 'run', 'sync', 'replan', 'budget', 'models', 'off', 'approve', 'reject', 'unblock', 'gate', 'abort', 'doctor', 'init', 'help']
+    getArgumentCompletions: (prefix) => ['status', 'next', 'resume', 'answer', 'accept', 'add', 'rules', 'knowledge', 'run', 'sync', 'replan', 'budget', 'models', 'off', 'approve', 'reject', 'unblock', 'gate', 'abort', 'doctor', 'init', 'help']
       .filter((x) => x.startsWith(prefix.trim())).map((x) => ({ value: x, label: x })),
     handler: async (args, ctx) => {
       try {
@@ -430,6 +430,27 @@ export default function piFlow(pi: ExtensionAPI): void {
       }
     },
   });
+
+  // 常用操作的独立命令（第五轮）：/flow-approve、/flow-reject、/flow-add、/flow-resume、/flow-status
+  const shortcuts: [string, string, string][] = [
+    ['flow-approve', 'approve', 'pi-flow：批准当前阶段（需求、原型、规划、最终合入主分支）或待批准的计划修订'],
+    ['flow-reject', 'reject', 'pi-flow：打回当前阶段并写明意见，写作者接着原会话修改'],
+    ['flow-add', 'add', 'pi-flow：中途追加需求，送到正在做的模块或交给 architect 安排'],
+    ['flow-resume', 'resume', 'pi-flow：会话丢失或进程被杀后恢复流程，并进入调度模式'],
+    ['flow-status', 'status', 'pi-flow：当前阶段、进度、正在做什么、需要你处理什么（--detail 看完整任务列表）'],
+  ];
+  for (const [name, sub, description] of shortcuts) {
+    pi.registerCommand(name, {
+      description,
+      handler: async (args, ctx) => {
+        try {
+          report(ctx, await runFlowCommand(`${sub} ${args}`.trim(), commandEnv(ctx)));
+        } catch (e) {
+          report(ctx, (e as Error).message, 'error');
+        }
+      },
+    });
+  }
 
   pi.registerCommand('flow-build', {
     description: 'pi-flow：从零建新项目，或 --feature 在已有项目上加功能',

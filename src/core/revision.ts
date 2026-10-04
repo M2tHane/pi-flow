@@ -1,12 +1,12 @@
 // 执行中修订计划（第二轮 G）：用户经主 agent（flow_replan）或 /flow replan 提出 → 程序生成只读的修订任务派给 architect
-// → architect 经 flow_revise_plan 提交修订（新增任务、调整未开始任务的依赖、取消未开始的任务）→ 用户 /flow approve 批准后程序落地。
+// → architect 经 flow_revise_plan 提交修订（新增任务、调整未开始任务的依赖、取消未开始的任务）→ 用户 /flow-approve 批准后程序落地。
 // 已开始或已完成的任务不能被修改或取消。
 import type { FlowConfig } from './config.ts';
 import type { StateStore, TaskInput } from './state-store.ts';
 import type { Dependency, RevisionFile, RevisionTask, TaskFile } from './schemas.ts';
 import { leadingTestErrors, normalizeLeadingTests, validateDag } from './dag.ts';
 import { isSettled } from './state-machine.ts';
-import { DESIGN_STAGES } from '../modes/plan.ts';
+import { DESIGN_STAGES, EXECUTION_STAGE } from '../modes/plan.ts';
 import { removeWorktree } from './worktree.ts';
 import { CONTRACTS_PATH } from './paths.ts';
 
@@ -57,7 +57,7 @@ export async function startReplan(d: RevisionDeps, flowId: string, reason: strin
   const flow = d.store.readFlow(flowId);
   if (!reason.trim()) throw new RevisionError('请写明要修订什么，例如：/flow replan "漏了导出 CSV 的功能"');
   if (flow.mode === 'fix') throw new RevisionError('修复流程不支持修订计划');
-  if (DESIGN_STAGES.has(flow.stage)) throw new RevisionError(`当前是设计阶段 ${flow.stage}：请在闸门审批时用 /flow reject "<意见>" 修订`);
+  if (DESIGN_STAGES.has(flow.stage)) throw new RevisionError(`当前是设计阶段 ${flow.stage}：请在闸门审批时用 /flow-reject "<意见>" 修订`);
   if (flow.stage_status === 'awaiting_gate') throw new RevisionError('阶段闸门检查中，请稍后再试');
   if (flow.stage_status === 'awaiting_human') {
     // 只有用户能把等待审批的阶段重新打开
@@ -67,12 +67,12 @@ export async function startReplan(d: RevisionDeps, flowId: string, reason: strin
     throw new RevisionError(`流程 ${flowId} 已结束或中止`);
   }
   const open = openReplan(d.store, flowId);
-  if (open) throw new RevisionError(open.revision ? '已有一份计划修订等待批准：先 /flow approve 或 /flow reject "<意见>"' : `修订任务 ${open.task!.id} 尚未完成`);
+  if (open) throw new RevisionError(open.revision ? '已有一份计划修订等待批准：先 /flow-approve 或 /flow-reject "<意见>"' : `修订任务 ${open.task!.id} 尚未完成`);
   const tasks = d.store.listTasks(flowId);
   const id = `T-${String(Math.max(0, ...tasks.map((t) => Number(t.id.slice(2)))) + 1).padStart(3, '0')}`;
   await d.store.addTasks(flowId, [{
     id, stage: flow.stage, kind: 'analysis', title: `修订计划：${reason}`.slice(0, 200), role: REPLAN_ROLE, scopes: [],
-    depends_on: [], inputs: ['docs/PRD.md', 'docs/ARCHITECTURE.md'], writes: [], verify: [], replan: reason.trim(),
+    depends_on: [], inputs: ['docs/modules.md', 'docs/interfaces/'], writes: [], verify: [], replan: reason.trim(),
     acceptance: ['用 flow_revise_plan 提交修订：需要新增的任务、需要调整依赖的未开始任务、需要取消的未开始任务', '不修改已开始或已完成的任务'],
   }], actor);
   await d.store.appendHandoff(flowId, id, `用户提出的修订：\n${reason.trim()}\n\n${planSnapshot(tasks)}`, actor);
@@ -205,9 +205,10 @@ export async function approveRevision(d: RevisionDeps, flowId: string): Promise<
   const flow = d.store.readFlow(flowId);
   const tasks = d.store.listTasks(flowId);
   const c = checkRevision(d.config, flow.stages, flow.stage, tasks, { add: rev.add, rewire: rev.rewire, cancel: rev.cancel });
-  if (c.errors.length) throw new RevisionError(`修订已不再适用（批准前任务状态有变化）：\n${c.errors.map((e) => `- ${e}`).join('\n')}\n请 /flow reject "<意见>" 后让架构师重新提交。`);
+  if (c.errors.length) throw new RevisionError(`修订已不再适用（批准前任务状态有变化）：\n${c.errors.map((e) => `- ${e}`).join('\n')}\n请 /flow-reject "<意见>" 后让架构师重新提交。`);
   const mapping = revisionMapping(tasks, c.revision.add);
-  const add: TaskInput[] = c.revision.add.map((t) => ({ ...t, id: mapping[t.id]!, depends_on: mapDeps(t.depends_on, mapping) }));
+  // 实施阶段新增的实现任务是模块：合并后要经独立验收（第五轮）
+  const add: TaskInput[] = c.revision.add.map((t) => ({ ...t, id: mapping[t.id]!, depends_on: mapDeps(t.depends_on, mapping), ...(t.kind === 'impl' && t.stage === EXECUTION_STAGE ? { needs_acceptance: true } : {}) }));
   const rewire = c.revision.rewire.map((r) => ({ task: r.task, depends_on: mapDeps(r.depends_on, mapping) }));
   await d.store.applyRevision(flowId, { add, rewire, cancel: c.revision.cancel, mapping });
   // 被取消的阻塞任务留下的 worktree 与分支一并回收
@@ -223,7 +224,7 @@ export async function approveRevision(d: RevisionDeps, flowId: string): Promise<
 
 /** 用户打回修订：记录意见并生成新的修订任务，由架构师据此重做 */
 export async function rejectRevision(d: RevisionDeps, flowId: string, feedback: string): Promise<string> {
-  if (!feedback.trim()) throw new RevisionError('打回必须写明意见：/flow reject "<意见>"');
+  if (!feedback.trim()) throw new RevisionError('打回必须写明意见：/flow-reject "<意见>"');
   const rev = await d.store.rejectRevision(flowId, feedback);
   const id = await startReplan(d, flowId, `${rev.reason}\n\n上一版修订被用户打回，意见：${feedback.trim()}\n上一版：${rev.summary}`, 'human');
   return `已打回计划修订，生成新的修订任务 ${id}。`;

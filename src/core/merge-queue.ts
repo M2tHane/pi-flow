@@ -320,7 +320,8 @@ export class MergeQueue {
     if (!t.verify.length) return { full: false, plan };
     const flow = this.store.readFlow(flowId);
     if (!perTaskReview(this.config, flow.mode, t, this.store.listTasks(flowId))) {
-      for (const name of ['typecheck', 'lint', 'test']) if (cmds[name]?.trim()) plan.push({ name, shell: cmds[name] });
+      // merge_check（第五轮，可选）：和全量测试一起跑的额外检查，例如迁移只能有一个 head
+      for (const name of ['typecheck', 'lint', 'test', 'merge_check']) if (cmds[name]?.trim()) plan.push({ name, shell: cmds[name] });
       return { full: true, plan };
     }
     if (cmds['typecheck'] && t.verify.includes('typecheck')) plan.push({ name: 'typecheck', shell: cmds['typecheck'] });
@@ -368,7 +369,7 @@ export class MergeQueue {
   private async conflict(flowId: string, t: TaskFile, conflicts: string[], squashed: string, integHead: string): Promise<MergeResult> {
     const contracts = conflicts.filter((f) => matchesAny(f, [CONTRACTS_PATH]) || isProtected(f, { contractsLocked: true }));
     // 适配过的已有测试（testing.adjust_tests）也算任务自己的文件，冲突交给 merge-fix
-    const outside = conflicts.filter((f) => !matchesAny(f, t.writes) && !(t.test_adjustments ?? []).includes(f));
+    const outside = conflicts.filter((f) => !matchesAny(f, [...t.writes, ...(t.shared ?? [])]) && !(t.test_adjustments ?? []).includes(f));
     if (!conflicts.length || contracts.length || outside.length) {
       const why = contracts.length ? `冲突涉及契约或受保护文件：${contracts.join('、')}`
         : outside.length ? `冲突文件不在任务 writes 内：${outside.join('、')}` : 'rebase 失败但没有冲突文件';

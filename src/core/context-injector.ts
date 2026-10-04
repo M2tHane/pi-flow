@@ -23,8 +23,8 @@ export function nextStep(store: StateStore, maxParallel: number, activeRunCount 
   const count = (pred: (t: TaskFile) => boolean) => stageTasks.filter(pred).length;
   const summary = `流程 ${flow.id}「${flow.title}」阶段 ${flow.stage}（${flow.stage_status}）；本阶段任务 ${stageTasks.length} 个：完成 ${count((t) => t.status === 'done')}，进行中 ${count((t) => ['in_progress', 'review', 'verifying', 'queued_merge', 'merging'].includes(t.status))}，可派发 ${count((t) => t.status === 'ready' || t.status === 'pending')}，阻塞 ${count((t) => t.status === 'blocked')}。`;
 
-  if (store.readRevision(flowId)?.status === 'proposed') return { summary, next: '计划修订等待用户批准。请向用户概述修订内容（flow_status 中可见），请其执行 /flow approve 或 /flow reject "<意见>"；你只能等待。', tool: 'none' };
-  if (flow.stage_status === 'awaiting_human') return { summary, next: `阶段 ${flow.stage} 的闸门等待用户批准。请向用户说明结果，请其执行 /flow approve；你只能等待。`, tool: 'none' };
+  if (store.readRevision(flowId)?.status === 'proposed') return { summary, next: '计划修订等待用户批准。请向用户概述修订内容（flow_status 中可见），请其执行 /flow-approve 或 /flow-reject "<意见>"；你只能等待。', tool: 'none' };
+  if (flow.stage_status === 'awaiting_human') return { summary, next: `阶段 ${flow.stage} 的闸门等待用户批准。请向用户说明结果，请其执行 /flow-approve；你只能等待。`, tool: 'none' };
   if (flow.stage_status === 'awaiting_gate') return { summary, next: '程序正在执行阶段闸门检查，调用 flow_wait 等待结果。', tool: 'flow_wait' };
   if (flow.stage_status !== 'active') return { summary, next: '流程已结束或中止。向用户汇报即可。', tool: 'none' };
 

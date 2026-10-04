@@ -130,10 +130,10 @@
                   },
                   "phase": {
                     "enum": [
-                      "discovery",
+                      "requirements",
+                      "prototype",
                       "planning",
-                      "execution",
-                      "acceptance"
+                      "execution"
                     ]
                   },
                   "gate": {
@@ -188,10 +188,10 @@
                   },
                   "phase": {
                     "enum": [
-                      "discovery",
+                      "requirements",
+                      "prototype",
                       "planning",
-                      "execution",
-                      "acceptance"
+                      "execution"
                     ]
                   },
                   "gate": {

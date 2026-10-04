@@ -5,16 +5,14 @@ description: 写针对本项目的规则草案（docs/rules-draft/）：覆盖�
 
 # 写项目规则草案
 
-规则会被注入每个实施与审查任务的提示。写得具体，模型才会照做；写得含糊或与设计矛盾，任务就会卡住。
+规则会被注入每个实现与验收任务的提示。写得具体，模型才会照做；写得含糊或与设计矛盾，任务就会卡住。
 你不能改 `rules/`，只能写草案到 `docs/rules-draft/`，由用户在批准本阶段时决定是否应用。
 
 ## 文件
-- 与 `rules/` 中同名的文件表示**替换**（例如 `backend.md`），新名字表示**新增**（例如 `prisma.md`）。
-- 替换时先读现有的同名规则：保留仍适用的条目，改掉与本项目选型矛盾的条目，再补充具体约束。
-- 新增文件要让用户知道它对哪些任务生效：只有被 workflow.yaml 中某个 scope 引用的规则文件才会注入。
-  需要新的 scope 映射时，在 ADR 中说明，并在 handoff 中提醒用户。优先把内容放进已有的同名文件。
-- 加功能（F1）时：只改与本功能相关的条目，不整套重写；没有需要改的就不写草案。
-- 工具链与 workflow.yaml 的命令不符时，写 `docs/rules-draft/commands.yaml`：`commands: { test: "npm test" }`，只列需要改的命令。
+- 项目专属规则写在 `docs/rules-draft/project.md`：批准规划阶段时程序写入 `rules/project.md`，所有实现者与验收者都会看到。
+- 加功能时：只改与本功能相关的条目，不整套重写；没有需要改的就不写。
+- 工具链与 workflow.yaml 的命令不符时，写 `docs/rules-draft/commands.yaml`：`commands: { test: "npm test" }`，只列需要改的命令；
+  合并时程序跑 typecheck、lint、test（有 merge_check 时一起跑），命令要能在干净的工作区里直接运行。
 
 ## 覆盖清单（按本项目实际选型取舍，不适用的不写）
 1. 技术栈与版本：语言、运行时、框架、数据库、测试框架、包管理器。
@@ -26,7 +24,7 @@ description: 写针对本项目的规则草案（docs/rules-draft/）：覆盖�
 7. 接口：请求与响应的统一格式、分页格式、状态码含义。
 8. 测试：测试放在哪、用什么断言库、怎么准备数据、哪些可以 mock。
 9. 明确禁止：本项目特有的"绝对不能做"的事，每条一句话。
-以上与 ARCHITECTURE.md、契约必须一致；`rules/` 里写"以 ARCHITECTURE.md 为准"的条目（错误类型、主键、外键、响应格式），必须在草案里写成具体规定。
+以上与 docs/modules.md 和 docs/interfaces/ 必须一致；不超过 120 行。
 
 ## 写法
 - 每条一句话、可检查：写"服务层抛出 `NotFoundError`（src/server/shared/errors.ts）"，不写"注意错误处理"。

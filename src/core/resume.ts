@@ -149,7 +149,7 @@ export function resumeBrief(store: StateStore, flowId: string, actions: string[]
     '# pi-flow 恢复摘要',
     statusText(store, null, flowId),
     actions.length ? `## 本次恢复操作\n${actions.map((a) => `- ${a}`).join('\n')}` : '## 本次恢复操作\n- 无需处理',
-    pending.length ? `## 需要用户决定\n${pending.map((q) => `- ${q.task}：租约已过期，worktree 有 ${q.changes.length} 处未提交改动。继续（保留改动重新派发）或丢弃？执行 /flow resume 并选择。`).join('\n')}` : '',
+    pending.length ? `## 需要用户决定\n${pending.map((q) => `- ${q.task}：租约已过期，worktree 有 ${q.changes.length} 处未提交改动。继续（保留改动重新派发）或丢弃？执行 /flow-resume 并选择。`).join('\n')}` : '',
     handoffs.length ? `## 进行中任务的 handoff（最近部分）\n${handoffs.join('\n\n')}` : '',
     `## 最近事件\n${events.join('\n')}`,
   ].filter(Boolean).join('\n\n');

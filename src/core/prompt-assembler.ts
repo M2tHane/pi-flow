@@ -72,7 +72,9 @@ export interface AssembleInput {
   flowId: string;
   handoff: string;
   /** stage：阶段末审查与确认（只读，提交问题清单或逐条确认） */
-  mode: 'impl' | 'review' | 'stage';
+  mode: 'impl' | 'review' | 'stage' | 'accept';
+  /** 独立验收（第五轮）：check 逐条验收全部条目；confirm 只复查上次没通过的条目 */
+  accept?: { kind: 'check' | 'confirm'; items: { id: string; text: string; last?: string }[] };
   stageReview?: AssembleStageReview;
   commands: Record<string, string>;
   /** 审查模式：base_sha..HEAD 的 diff --stat */
@@ -204,7 +206,7 @@ export function assemblePrompt(i: AssembleInput): AssembledPrompt {
     `类型：${t.kind}　阶段：${t.stage}　角色：${t.role}`,
     `## 验收标准\n${list(t.acceptance)}`,
     `## 输入文件\n${list(t.inputs)}`,
-    `## 可写范围（writes）\n${list(t.conflict_files ?? t.writes)}`,
+    `## 可写范围（writes）\n${list([...(t.conflict_files ?? t.writes), ...(t.conflict_files ? [] : (t.shared ?? []).map((x) => `${x}（登记的公共文件：可以改，其他模块也可能改，只做必要的追加）`))])}`,
     `## verify 命令\n${list(verify)}`,
   ];
   if (i.leadingTest) {
@@ -250,6 +252,14 @@ export function assemblePrompt(i: AssembleInput): AssembledPrompt {
     parts.push(`## ${what}（已附 diff，不必再运行 git diff）\n${i.inlineDiff.trim() ? `\`\`\`diff\n${i.inlineDiff.trim()}\n\`\`\`` : '（没有改动）'}`);
   }
   if (i.mode === 'stage' && i.stageReview) parts.push(...stageReviewSections(i.stageReview));
+  if (i.mode === 'accept' && i.accept) {
+    parts.push(`## ${i.accept.kind === 'check' ? '逐条验收' : '只复查这些条目'}\n${i.accept.items.map((x) => `- ${x.id} ${x.text}${x.last ? `\n  上次结论：${x.last}` : ''}`).join('\n')}`);
+    parts.push(`## 验收的要求\n1. 在当前工作区（集成分支最新代码）上构建并实际运行：启动服务、调用接口、打开页面、跑相关测试。临时文件、数据库、日志放在临时目录${i.scratchDir ? ` \`${i.scratchDir}\`` : ''}，不要改仓库里的文件。\n2. 每个条目给出 passed（true/false）与证据：运行的命令、请求与响应、看到的结果。没法验证的条目判为未通过并写明原因。\n3. 只看这些条目是否做到，不提风格偏好和重构建议。`);
+    parts.push(i.accept.kind === 'check'
+      ? '开始：构建并运行，逐条验收，最后调用 flow_accept 一次提交全部条目的结论。'
+      : '开始：只复查上面的条目，最后调用 flow_accept_confirm 提交结论；只能回答这些编号，不能提出新问题。');
+    return { system, user: parts.join('\n\n') };
+  }
   parts.push(i.mode === 'stage'
     ? (i.stageReview?.kind === 'confirm'
       ? '开始：逐条核对上面的问题，最后调用 flow_review_confirm：每个编号回答 resolved（true/false），未解决的在 note 里写原因。只能回答这些编号，不能提出新问题。'

@@ -1,52 +1,33 @@
 version: 1
 project: my-project
 main_branch: main
-commands:                       # verify 与闸门只能引用这里定义的命令名
+commands:                       # 合并验证与闸门只能引用这里定义的命令名；由 architect 在规划阶段按项目的技术栈改写（docs/rules-draft/commands.yaml）
   install:   "pnpm install"
   typecheck: "pnpm typecheck"
   lint:      "pnpm lint"
   test:      "pnpm test"
-  test_affected: "pnpm test --related {files}"
-  e2e:       "pnpm e2e"
+  # merge_check: "uv run alembic heads | test $(wc -l) -eq 1"   # 可选：合并时和全量测试一起跑的额外检查，例如迁移只能有一个 head
 limits:
-  max_parallel: 3               # 同时进行的实施任务数（审查另计，见 review.max_parallel）；本地模型服务要能承受这么多并发
+  max_parallel: 3               # 同时进行的模块数；本地模型服务要能承受这么多并发
   max_attempts: 3
   lease_minutes: 45
-  max_violations_per_run: 5     # 每次运行被拦下的操作达到此数即终止（弱模型适当调大）
-  max_task_files: 12
-  fix_max_files: 5              # 超过则建议升级为 feature
+  max_violations_per_run: 5     # 每次运行被拦下的操作达到此数即终止
+  max_task_files: 40
+  fix_max_files: 5              # 修 bug 改动超过这么多文件时建议改用 --feature
   session_retention_days: 14    # 子进程会话留档保留天数，/flow doctor --fix 清理
   bash_timeout_s: 300           # 子进程每条 bash 命令最多运行的秒数（挂起的测试会被结束，模型能看到超时）
-  auto_dispatch: true           # ready 任务由程序自动派发，主 agent 只负责沟通，不用每个任务唤醒一次
-  continue_session: true        # 返工时接着上一次的对话继续（同一角色、同一模型），不从头读任务与代码
-  merge_batch: 3                # 批量合并：合并队列里最多 3 个任务一起 rebase、只跑一次全量测试，失败再逐个合并；1 关闭
-models:                         # 档位到具体模型的映射，由用户填写
+  auto_dispatch: true           # ready 任务由程序自动派发，主 agent 只负责沟通
+  continue_session: true        # 返工、验收修复、恢复时接着原来的会话继续
+  merge_batch: 3                # 合并队列里最多 3 个模块一起 rebase、只跑一次全量测试，失败再逐个合并；1 关闭
+context:
+  compact_at: 0.7               # 上下文占用到 70% 时压缩；压缩后靠 notes（结构化笔记）与 history（历史检索）延续
+models:                         # 档位到具体模型的映射；也可以用 /flow-config 按角色设置
   strong: "<provider/model>"
   medium: "<provider/model>"
   cheap:  "<provider/model>"
-review:                         # 审查（可选，以下为默认值）
-  per_task: false               # 逐任务审查：默认关闭，提交后直接合并，合并时跑全量 typecheck、lint、test；true 时每个任务按下面的风险规则审查
-  stage_end: true               # 阶段末审查：实施阶段的任务全部合入后，强模型审查一次本阶段全部代码 → 按模块并行修复 → 确认一次 → 全量测试（失败自动修两轮）
-  test_stages: skip             # 只含测试任务的阶段（联调、端到端）：skip 不做阶段审查（闸门照样跑全量测试），light 用审查者自己的模型，strong 用强模型
-  max_parallel: 2               # 同时进行的审查数；默认等于 limits.max_parallel
-  verify_first: true            # 派审查前先跑 verify：失败直接退回实施，不花审查的钱；通过后审查后的 verify 沿用结果
-  low_risk:                     # 同时满足才算低风险：只改这些路径、文件数与行数不超限、不涉及契约与 shared
-    mode: cheap                 # cheap：用 model 指定的模型审查；skip：只做程序检查，不派审查
-    model: cheap                # 档位名或 provider/model；取不到时用 reviewer 原来的模型
-    max_files: 3
-    max_lines: 100
-    paths: ["docs/**", "**/*.md", "tests/**", "**/*.test.*", "**/*.spec.*"]
-  high_risk:                    # 高风险任务用强模型审查：合并冲突、契约与 shared、下列路径、改动超过 max_lines
-    model: strong               # 档位名或 provider/model；/flow-config escalate reviewer <模型> 优先
-    max_lines: 400
-    paths: []
-  # max_rounds: 3               # 审查轮次上限（可选）：到达时只剩建议类问题就通过，建议记入 handoff
-testing:
-  leading_tests: false          # 默认实施者为自己的功能边写边测，合并后程序跑全量测试；true 时允许"先行验收测试 → 实现"的拆法
-  adjust_tests: true            # 实施任务可以修改别的角色已有的测试来适配按契约变化的接口（只改不增删，审查时核对）；false 时只能改 writes 内的文件
-escalation:                     # 同一任务失败 after_failures 次后，下一次实施换成升级模型
-  critical_fanout: 3            # 被至少 3 个任务硬依赖的实施任务（底座）第一次就用升级模型；0 关闭
-  after_failures: 2             # 升级模型：/flow-config escalate > roles.<角色>.escalate_model > 上一档（cheap→medium→strong）
+escalation:                     # 同一任务失败 after_failures 次后，下一次实施换成升级模型（/flow-config escalate 设置）
+  after_failures: 2
+  critical_fanout: 0
 # budget:                       # 每个流程的预算（可选；也可以用 /flow budget 为单个流程设置）
 #   tokens: 5000000             # 输入 + 输出，不含缓存
 #   cost: 20                    # 金额（Pi 报告的 cost）
@@ -54,28 +35,23 @@ escalation:                     # 同一任务失败 after_failures 次后，下
 modes:
   build:
     stages:
-      - { id: S0, name: requirements,   phase: discovery,  gate: { human: true } }
-      - { id: S1, name: architecture,   phase: planning,   gate: { human: true, auto: [typecheck] } }
-      - { id: S2, name: infrastructure, phase: execution,  gate: { auto: [install, typecheck, lint] } }
-      - { id: S3, name: slices,         phase: execution,  gate: { all_tasks_done: true, auto: [test] } }
-      - { id: S4, name: integration,    phase: acceptance, gate: { auto: [e2e] } }
-      - { id: S5, name: release,        phase: acceptance, gate: { human: true } }
+      - { id: D0, name: requirements, phase: requirements, gate: { human: true } }
+      - { id: D1, name: prototype,    phase: prototype,    gate: { human: true } }
+      - { id: D2, name: planning,     phase: planning,     gate: { human: true } }
+      - { id: E,  name: modules,      phase: execution,    gate: { all_tasks_done: true, auto: [test], human: true } }
   feature:
     stages:
-      - { id: F0, name: feature-spec,   phase: discovery,  gate: { human: true } }
-      - { id: F1, name: impact-and-dag, phase: planning,   gate: { human: true, auto: [typecheck] } }
-      - { id: S3, name: slices,         phase: execution,  gate: { all_tasks_done: true, auto: [test] } }
-      - { id: S4, name: regression,     phase: acceptance, gate: { auto: [test, e2e], human: true } }
+      - { id: D0, name: requirements, phase: requirements, gate: { human: true } }
+      - { id: D1, name: prototype,    phase: prototype,    gate: { human: true } }
+      - { id: D2, name: planning,     phase: planning,     gate: { human: true } }
+      - { id: E,  name: modules,      phase: execution,    gate: { all_tasks_done: true, auto: [test], human: true } }
 scopes:
-  backend:    { rules: [rules/backend.md],      writes: ["src/server/**", "tests/server/**"] }
-  database:   { rules: [rules/database.md],     writes: ["migrations/**", "src/db/**", "tests/db/**"] }
-  frontend:   { rules: [rules/frontend.md],     writes: ["src/web/**", "tests/web/**"] }
-  ui:         { rules: [rules/ui.md],           writes: ["design/**", "src/web/components/base/**"] }
-  shared:     { rules: [rules/shared-types.md], writes: ["src/shared/**"] }
-  acceptance: { rules: [rules/testing.md],      writes: ["tests/acceptance/**", "tests/e2e/**"] }
-  docs:       { rules: [rules/docs.md],         writes: ["docs/**"] }
-  research:   { writes: ["docs/research/**"] }
-  infra:      { writes: ["package.json", "pnpm-lock.yaml", "tsconfig*.json", ".github/**"] }
+  requirements: { writes: ["docs/requirements.md", "docs/requirements/**"] }
+  prototype:    { writes: ["prototype/**"] }
+  planning:     { writes: ["docs/modules.md", "docs/interfaces/**", "docs/adr/**", "docs/rules-draft/**", "AGENTS.md"] }
+  code:         { rules: [rules/global.md, rules/project.md], writes: ["**"] }   # 模块的实际可写范围由规划阶段为每个模块指定；受保护路径（.flow、.git、workflow.yaml、rules、.pi）一律不可写
+  research:     { writes: ["docs/research/**"] }
+  acceptance:   { rules: [rules/global.md, rules/project.md], writes: [] }
 tool_groups:                    # 已核实：pi-serena 0.9.20、pi-codegraph 0.1.10、pi-web-access 0.35.0
   serena_read: [serena_get_symbols_overview, serena_find_symbol, serena_find_referencing_symbols, serena_search_for_pattern,
                 serena_find_declaration, serena_find_implementations, serena_get_diagnostics_for_file]
@@ -85,15 +61,13 @@ tool_groups:                    # 已核实：pi-serena 0.9.20、pi-codegraph 0.
   codegraph:   [codegraph_search, codegraph_callers, codegraph_callees, codegraph_impact, codegraph_explore,
                 codegraph_node, codegraph_status, codegraph_files]
   web:         [web_search, fetch_content, get_search_content, source_check]
-roles:
-  orchestrator:      { model: medium, tools: [read, flow_status, flow_dispatch, flow_wait], read_paths: ["docs/**", ".flow/**"], writes: [] }
-  architect:         { model: strong, scopes: [docs, shared], tools: [codemode, read, write, edit, "@serena_read", "@codegraph", flow_propose_tasks, flow_note, flow_submit] }
-  researcher:        { model: cheap,  scopes: [research], tools: [read, write, "@web", flow_note, flow_submit] }
-  db-engineer:       { model: medium, scopes: [database], tools: [read, write, edit, bash, "@serena_read", "@serena_edit", flow_claim, flow_note, flow_submit] }
-  backend-engineer:  { model: medium, scopes: [backend],  tools: [read, write, edit, bash, "@serena_read", "@serena_edit", flow_claim, flow_note, flow_submit] }
-  frontend-engineer: { model: medium, scopes: [frontend], tools: [read, write, edit, bash, "@serena_read", "@serena_edit", flow_claim, flow_note, flow_submit] }
-  ui-designer:       { model: medium, scopes: [ui],       tools: [read, write, edit, flow_claim, flow_note, flow_submit] }
-  infra-engineer:    { model: medium, scopes: [infra],    tools: [read, write, edit, bash, flow_claim, flow_note, flow_submit] }
-  test-engineer:     { model: medium, scopes: [acceptance], tools: [read, write, edit, bash, "@serena_read", "@codegraph", flow_claim, flow_note, flow_submit] }
-  reviewer:          { model: medium, scopes: [], tools: [codemode, read, bash_readonly, "@serena_read", "@codegraph", flow_approve], writes: [] }
-  scout:             { model: cheap,  scopes: [], tools: [codemode, read, bash_readonly, "@serena_read", "@codegraph", flow_note, flow_submit], writes: [] }
+roles:                          # notes、history、flow_block、flow_learn 所有角色隐式拥有
+  orchestrator:  { model: strong, tools: [read, flow_status, flow_dispatch, flow_wait], read_paths: ["docs/**", "prototype/**", ".flow/**"], writes: [] }
+  user-advocate: { model: strong, scopes: [], tools: [read, "@codegraph", flow_note, flow_submit], writes: [] }
+  dev-advocate:  { model: strong, scopes: [], tools: [read, bash_readonly, "@serena_read", "@codegraph", flow_note, flow_submit], writes: [] }
+  analyst:       { model: strong, scopes: [requirements], tools: [read, write, edit, "@codegraph", flow_note, flow_submit] }
+  designer:      { model: strong, scopes: [prototype], tools: [read, write, edit, flow_note, flow_submit] }
+  architect:     { model: strong, scopes: [planning], tools: [codemode, read, write, edit, bash_readonly, "@serena_read", "@codegraph", flow_propose_modules, flow_note, flow_submit] }
+  implementer:   { model: strong, scopes: [code], tools: [read, write, edit, bash, "@serena_read", "@serena_edit", "@codegraph", flow_sync, flow_note, flow_submit] }
+  acceptor:      { model: strong, scopes: [acceptance], tools: [read, bash, "@serena_read", "@codegraph", flow_accept, flow_accept_confirm] }
+  researcher:    { model: medium, scopes: [research], tools: [read, write, "@web", flow_note, flow_submit] }

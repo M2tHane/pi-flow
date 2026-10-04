@@ -10,6 +10,9 @@ import { formatPreflight } from '../core/preflight.ts';
 import { activeFlowId, statusText } from '../tools/orchestrator-tools.ts';
 import { splitArgs } from './args.ts';
 import { approveStage, rejectStage, unblockTask, startFlow } from '../core/stages.ts';
+import { PROTOTYPE_STAGE } from '../modes/plan.ts';
+import { addRequirement } from '../core/additions.ts';
+import { acceptManually } from '../core/acceptance.ts';
 import { continueFix } from '../modes/fix.ts';
 import { readFileSync } from 'node:fs';
 import type { BriefFile } from '../core/schemas.ts';
@@ -61,15 +64,18 @@ export interface CommandEnv {
 
 export const FLOW_USAGE = [
   '用法：',
-  '  /flow status            当前处于哪个阶段、进度、正在做什么、需要你处理什么',
-  '  /flow status --detail   完整的任务列表与内部状态',
+  '  /flow-status            当前处于哪个阶段（需求 → 原型 → 规划 → 实施 → 完成）、进度、正在做什么、需要你处理什么',
+  '  /flow-status --detail   完整的任务列表与内部状态',
   '  /flow next              由程序选择 ready 任务并派发',
-  '  /flow resume            会话丢失后恢复，并进入调度模式',
+  '  /flow-resume            会话丢失后恢复，并进入调度模式',
   '  /flow off               退出调度模式，恢复原来的模型与工具（流程状态不变）',
   '  /flow doctor [--fix]    状态完整性与前置条件检查；--fix 清理残留 worktree 与提示文件',
   '  /flow init              初始化项目骨架（可重复执行，不覆盖）',
-  '  /flow approve [--yes]   批准当前阶段闸门（仅用户）；最后一个阶段会把集成分支合入主分支',
-  '  /flow reject "<意见>"   打回设计阶段（S0/S1/F0/F1），生成修订任务',
+  '  /flow-approve [--yes]   批准当前阶段（仅用户）；实施阶段批准时把集成分支合入主分支',
+  '                          需求阶段可加 --prototype / --no-prototype 决定要不要原型；规划阶段批准时应用项目专属规则（--rules none 不应用）',
+  '  /flow-reject "<意见>"   打回需求、原型或规划阶段，写作者接着原会话修改',
+  '  /flow-add "<需求>" [--task <任务>]   中途追加需求：送到正在做的模块；有多个模块时交给 architect 安排',
+  '  /flow accept <任务>     验收"需要你处理"时人工放行这个模块',
   '  /flow answer [<任务>]   回答阻塞任务提出的问题（弹出输入框），回答后任务继续',
   '  /flow unblock <任务> ["<回答>"] [--attempts N]   解除阻塞（无界面时用它回答）',
   '  /flow gate              闸门失败并修复后，重跑当前阶段闸门',
@@ -80,7 +86,7 @@ export const FLOW_USAGE = [
   '  /flow sync              把主分支同步进集成分支（每个阶段开始时自动执行）',
   '  /flow run [<run_id>]    某次子进程运行的工具调用摘要与最后的回复（会话留档）；不给 id 时列出最近的运行',
   '  /flow knowledge [...]   项目知识库：列出、搜索、确认候选、废弃、提升为规则草案（/flow knowledge help）',
-  '  /flow status --cost     成本统计：按流程、阶段、角色、模型、任务汇总 token 与耗时，返工最多的任务',
+  '  /flow-status --cost     成本统计：按流程、阶段、角色、模型、任务汇总 token 与耗时，返工最多的任务',
   '  /flow abort [--yes]     中止当前修复或流程（集成分支保留，主分支不受影响）',
 ].join('\n');
 
@@ -103,7 +109,7 @@ function fullStatus(store: Store, engine: Engine | null): string {
     parts.push(statusText(store, engine, fix.id));
     if (fix.stage_status === 'awaiting_human') {
       const why = [...store.readEvents()].reverse().find((e) => e.flow === fix.id && e.type === 'gate_result')?.reason ?? '';
-      parts.push(`修复 ${fix.id} 等待你决定：${why}\n继续按修复处理 → /flow approve；改用功能流程 → /flow abort 后 /flow-build --feature "<描述>"`);
+      parts.push(`修复 ${fix.id} 等待你决定：${why}\n继续按修复处理 → /flow-approve；改用功能流程 → /flow abort 后 /flow-build --feature "<描述>"`);
     }
   }
   if (!parts.length) parts.push('当前没有进行中的流程。开始：/flow-build "<描述>"、/flow-build --feature "<描述>" 或 /flow-fix "<描述>"。');
@@ -214,13 +220,19 @@ export async function runFlowCommand(args: string, env: CommandEnv): Promise<str
       const flow = h.store.readFlow(flowId);
       if (flow.stage === flow.stages.at(-1) && flow.stage_status === 'awaiting_human' && !argv.includes('--yes')) {
         const msg = `批准阶段 ${flow.stage} 将把 ${flow.integration_branch} 合入 ${h.config.raw.main_branch}，流程随之结束。`;
-        if (!env.ui) return `${msg}\n确认请执行 /flow approve --yes`;
+        if (!env.ui) return `${msg}\n确认请执行 /flow-approve --yes`;
         const ok = await env.ui.select(`${msg}确认？`, ['确认合入并结束流程', '取消']);
         if (ok !== '确认合入并结束流程') return '已取消。';
       }
       const stageBefore = h.store.readFlow(flowId).stage;
+      // 需求阶段批准时可以指定要不要原型阶段（默认按汇总者的判断）
+      if (stageBefore === 'D0' && (argv.includes('--prototype') || argv.includes('--no-prototype'))) {
+        const skip = (h.store.readFlow(flowId).skip_stages ?? []).filter((x) => x !== PROTOTYPE_STAGE);
+        await h.store.setSkipStages(flowId, argv.includes('--no-prototype') ? [...skip, PROTOTYPE_STAGE] : skip, 'human', argv.includes('--no-prototype') ? '用户选择跳过原型阶段' : '用户选择保留原型阶段');
+      }
       let text = await approveStage({ root: env.root, store: h.store, config: h.config }, flowId, option(argv, '--note'));
-      if (stageBefore === 'S1' || stageBefore === 'F1') text += `\n${await offerDrafts(env, h, flowId, option(argv, '--rules'))}`;
+      // 规划阶段批准时应用项目专属规则与命令（没有界面时默认全部应用）
+      if (stageBefore === 'D2') text += `\n${await offerDrafts(env, h, flowId, option(argv, '--rules') ?? (env.ui ? undefined : 'all'))}`;
       if (h.store.readState().active_flow) {
         await h.engine.pump(flowId);
         const d = await h.engine.next(flowId);
@@ -315,6 +327,26 @@ export async function runFlowCommand(args: string, env: CommandEnv): Promise<str
       if (argv[1]) return '用法：/flow models（查看）、/flow models resume <模型>|all';
       return formatPauses(env.store());
     }
+    case 'add': {
+      const h = env.engine();
+      const flowId = currentFlowId(h.store);
+      const task = option(argv, '--task');
+      const text = positional(argv).slice(1).join(' ');
+      const r = await addRequirement({ root: env.root, store: h.store, config: h.config, steer: (f, t, m) => h.engine.steer(f, t, m) }, flowId, text, task);
+      await h.engine.pump(flowId);
+      if (env.waitForIdle) await h.engine.idle();
+      return r;
+    }
+    case 'accept': {
+      const h = env.engine();
+      const flowId = currentFlowId(h.store);
+      const [, taskId] = positional(argv);
+      if (!taskId) throw new Error('用法：/flow accept <任务> [--note "<说明>"]（只能放行验收"需要你处理"的模块）');
+      const r = await acceptManually(h.store, flowId, taskId, option(argv, '--note') ?? '');
+      await h.engine.pump(flowId);
+      if (env.waitForIdle) await h.engine.idle();
+      return r;
+    }
     case 'replan': {
       const h = env.engine();
       const flowId = activeFlowId(h.store);
@@ -323,7 +355,7 @@ export async function runFlowCommand(args: string, env: CommandEnv): Promise<str
         await h.engine.pump(flowId);
         await h.engine.next(flowId);
         if (env.waitForIdle) await h.engine.idle();
-        return `已生成修订任务 ${id}，交给 architect 起草计划修订。提交后用 /flow approve 批准，或 /flow reject "<意见>" 打回。`;
+        return `已生成修订任务 ${id}，交给 architect 起草计划修订。提交后用 /flow-approve 批准，或 /flow-reject "<意见>" 打回。`;
       } catch (e) {
         if (e instanceof RevisionError) return `未发起：${e.message}`;
         throw e;
@@ -408,7 +440,7 @@ function assertNoActiveFlow(h: EngineHandle): void {
   const active = h.store.readState().active_flow;
   if (active) {
     const f = h.store.readFlow(active);
-    throw new Error(`已有进行中的流程 ${f.id}「${f.title}」。同一时间只允许一个 build 或 feature 流程；请执行 /flow resume 继续。`);
+    throw new Error(`已有进行中的流程 ${f.id}「${f.title}」。同一时间只允许一个 build 或 feature 流程；请执行 /flow-resume 继续。`);
   }
 }
 
@@ -636,7 +668,7 @@ async function runKnowledge(argv: string[], env: CommandEnv): Promise<string> {
   }
 }
 
-/** S1/F1 批准后：有草案时请用户选择是否应用（无界面时给出命令提示，或按 --rules all|none） */
+/** 规划阶段（D2）批准后：应用架构师写的项目专属规则与命令草案（按 --rules all|none；有界面时让用户选择） */
 async function offerDrafts(env: CommandEnv, h: EngineHandle, flowId: string, flag: string | undefined): Promise<string> {
   const drafts = listDrafts(env.root, h.store.readFlow(flowId).integration_branch);
   if (!drafts.length) return '';

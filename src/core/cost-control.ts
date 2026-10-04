@@ -5,7 +5,8 @@ import type { FlowFile, RoleSettingsFile, TaskFile } from './schemas.ts';
 import { matchesAny, CONTRACTS_PATH } from './paths.ts';
 import { isLeadingTest } from './dag.ts';
 import { git } from './git.ts';
-import { DESIGN_STAGES } from '../modes/plan.ts';
+/** 第四轮的设计阶段（只用于仍配置了 reviewer 的旧项目） */
+const LEGACY_DESIGN_STAGES = new Set(['S0', 'S1', 'F0', 'F1']);
 
 const isPlaceholder = (m: string) => /^<.*>$/.test(m.trim());
 
@@ -25,8 +26,10 @@ export function resolveModelRef(config: FlowConfig, ref: string | undefined): st
  * 必须先失败的先行验收测试照旧逐任务审查。
  */
 export function perTaskReview(config: FlowConfig, mode: FlowFile['mode'], t: TaskFile, tasks: readonly TaskFile[]): boolean {
+  // 第五轮：不再逐任务审查（质量靠合并时的全量测试与模块的独立验收）；没有 reviewer 角色时一律不审查
+  if (!config.roles['reviewer']) return false;
   if (config.raw.review?.per_task === true) return true;
-  return mode === 'fix' || DESIGN_STAGES.has(t.stage) || isLeadingTest(t, tasks);
+  return mode === 'fix' || LEGACY_DESIGN_STAGES.has(t.stage) || isLeadingTest(t, tasks);
 }
 
 // —— H：按风险审查 ——

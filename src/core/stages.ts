@@ -5,7 +5,7 @@ import type { FlowFile, ProposedTask } from './schemas.ts';
 import { git, gitOk } from './git.ts';
 import { ensureIntegrationBranch } from './worktree.ts';
 import { mergeToMain } from './release.ts';
-import { DESIGN_STAGES, PROPOSAL_STAGES, designTasks, type FlowMode } from '../modes/plan.ts';
+import { DESIGN_STAGES, PROPOSAL_STAGES, STAGE_WRITER, designTasks, revisionTask, type FlowMode, type PlannedTask } from '../modes/plan.ts';
 import { formatDagReport } from './dag.ts';
 
 export interface StageDeps { root: string; store: StateStore; config: FlowConfig }
@@ -27,25 +27,33 @@ export async function startFlow(d: StageDeps, mode: FlowMode, description: strin
   return flow;
 }
 
-/** 若当前是设计阶段且还没有任务，生成该阶段的任务；返回新任务 id */
+/** 若当前是设计阶段且还没有任务，生成该阶段的任务；revision 为用户打回的意见时，只生成写作者的修订任务（接着原会话）。返回新任务 id */
 export async function ensureStageTasks(d: StageDeps, flowId: string, revision?: string): Promise<string[]> {
   const flow = d.store.readFlow(flowId);
   if (flow.mode === 'fix' || !DESIGN_STAGES.has(flow.stage)) return [];
   // 同步主分支产生的 merge-fix 不算本阶段的设计任务
   const existing = d.store.listTasks(flowId).filter((t) => t.stage === flow.stage && t.kind !== 'merge-fix');
   if (existing.length && !revision) return [];
-  const planned = designTasks(flow.mode, flow.stage, flow.title);
-  const tasks: TaskInput[] = planned.map((t, i) => ({
-    ...t, id: nextTaskId(d.store, flowId, i),
-    ...(revision ? { title: `修订：${t.title}`.slice(0, 200) } : {}),
+  let planned: PlannedTask[];
+  if (revision) {
+    const writer = STAGE_WRITER[flow.stage];
+    const prev = existing.filter((t) => t.role === writer).at(-1);
+    planned = prev ? [revisionTask(flow.stage, prev)] : designTasks(flow.mode, flow.stage, flow.title).filter((t) => t.role === writer);
+  } else {
+    planned = designTasks(flow.mode, flow.stage, flow.title);
+  }
+  const ids = planned.map((_, i) => nextTaskId(d.store, flowId, i));
+  const tasks: TaskInput[] = planned.map(({ after, ...t }, i) => ({
+    ...t, id: ids[i]!,
+    depends_on: (after ?? []).map((k) => ({ task: ids[k]!, type: 'hard' as const, reason: '汇总需要两方的意见' })),
   }));
   if (!tasks.length) return [];
   await d.store.addTasks(flowId, tasks, 'engine');
+  const brief = d.store.readFlowBrief(flowId).trim();
   for (const t of tasks) {
-    const brief = d.store.readFlowBrief(flowId).trim();
     await d.store.appendHandoff(flowId, t.id, revision
-      ? `用户在闸门审批时打回，意见：\n${revision}\n\n请据此修订已有文档。`
-      : brief ? `用户确认的需求摘要（据此撰写，正常情况下无需再向用户提问）：\n\n${brief}` : `用户的描述：\n${flow.title}`, revision ? 'human' : 'engine');
+      ? `用户在闸门审批时打回，意见：\n${revision}\n\n请据此修改已有的产出。`
+      : `用户的描述：\n${flow.title}${brief ? `\n\n补充说明：\n${brief}` : ''}`, revision ? 'human' : 'engine');
   }
   return tasks.map((t) => t.id);
 }
@@ -59,7 +67,7 @@ export function renumber(tasks: ProposedTask[], firstId: number): { tasks: TaskI
   };
 }
 
-/** /flow approve：只能由用户执行。最后一个阶段先合入主分支，成功后才批准。 */
+/** /flow-approve：只能由用户执行。最后一个阶段先合入主分支，成功后才批准。 */
 export async function approveStage(d: StageDeps, flowId: string, note?: string): Promise<string> {
   const flow = d.store.readFlow(flowId);
   if (flow.stage_status !== 'awaiting_human') {
@@ -79,19 +87,19 @@ export async function approveStage(d: StageDeps, flowId: string, note?: string):
     const first = Math.max(0, ...d.store.listTasks(flowId).map((t) => Number(t.id.slice(2)))) + 1;
     const { tasks, map } = renumber(proposal.tasks, first);
     await d.store.addTasks(flowId, tasks, 'architect');
-    lines.push(`已按提案创建 ${tasks.length} 个任务（${[...map].map(([a, b]) => `${a}→${b}`).join('，')}）。契约已锁定。`);
+    lines.push(`已按模块清单创建 ${tasks.length} 个模块任务（${[...map].map(([a, b]) => `${a}→${b}`).join('，')}）。`);
   }
   const next = await d.store.advanceStage(flowId, 'human');
   lines.push(next.stage !== flow.stage ? `进入阶段 ${next.stage}。` : `流程 ${flow.id} 已完成。`);
   return lines.join('\n');
 }
 
-/** /flow reject：设计阶段打回并生成修订任务 */
+/** /flow-reject：设计阶段打回并生成修订任务 */
 export async function rejectStage(d: StageDeps, flowId: string, feedback: string): Promise<string> {
   const flow = d.store.readFlow(flowId);
   if (flow.stage_status !== 'awaiting_human') throw new Error(`阶段 ${flow.stage} 当前是 ${flow.stage_status}，没有等待批准的闸门。`);
   if (!DESIGN_STAGES.has(flow.stage)) throw new Error(`阶段 ${flow.stage} 没有可修订的设计产物；如需补充工作，请完成本流程后用 /flow-build --feature 发起新功能。`);
-  if (!feedback.trim()) throw new Error('打回必须写明意见：/flow reject "<意见>"');
+  if (!feedback.trim()) throw new Error('打回必须写明意见：/flow-reject "<意见>"');
   await d.store.transitionStage(flowId, { to: 'active', trigger: 'reject', actor: 'human', reason: feedback });
   const ids = await ensureStageTasks(d, flowId, feedback);
   return `已打回阶段 ${flow.stage}，生成修订任务 ${ids.join('、')}。`;
@@ -115,10 +123,10 @@ export function proposalSummary(store: StateStore, flowId: string): string {
   const p = store.readProposal(flowId);
   if (!p) return '';
   const extras = p.extras?.length
-    ? `\n超出需求的设计（${p.extras.length} 项，需要你确认；不同意就 /flow reject "删掉第 N 项……"）：\n${p.extras.map((x, i) => `  ${i + 1}. ${x}`).join('\n')}`
-    : '\narchitect 声明文档没有超出需求的设计。';
-  const assumed = p.assumptions?.length
-    ? `\n按默认方案处理的地方（${p.assumptions.length} 项，architect 没有停下来问你；不同意就 /flow reject "第 N 项改成……"）：\n${p.assumptions.map((x, i) => `  ${i + 1}. ${x}`).join('\n')}`
+    ? `\n超出需求的设计（${p.extras.length} 项，需要你确认；不同意就 /flow-reject "删掉第 N 项……"）：\n${p.extras.map((x, i) => `  ${i + 1}. ${x}`).join('\n')}`
     : '';
-  return `任务提案（${p.stage}）：\n${formatDagReport(p.report)}\n${p.tasks.map((t) => `- ${t.id} [${t.stage}/${t.kind}] ${t.title}（${t.role}）${t.depends_on.length ? ` ← ${t.depends_on.map((x) => `${x.task}${x.type === 'soft' ? '~' : ''}`).join(',')}` : ''}`).join('\n')}${extras}${assumed}`;
+  const assumed = p.assumptions?.length
+    ? `\n按默认方案处理的地方（${p.assumptions.length} 项，architect 没有停下来问你；不同意就 /flow-reject "第 N 项改成……"）：\n${p.assumptions.map((x, i) => `  ${i + 1}. ${x}`).join('\n')}`
+    : '';
+  return `模块清单（${p.stage}，批准后创建）：\n${p.tasks.map((t) => `- ${t.id} ${t.title}${t.depends_on.length ? `（等 ${t.depends_on.map((x) => x.task).join('、')} 验收通过）` : ''}\n  可写：${t.writes.join('、')}${t.shared?.length ? `；公共文件：${t.shared.join('、')}` : ''}\n  验收：${t.acceptance.join('；')}`).join('\n')}\n${formatDagReport(p.report)}${extras}${assumed}`;
 }

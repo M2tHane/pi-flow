@@ -8,7 +8,7 @@ import { execFileSync } from 'node:child_process';
 import lockfile from 'proper-lockfile';
 import {
   validate, type FlowFile, type MergeQueueFile, type RunFile, type ProposalFile, type BriefFile, type KnowledgeFile, type ModelPausesFile, type RevisionFile, type SchemaKind, type StageStatus, type StateFile,
-  type TaskFile, type TaskStatus, type FlowEvent, type StageReviewFile, type NotesFile,
+  type TaskFile, type TaskStatus, type FlowEvent, type StageReviewFile, type NotesFile, type AcceptanceFile,
 } from './schemas.ts';
 import {
   IN_FLIGHT, planStageTransition, planTransition, type Facts, type StageTrigger, type TaskPatch, type Trigger,
@@ -16,7 +16,7 @@ import {
 import {
   EventCache, GENESIS_HASH, appendEvents, buildEvent, commitStateRef, readEvents, readLastEvent, sha256, untrackStateDir, verifyChain, type EventInput,
 } from './event-log.ts';
-import { conflictsWith } from './dag.ts';
+import { conflictsWith, depStatus } from './dag.ts';
 
 export const FLOW_DIRNAME = '.flow';
 const JOURNAL = 'tx.json';
@@ -63,6 +63,7 @@ export const proposalRel = (flow: string) => `flows/${flow}/proposal.json`;
 export const revisionRel = (flow: string) => `flows/${flow}/revision.json`;
 export const stageEvidenceRel = (flow: string, stage: string) => `flows/${flow}/evidence/stage-${stage}`;
 export const stageReviewRel = (flow: string, stage: string) => `flows/${flow}/stage-review-${stage}.json`;
+export const acceptanceRel = (flow: string, task: string) => `flows/${flow}/acceptance/${task}.json`;
 const MQ_REL = 'merge-queue.json';
 export const KNOWLEDGE_REL = 'knowledge.json';
 /** 任务的结构化笔记：同一任务的所有运行共用一份 */
@@ -81,6 +82,7 @@ export function schemaKindOf(rel: string): SchemaKind | null {
   if (rel === 'brief.json') return 'brief';
   if (rel === KNOWLEDGE_REL) return 'knowledge';
   if (rel === MODEL_PAUSES_REL) return 'model-pauses';
+  if (/^flows\/[^/]+\/acceptance\/[^/]+\.json$/.test(rel)) return 'acceptance';
   if (rel === MAIN_NOTES_REL || /^flows\/[^/]+\/notes\/[^/]+\.json$/.test(rel)) return 'notes';
   return null;
 }
@@ -170,7 +172,7 @@ export interface CreateFlowInput {
 }
 
 export type TaskInput = Pick<TaskFile, 'id' | 'stage' | 'kind' | 'title' | 'role' | 'scopes' | 'depends_on' | 'inputs'
-  | 'writes' | 'acceptance' | 'verify'> & Partial<Pick<TaskFile, 'merge_fix_for' | 'conflict_files' | 'worktree' | 'branch' | 'base_sha' | 'sync_main' | 'replan' | 'contract_change' | 'stage_review' | 'review_issues' | 'fork_from_task'>>;
+  | 'writes' | 'acceptance' | 'verify'> & Partial<Pick<TaskFile, 'merge_fix_for' | 'conflict_files' | 'worktree' | 'branch' | 'base_sha' | 'sync_main' | 'replan' | 'contract_change' | 'stage_review' | 'review_issues' | 'fork_from_task' | 'shared' | 'needs_acceptance' | 'advocate' | 'accept_of' | 'accept_kind'>>;
 
 export type Findings = NonNullable<TaskFile['findings']>;
 
@@ -422,7 +424,7 @@ export class StateStore {
       if (state.active_flow) {
         const cur = tx.readFlow(state.active_flow);
         if (!isFinished(cur)) {
-          throw new StateError(`已有进行中的流程 ${cur.id}（${cur.title}），同一时间只允许一个；请使用 /flow resume 继续`);
+          throw new StateError(`已有进行中的流程 ${cur.id}（${cur.title}），同一时间只允许一个；请使用 /flow-resume 继续`);
         }
       }
       const nums = this.listFlows().map((id) => Number(id.slice(2)));
@@ -508,8 +510,44 @@ export class StateStore {
       ...(t.stage_review ? { stage_review: t.stage_review } : {}),
       ...(t.review_issues ? { review_issues: [...t.review_issues] } : {}),
       ...(t.fork_from_task ? { fork_from_task: t.fork_from_task } : {}),
+      ...(t.shared?.length ? { shared: [...t.shared] } : {}),
+      ...(t.needs_acceptance ? { needs_acceptance: true } : {}),
+      ...(t.advocate ? { advocate: t.advocate } : {}),
+      ...(t.accept_of ? { accept_of: t.accept_of } : {}),
+      ...(t.accept_kind ? { accept_kind: t.accept_kind } : {}),
     };
     return tx.putTask(flow, task);
+  }
+
+  readAcceptance(flow: string, task: string): AcceptanceFile | null {
+    return this.readJsonRel<AcceptanceFile>(acceptanceRel(flow, task));
+  }
+
+  listAcceptances(flow: string): AcceptanceFile[] {
+    return this.listTasks(flow).filter((t) => t.needs_acceptance).map((t) => this.readAcceptance(flow, t.id)).filter((x): x is AcceptanceFile => !!x);
+  }
+
+  /**
+   * 推进模块验收记录（第五轮）：同一事务内写记录、新增任务与 handoff；accepted 时把模块任务标记为已验收（依赖它的模块随之可以开工）。
+   * next.version 必须基于当前版本（新记录忽略）。
+   */
+  async updateAcceptance(flow: string, next: AcceptanceFile, opts: { tasks?: readonly TaskInput[]; handoffs?: Record<string, string>; actor: string; reason: string }): Promise<AcceptanceFile> {
+    return this.transaction((tx) => {
+      tx.readFlow(flow);
+      const rel = acceptanceRel(flow, next.task);
+      const cur = tx.readJson<AcceptanceFile>(rel);
+      const saved = tx.putJson(rel, 'acceptance', { ...next, version: cur ? next.version : 1 });
+      const added = (opts.tasks ?? []).map((t) => this.putNewTask(tx, flow, t, opts.actor));
+      for (const [task, text] of Object.entries(opts.handoffs ?? {})) {
+        const h = handoffRel(flow, task);
+        tx.putText(h, `${tx.readText(h) ?? ''}\n## ${tx.ts} ${opts.actor}\n\n${text.trim()}\n`);
+      }
+      const mod = tx.readTask(flow, next.task);
+      if ((next.status === 'accepted') !== !!mod.accepted) tx.putTask(flow, { ...mod, accepted: next.status === 'accepted' });
+      tx.event({ flow, task: next.task, actor: opts.actor, type: 'note', reason: opts.reason,
+        data: { acceptance: next.status, round: next.round, ...(added.length ? { tasks: added.map((t) => t.id) } : {}) } });
+      return saved;
+    });
   }
 
   readStageReview(flow: string, stage: string): StageReviewFile | null {
@@ -554,7 +592,7 @@ export class StateStore {
         actor: req.actor,
         // 以下由程序推导，覆盖调用方传入的同名字段
         stage_active: flow.stage === task.stage && flow.stage_status === 'active',
-        status_of: new Map(others.map((t) => [t.id, t.status])),
+        status_of: new Map(others.map((t) => [t.id, depStatus(t)])),
         running_count: others.filter((t) => t.status === 'in_progress').length,
         conflicting_running: others.filter((t) => IN_FLIGHT.includes(t.status) && t.id !== task.merge_fix_for && conflictsWith(t, task)).map((t) => t.id),
         merging_other: merging && merging !== me ? merging : null,
@@ -975,6 +1013,34 @@ export class StateStore {
     });
   }
 
+  /** 实施阶段闸门失败后的一轮自动修复：同一事务内记下轮次、新增修复任务与 handoff */
+  async addGateRound(flowId: string, round: NonNullable<FlowFile['gate_rounds']>[number], tasks: readonly TaskInput[], handoffs: Record<string, string>): Promise<FlowFile> {
+    return this.transaction((tx) => {
+      const f = tx.readFlow(flowId);
+      const saved = tx.putFlow({ ...f, gate_rounds: [...(f.gate_rounds ?? []), round] });
+      const added = tasks.map((t) => this.putNewTask(tx, flowId, t, 'engine'));
+      for (const [task, text] of Object.entries(handoffs)) {
+        const h = handoffRel(flowId, task);
+        tx.putText(h, `${tx.readText(h) ?? ''}\n## ${tx.ts} engine\n\n${text.trim()}\n`);
+      }
+      tx.event({ flow: flowId, actor: 'engine', type: 'note', reason: `阶段 ${round.stage} 全量 ${round.command} 失败，生成修复任务 ${added.map((t) => t.id).join('、')}`, data: { tasks: added.map((t) => t.id) } });
+      return saved;
+    });
+  }
+
+  /** 设置要跳过的阶段（D0 汇总者判断不需要原型、或用户在批准时指定）；只能跳过尚未到达的阶段 */
+  async setSkipStages(flowId: string, skip: string[], actor: string, reason: string): Promise<FlowFile> {
+    return this.transaction((tx) => {
+      const f = tx.readFlow(flowId);
+      const cur = f.stages.indexOf(f.stage);
+      const bad = skip.filter((st) => f.stages.indexOf(st) <= cur);
+      if (bad.length) throw new StateError(`不能跳过当前或已经过去的阶段：${bad.join('、')}`);
+      const saved = tx.putFlow({ ...f, skip_stages: [...new Set(skip)] });
+      tx.event({ flow: flowId, actor, type: 'note', reason, data: { skip_stages: skip } });
+      return saved;
+    });
+  }
+
   /** 记录主分支同步状态（不属于阶段状态机，只是流程上的标记） */
   async setFlowSync(flowId: string, sync: NonNullable<FlowFile['sync']>, actor: string, reason: string): Promise<FlowFile> {
     return this.transaction((tx) => {
@@ -991,13 +1057,15 @@ export class StateStore {
       const flow = tx.readFlow(flowId);
       if (flow.stage_status !== 'done') throw new StateError(`当前阶段 ${flow.stage} 尚未 done（${flow.stage_status}），不能进入下一阶段`);
       const idx = flow.stages.indexOf(flow.stage);
-      if (idx === flow.stages.length - 1) {
+      // 跳过的阶段（第五轮：没有界面时跳过原型）
+      const nextStage = flow.stages.slice(idx + 1).find((st) => !(flow.skip_stages ?? []).includes(st));
+      if (!nextStage) {
         if (flow.mode !== 'fix') tx.setActiveFlow(null);
         tx.event({ flow: flowId, actor, type: 'transition', from: flow.stage, to: 'finished', data: { entity: 'flow' } });
         return flow;
       }
       const from = flow.stage;
-      flow.stage = flow.stages[idx + 1]!;
+      flow.stage = nextStage;
       flow.stage_status = 'active';
       const next = tx.putFlow(flow);
       tx.event({ flow: flowId, actor, type: 'transition', from, to: flow.stage, data: { entity: 'stage' } });
@@ -1041,7 +1109,7 @@ export class StateStore {
 
   private verifyLocked(): IntegrityReport {
     const errors: string[] = [];
-    if (existsSync(this.abs(JOURNAL))) errors.push('存在未完成的事务日志 tx.json，请执行 /flow resume 重放');
+    if (existsSync(this.abs(JOURNAL))) errors.push('存在未完成的事务日志 tx.json，请执行 /flow-resume 重放');
 
     const { events, errors: readErrs } = readEvents(this.abs('events.jsonl'));
     errors.push(...readErrs);
