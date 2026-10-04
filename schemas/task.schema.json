@@ -340,6 +340,10 @@
         "pattern": "^R-[0-9]+$"
       }
     },
+    "fork_from_task": {
+      "type": "string",
+      "pattern": "^T-[0-9]{3,}$"
+    },
     "created_by": {
       "type": "string",
       "minLength": 1

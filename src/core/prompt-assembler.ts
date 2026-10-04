@@ -86,6 +86,8 @@ export interface AssembleInput {
   proposalExtras?: string[];
   /** 审查模式：直接附上的 diff（有上一轮审查时是上次审查之后的改动，否则是全部改动）；太大时不给 */
   inlineDiff?: string;
+  /** 实施模式：对话接在另一个任务（写过这些代码的任务）的最后一次运行之后 */
+  priorTask?: { id: string; title: string; run: string };
   /** 实施模式：接着上一次运行（run）的对话继续，只给简短的续做说明 */
   continuation?: { run: string };
   /** 审查模式：上一轮审查打回的问题；有时本轮只核对这些问题 */
@@ -205,6 +207,9 @@ export function assemblePrompt(i: AssembleInput): AssembledPrompt {
   }
   if (i.mode === 'review') {
     parts.push(`## 待审查的改动\n基线提交 base_sha：${t.base_sha ?? '（未知）'}\n用 \`git diff ${t.base_sha ?? '<base_sha>'} HEAD\` 查看完整改动。${i.evidenceDir ? `verify 输出在 \`${i.evidenceDir}\`（precheck-*.log 是派审查前对这份代码的验证）。` : ''}\n\n\`\`\`\n${(i.diffStat ?? '').trim() || '（无）'}\n\`\`\``);
+  }
+  if (i.mode === 'impl' && i.priorTask) {
+    parts.push(`## 接着你之前的对话\n上面的对话是你完成 ${i.priorTask.id}「${i.priorTask.title}」时的过程（run ${i.priorTask.run}），你熟悉这些代码，不必从头重读。那个任务已经合入；现在是一个新任务、新的 worktree（集成分支最新代码，可能包含别人之后的改动），文件路径与可写范围以本次说明为准。先调用 flow_claim。`);
   }
   if (i.mode === 'impl' && i.scratchDir) {
     parts.push(`## 临时目录\n需要做临时实验（建临时文件、跑一次性脚本）时放在 \`${i.scratchDir}\`：可以 cd 进去，可以建、删、移动文件，本次运行结束后自动删除。不要在 worktree 里建临时文件：worktree 中只能写、删除、移动本任务 writes 内的文件，writes 之外的改动会让提交被拒。`);

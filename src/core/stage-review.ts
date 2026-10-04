@@ -47,6 +47,17 @@ export function fixRoleFor(config: FlowConfig, tasks: readonly TaskFile[], files
   return [...new Set(owners), ...Object.keys(config.roles)].find(covers) ?? null;
 }
 
+/** 写过这些文件最多的、同角色的已完成任务：修复任务接着它的对话继续（熟悉代码，不必重读） */
+export function ownerTaskFor(tasks: readonly TaskFile[], role: string, files: readonly string[]): string | undefined {
+  let best: { id: string; n: number } | undefined;
+  for (const t of tasks) {
+    if (t.status !== 'done' || t.role !== role || t.kind === 'analysis' || t.kind === 'review-fix') continue;
+    const n = files.filter((f) => matchesAny(f, t.writes)).length;
+    if (n && (!best || n > best.n)) best = { id: t.id, n };
+  }
+  return best?.id;
+}
+
 /** 问题涉及的文件是否可以由修复任务修改：具体路径（不是 glob）、不是契约或受保护文件、有角色能写 */
 export function issueFileErrors(config: FlowConfig, tasks: readonly TaskFile[], label: string, files: readonly string[]): string[] {
   const errs: string[] = [];
@@ -88,6 +99,7 @@ export function planFixTasks(config: FlowConfig, tasks: readonly TaskFile[], sta
       role: g.role, scopes: [...r.scopes], depends_on: [], inputs: files, writes: files, verify: verifyFor(config),
       acceptance: [...g.issues.map(issueLine), '只修上面这些问题，不顺手改别处；修好后全量测试仍然通过'],
       review_issues: g.issues.map((i) => i.id),
+      ...(ownerTaskFor(tasks, g.role, files) ? { fork_from_task: ownerTaskFor(tasks, g.role, files)! } : {}),
     });
     handoffs[id] = `阶段 ${stage} 末审查发现的问题（程序生成${round === 2 ? '；上一轮修复后确认仍未解决' : ''}）：\n${formatIssues(g.issues)}\n\n只修这些问题，可写范围限定在相关文件。${CONTRACT_ADDITION_HINT}问题描述有误或无法在这些文件内修好时，用 flow_block 说明。`;
   });
@@ -279,6 +291,7 @@ export async function stageGateFailed(d: StageReviewDeps, flowId: string, stage:
       role, scopes: [...r.scopes], depends_on: [], inputs: [...g.files], writes: [...g.writes], verify: verifyFor(config),
       acceptance: [`阶段闸门的全量 ${failed.command} 失败，日志中涉及 ${[...g.files].join('、')}：找到原因并修复，修好后全量 ${failed.command} 通过`,
         '只修导致失败的问题；原因不在你的可写范围内时，用 flow_block 写明是哪个模块、什么输入、期望与实际'],
+      ...(ownerTaskFor(tasks, role, [...g.files]) ? { fork_from_task: ownerTaskFor(tasks, role, [...g.files])! } : {}),
     });
     handoffs[id] = `阶段 ${stage} 的全量测试失败（程序生成，第 ${round}/${MAX_TEST_ROUNDS} 轮）。${g.owners.size ? `相关任务：${[...g.owners].join('、')}。` : ''}${CONTRACT_ADDITION_HINT}\n命令：${failed.command}\n输出（最后部分）：\n\`\`\`\n${tail.slice(-4000)}\n\`\`\``;
   });

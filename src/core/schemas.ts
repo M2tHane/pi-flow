@@ -136,6 +136,8 @@ export const TaskFile = Type.Object({
   stage_review: Type.Optional(Type.Union([Type.Literal('review'), Type.Literal('confirm')])),
   /** 阶段审查修复任务（kind=review-fix）分到的问题编号 */
   review_issues: Type.Optional(Type.Array(Type.String({ pattern: '^R-[0-9]+$' }))),
+  /** 修复任务接着写过这些代码的任务的对话继续（第四轮后续）：同角色、同模型、会话不太大时 fork 它最后一次提交的会话 */
+  fork_from_task: Type.Optional(TaskId),
   created_by: Type.String({ minLength: 1 }),
   version: Type.Integer({ minimum: 1 }),
 }, { additionalProperties: false });

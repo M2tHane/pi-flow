@@ -165,7 +165,7 @@ export interface CreateFlowInput {
 }
 
 export type TaskInput = Pick<TaskFile, 'id' | 'stage' | 'kind' | 'title' | 'role' | 'scopes' | 'depends_on' | 'inputs'
-  | 'writes' | 'acceptance' | 'verify'> & Partial<Pick<TaskFile, 'merge_fix_for' | 'conflict_files' | 'worktree' | 'branch' | 'base_sha' | 'sync_main' | 'replan' | 'contract_change' | 'stage_review' | 'review_issues'>>;
+  | 'writes' | 'acceptance' | 'verify'> & Partial<Pick<TaskFile, 'merge_fix_for' | 'conflict_files' | 'worktree' | 'branch' | 'base_sha' | 'sync_main' | 'replan' | 'contract_change' | 'stage_review' | 'review_issues' | 'fork_from_task'>>;
 
 export type Findings = NonNullable<TaskFile['findings']>;
 
@@ -502,6 +502,7 @@ export class StateStore {
       ...(t.replan ? { replan: t.replan } : {}),
       ...(t.stage_review ? { stage_review: t.stage_review } : {}),
       ...(t.review_issues ? { review_issues: [...t.review_issues] } : {}),
+      ...(t.fork_from_task ? { fork_from_task: t.fork_from_task } : {}),
     };
     return tx.putTask(flow, task);
   }

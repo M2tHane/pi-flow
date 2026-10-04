@@ -33,6 +33,7 @@ import { activePause, classifyUnavailable, clearPause, describePause, pauseActiv
 import type { ModelPause } from './schemas.ts';
 
 export const REVIEWER_ROLE = 'reviewer';
+const tasksHas = (store: StateStore, flowId: string, id: string) => { try { store.readTask(flowId, id); return true; } catch { return false; } };
 /**
  * 会话文件超过这个大小就不再接着（上下文太长，每轮重发的成本超过重新读代码）。
  * 真实冒烟：一次 175 轮的实施会话约 0.5 MB，接着它返工的两次运行缓存读合计上千万 token；1.5 MB → 400 KB。
@@ -166,7 +167,7 @@ export class Engine {
       expires_at: new Date(this.now().getTime() + this.d.config.limits.lease_minutes * 60_000).toISOString(),
     };
 
-    let fork: { run_id: string; session_file: string } | null = null;
+    let fork: { run_id: string; session_file: string; task: string } | null = null;
     if (task.status === 'ready' && task.kind !== 'merge-fix' && flow.sync?.status === 'conflict') {
       throw new DispatchError(`同步 ${this.d.config.raw.main_branch} 到集成分支时冲突，需要你先处理（${flow.sync.reason ?? ''}），处理后执行 /flow sync`);
     }
@@ -184,6 +185,8 @@ export class Engine {
       const wt = task.worktree && task.branch && task.base_sha
         ? { path: task.worktree, branch: task.branch, base_sha: task.base_sha }
         : createTaskWorktree(root, flowId, taskId, flow.integration_branch, carried?.branch ?? flow.integration_branch);
+      // 修复任务接着写过这些代码的任务的对话继续（第四轮后续）
+      if (task.fork_from_task && tasksHas(store, flowId, task.fork_from_task)) fork = this.forkSource(flowId, store.readTask(flowId, task.fork_from_task), role, model);
       task = await store.transitionTask(flowId, taskId, {
         to: 'in_progress', trigger: 'dispatch', actor: 'dispatcher',
         patch: { lease, worktree: wt.path, branch: wt.branch, base_sha: wt.base_sha },
@@ -304,7 +307,7 @@ export class Engine {
    * 返工时可以接着的上一次对话：同一任务、同一角色、同一模型最近一次正常提交的 run，会话文件还在且不太大。
    * 换了模型（例如失败升级）、关闭 limits.continue_session、或任务重新开工（ready）时从头开始。
    */
-  private forkSource(flowId: string, task: TaskFile, role: string, model: string): { run_id: string; session_file: string } | null {
+  private forkSource(flowId: string, task: TaskFile, role: string, model: string): { run_id: string; session_file: string; task: string } | null {
     if (role === REVIEWER_ROLE || this.d.config.limits.continue_session === false) return null;
     const prev = this.d.store.listRuns().filter((r) => r.flow === flowId && r.task === task.id && r.role === role && r.ended_at)
       .sort((a, b) => a.started_at.localeCompare(b.started_at)).at(-1);
@@ -312,10 +315,10 @@ export class Engine {
     try {
       if (statSync(prev.session_file).size > MAX_FORK_BYTES) return null;
     } catch { return null; }
-    return { run_id: prev.run_id, session_file: prev.session_file };
+    return { run_id: prev.run_id, session_file: prev.session_file, task: task.id };
   }
 
-  private buildSpec(flowId: string, task: TaskFile, role: string, runId: string, token: string, model: string, thinking: ThinkingLevel | null, fork: { run_id: string } | null = null): SubagentSpec {
+  private buildSpec(flowId: string, task: TaskFile, role: string, runId: string, token: string, model: string, thinking: ThinkingLevel | null, fork: { run_id: string; task: string } | null = null): SubagentSpec {
     const { root, config, store } = this.d;
     const agent = loadAgent(role, root, this.d.packageAgentsDir);
     // 审查者使用被审任务的 scope 规则
@@ -376,7 +379,8 @@ export class Engine {
       ...(previousReview ? { previousReview } : {}),
       ...(inlineDiff !== undefined ? { inlineDiff } : {}),
       ...(mode === 'review' && (task.stage === 'S1' || task.stage === 'F1') && !task.replan && store.readProposal(flowId) ? { proposalExtras: store.readProposal(flowId)!.extras ?? [] } : {}),
-      ...(fork && mode === 'impl' ? { continuation: { run: fork.run_id } } : {}),
+      ...(fork && mode === 'impl' && fork.task === task.id ? { continuation: { run: fork.run_id } } : {}),
+      ...(fork && mode === 'impl' && fork.task !== task.id ? { priorTask: { id: fork.task, title: store.readTask(flowId, fork.task).title, run: fork.run_id } } : {}),
       ...(existingWork ? { existingWork } : {}),
       ...(stageReview ? { stageReview } : {}),
     });

@@ -239,7 +239,14 @@ test('真实 pi 子进程：阶段末审查——审查者用 flow_review_report
     assert.equal(sr.status, 'done', JSON.stringify(sr));
     assert.deepEqual(sr.issues.map((i) => [i.id, i.module, i.files]), [['R-1', 'server', ['src/server/t-001/a.ts']]]);
     assert.deepEqual(sr.confirm, [{ id: 'R-1', resolved: true }]);
-    assert.equal(p.store.readTask(p.flowId, sr.fix_tasks[0]!).status, 'done');
+    const fix = p.store.readTask(p.flowId, sr.fix_tasks[0]!);
+    assert.equal(fix.status, 'done');
+    // 修复任务接着 T-001 的对话继续（fork），不从头读代码
+    assert.equal(fix.fork_from_task, 'T-001');
+    const implRuns = p.store.listRuns().filter((r) => r.role === 'backend-engineer').sort((a, b) => a.started_at.localeCompare(b.started_at));
+    assert.equal(implRuns[1]!.task, fix.id);
+    assert.equal(implRuns[1]!.forked_from, implRuns[0]!.run_id);
+    assert.match(p.store.readHandoff(p.flowId, fix.id), /接着之前的对话修 R-1/);
     assert.equal(p.git('show', `flow/${p.flowId}/integration:src/server/t-001/a.ts`), 'export const a = 2;');
     assert.equal(p.store.readFlow(p.flowId).stage_status, 'awaiting_human');
     const reqs = readFileSync(logFile, 'utf8').slice(before).trim().split('\n').map((l) => JSON.parse(l)).filter((r) => r.model === 'stage-review');
