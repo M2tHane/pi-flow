@@ -59,10 +59,100 @@ export class MergeQueue {
     if (mq.merging || !head || head.flow !== flowId) return null;
     this.running = true;
     try {
+      const batch = await this.mergeBatch(flowId);
+      if (batch) return batch;
       await this.store.transitionTask(flowId, head.task, { to: 'merging', trigger: 'merge_start', actor: 'merge-queue' });
       return await this.merge(flowId, this.store.readTask(flowId, head.task));
     } finally {
       this.running = false;
+    }
+  }
+
+  /**
+   * 批量合并（第四轮后续）：不逐任务审查时，队首连续的几个普通任务先在临时 worktree 里依次叠加到集成分支上，
+   * 只跑一次全量验证；通过后逐个转 merging → done，集成分支依次快进到每个任务的提交（同一时间仍只有一个 merging）。
+   * 冲突、验证失败、或有不适合批量的任务（merge-fix、承载先行测试、同步修复、fix 流程）时返回 null，退回逐个合并。
+   */
+  private async mergeBatch(flowId: string): Promise<MergeResult | null> {
+    const limit = this.config.limits.merge_batch ?? 3;
+    if (limit < 2) return null;
+    const flow = this.store.readFlow(flowId);
+    if (flow.mode === 'fix') return null;
+    const integ = flow.integration_branch;
+    const tasks = this.store.listTasks(flowId);
+    const candidates: TaskFile[] = [];
+    for (const e of this.store.readMergeQueue().queue) {
+      if (e.flow !== flowId || candidates.length >= limit) break;
+      const t = tasks.find((x) => x.id === e.task);
+      if (!t || t.status !== 'queued_merge' || t.sync_main || t.kind === 'merge-fix' || !t.worktree || !existsSync(t.worktree)) break;
+      if (perTaskReview(this.config, flow.mode, t, tasks) || carriedTestOf(t, tasks)) break;
+      candidates.push(t);
+    }
+    if (candidates.length < 2) return null;
+    const integHead = headSha(this.root, integ);
+    const temp = path.join(worktreesRoot(this.root), `${flowId}-batch`);
+    removeWorktree(this.root, temp);
+    mkdirSync(path.dirname(temp), { recursive: true });
+    git(this.root, ['worktree', 'add', '-q', '--detach', temp, integHead]);
+    try {
+      // 1. 依次叠加：每个任务 squash 成一个提交，cherry-pick 到临时 worktree；冲突则到此为止
+      const applied: { t: TaskFile; sha: string; msg: string }[] = [];
+      for (const t of candidates) {
+        const wt = t.worktree!;
+        const fork = git(wt, ['merge-base', 'HEAD', integ]).trim();
+        const tree = (ref: string) => git(wt, ['rev-parse', `${ref}^{tree}`]).trim();
+        if (tree('HEAD') === tree(fork)) break;
+        if (t.base_sha && t.base_sha !== fork && tree(t.base_sha) !== tree(fork)) break; // 基线之下还有未合入的提交，走逐个合并
+        const msg = `[${flowId}/${t.id}] ${t.title}`;
+        const squashed = git(wt, ['commit-tree', 'HEAD^{tree}', '-p', fork, '-m', msg], { engineIdentity: true }).trim();
+        try {
+          git(temp, ['cherry-pick', '--allow-empty', squashed], { engineIdentity: true, allowFail: true });
+        } catch {
+          gitOk(temp, ['cherry-pick', '--abort']);
+          break;
+        }
+        applied.push({ t, sha: headSha(temp), msg });
+      }
+      if (applied.length < 2) return null;
+      const changed = git(temp, ['diff', '--name-only', '--no-renames', integHead, 'HEAD']).split('\n').filter(Boolean);
+      if (changed.some((f) => existsSync(path.join(temp, f)) && CONFLICT_MARKER.test(readFileSync(path.join(temp, f), 'utf8')))) return null;
+      // 2. 只跑一次全量验证（任一任务有 verify 时）
+      if (applied.some((a) => a.t.verify.length)) {
+        const { plan } = await this.mergeVerifyPlan(flowId, applied.find((a) => a.t.verify.length)!.t, temp, changed);
+        for (const c of plan) {
+          const r = await runShell(c.shell, temp, this.hooks.verifyTimeoutMs);
+          for (const a of applied) await this.store.saveEvidence(flowId, a.t.id, `merge-a${a.t.attempts}-batch-${c.name}.log`, evidenceText({ command: c.name, ...r }, c.shell), 'merge-queue');
+          if (r.exit_code !== 0) {
+            await this.store.recordEvent({ flow: flowId, actor: 'merge-queue', type: 'note', reason: `批量合并 ${applied.map((a) => a.t.id).join('、')} 的全量 ${c.name} 失败，改为逐个合并`, data: { tasks: applied.map((a) => a.t.id) } });
+            return null;
+          }
+        }
+      }
+      // 3. 逐个转 merging → done，集成分支依次快进（CAS）
+      let prev = integHead;
+      const finished: string[] = [];
+      for (const a of applied) {
+        await this.store.transitionTask(flowId, a.t.id, { to: 'merging', trigger: 'merge_start', actor: 'merge-queue' });
+        try {
+          git(this.root, ['update-ref', `refs/heads/${integ}`, a.sha, prev]);
+        } catch {
+          await this.store.transitionTask(flowId, a.t.id, { to: 'queued_merge', trigger: 'merge_requeue', actor: 'merge-queue' });
+          break;
+        }
+        await this.store.transitionTask(flowId, a.t.id, { to: 'done', trigger: 'merge_done', actor: 'merge-queue', evidence: a.sha,
+          facts: { rebase_ok: true, post_verify_ok: true, fast_forwarded: true, reason: `批量合并（${applied.map((x) => x.t.id).join('、')}，一次全量验证）` } });
+        await this.store.recordEvent({ flow: flowId, task: a.t.id, actor: 'merge-queue', type: 'merge', evidence: a.sha,
+          data: { integration_branch: integ, from: prev, to: a.sha, batch: applied.map((x) => x.t.id) } });
+        removeWorktree(this.root, a.t.worktree!, a.t.branch ?? undefined);
+        finished.push(a.t.id);
+        prev = a.sha;
+      }
+      if (!finished.length) return null;
+      if (this.hooks.afterMerge) await this.hooks.afterMerge(this.root).catch(() => {});
+      return { kind: 'merged', task: finished[0]!, sha: prev, finished };
+    } finally {
+      gitOk(temp, ['cherry-pick', '--abort']);
+      removeWorktree(this.root, temp);
     }
   }
 

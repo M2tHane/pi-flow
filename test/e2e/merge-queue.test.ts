@@ -272,7 +272,7 @@ test('合并后验证使用 codegraph 给出的受影响测试；拿不到时退
 });
 
 test('关闭逐任务审查（默认）：提交后不派审查直接进入合并队列；合并时跑全量 typecheck、lint、test，失败退回实施并重新派发，修好后合入；文档类任务不跑命令', async () => {
-  const p = await setupProject({ yaml: DIRECT_YAML, tasks: [mkTask('T-001', { verify: ['test'] }), mkTask('T-002', { verify: [] })] });
+  const p = await setupProject({ yaml: DIRECT_YAML.replace(/^  merge_batch: 3 .*$/m, '  merge_batch: 1'), tasks: [mkTask('T-001', { verify: ['test'] }), mkTask('T-002', { verify: [] })] });
   try {
     const { engine, merges, errors } = makeEngine(p, async (role, nth, a) => {
       assert.notEqual(role, 'reviewer', '不应派审查');
@@ -298,4 +298,37 @@ test('关闭逐任务审查（默认）：提交后不派审查直接进入合�
     assert.deepEqual(p.store.listRuns().map((r) => r.role).sort(), ['backend-engineer', 'backend-engineer', 'backend-engineer']);
     assertSingleMerging(p.store.readEvents());
   } finally { p.cleanup(); }
+});
+
+test('批量合并：队列里的 3 个任务一起叠加、只跑一次全量测试，依次快进；有一个坏的时整批退回逐个合并，坏的被退回修好', async () => {
+  const yaml = DIRECT_YAML.replace(/^  max_parallel: 2$/m, '  max_parallel: 3').replace(/  test:      ".*"/, '  test:      "! grep -rqs FAIL src/server"');
+  for (const bad of [false, true]) {
+    const p = await setupProject({ yaml, tasks: ['T-001', 'T-002', 'T-003'].map((id) => mkTask(id, { verify: ['test'] })) });
+    try {
+      const { engine, merges, errors } = makeEngine(p, async (_role, nth, a) => {
+        const id = a.env.task.toLowerCase();
+        await implement(a, { [`src/server/${id}/a.ts`]: bad && id === 't-003' && nth === 1 ? 'FAIL' : id });
+        // 三个都进了合并队列才结束，让第一次合并看到整批
+        if (nth === 1) await until(() => ['T-001', 'T-002', 'T-003'].every((x) => ['queued_merge', 'merging', 'done', 'in_progress'].includes(p.store.readTask(p.flowId, x).status) && p.store.readTask(p.flowId, x).impl_run));
+      });
+      await engine.next(p.flowId);
+      await engine.idle();
+      assert.deepEqual(errors, []);
+      for (const id of ['T-001', 'T-002', 'T-003']) assert.equal(p.store.readTask(p.flowId, id).status, 'done', `${bad} ${id}`);
+      const mergeEvents = p.store.readEvents().filter((e) => e.type === 'merge');
+      if (!bad) {
+        assert.deepEqual(merges.map((m) => m.kind === 'merged' ? m.finished : m.kind), [['T-001', 'T-002', 'T-003']]);
+        assert.ok(mergeEvents.every((e) => Array.isArray(e.data?.['batch']) && (e.data['batch'] as string[]).length === 3));
+        for (const id of ['T-001', 'T-002', 'T-003']) assert.deepEqual(readdirEvidence(p.dir, p.flowId, id).sort(), ['merge-a0-batch-lint.log', 'merge-a0-batch-test.log', 'merge-a0-batch-typecheck.log']);
+        const log = p.git('log', '--format=%s', `flow/${p.flowId}/integration`).split('\n').slice(0, 3);
+        assert.deepEqual(log, ['[B-001/T-003] 任务 T-003', '[B-001/T-002] 任务 T-002', '[B-001/T-001] 任务 T-001']);
+        assertSingleMerging(p.store.readEvents());
+      } else {
+        assert.ok(p.store.readEvents().some((e) => /批量合并 .* 失败，改为逐个合并/.test(e.reason ?? '')));
+        assert.equal(p.store.readTask(p.flowId, 'T-003').attempts, 1);
+        assert.ok(merges.some((m) => m.kind === 'verify_failed' && m.task === 'T-003'));
+      }
+      assert.deepEqual((await p.store.verifyIntegrity()).errors, []);
+    } finally { p.cleanup(); }
+  }
 });

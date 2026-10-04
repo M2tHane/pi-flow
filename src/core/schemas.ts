@@ -269,6 +269,8 @@ export const WorkflowFile = Type.Object({
     bash_timeout_s: Type.Optional(PosInt),
     /** ready 任务由引擎自动派发（默认 true）；false 时由 orchestrator 调用 flow_dispatch 或用户 /flow next（第三轮后续 5） */
     auto_dispatch: Type.Optional(Type.Boolean()),
+    /** 批量合并（第四轮后续）：不逐任务审查时，合并队列里最多这么多个任务一起 rebase、只跑一次全量测试，默认 3；1 关闭 */
+    merge_batch: Type.Optional(PosInt),
   }, { additionalProperties: false }),
   models: Type.Record(Type.String(), Type.String({ minLength: 1 })),
   modes: Type.Object({ build: Type.Optional(ModeDef), feature: Type.Optional(ModeDef) }, { additionalProperties: false }),

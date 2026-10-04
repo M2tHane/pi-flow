@@ -19,6 +19,7 @@ limits:
   bash_timeout_s: 300           # 子进程每条 bash 命令最多运行的秒数（挂起的测试会被结束，模型能看到超时）
   auto_dispatch: true           # ready 任务由程序自动派发，主 agent 只负责沟通，不用每个任务唤醒一次
   continue_session: true        # 返工时接着上一次的对话继续（同一角色、同一模型），不从头读任务与代码
+  merge_batch: 3                # 批量合并：合并队列里最多 3 个任务一起 rebase、只跑一次全量测试，失败再逐个合并；1 关闭
 models:                         # 档位到具体模型的映射，由用户填写
   strong: "<provider/model>"
   medium: "<provider/model>"
