@@ -27,6 +27,13 @@ export function stageReviewEnabled(config: FlowConfig, flow: FlowFile): boolean 
   return flow.mode !== 'fix' && !DESIGN_STAGES.has(flow.stage) && config.raw.review?.stage_end !== false;
 }
 
+/** 只含测试任务（test、integration）的阶段的审查方式（review.test_stages，默认 skip）；不是测试阶段返回 null */
+export function testStageMode(config: FlowConfig, tasks: readonly TaskFile[], stage: string): 'skip' | 'light' | 'strong' | null {
+  const changed = changedTasks(tasks, stage).filter((t) => t.kind !== 'review-fix');
+  if (!changed.length || !changed.every((t) => t.kind === 'test' || t.kind === 'integration')) return null;
+  return config.raw.review?.test_stages ?? 'skip';
+}
+
 /** 本阶段合入过改动的任务（审查对象）；没有就不审查（例如只有人工闸门的发布阶段） */
 function changedTasks(tasks: readonly TaskFile[], stage: string): TaskFile[] {
   return tasks.filter((t) => t.stage === stage && t.status === 'done' && t.kind !== 'analysis');
@@ -159,6 +166,8 @@ export async function stageReviewStep(d: StageReviewDeps, flowId: string): Promi
   if (!sr) {
     const changed = changedTasks(tasks, stage);
     if (!changed.length) return 'gate';
+    // 纯测试阶段（联调、端到端）默认不审查：真实冒烟中审查没有发现问题，闸门照样跑全量测试
+    if (testStageMode(config, tasks, stage) === 'skip') return 'gate';
     const [id] = nextIds(tasks, 1);
     const base = stageBase(store, flowId, stage);
     const next = { ...emptyRecord(stage), base_sha: base, review_task: id! };

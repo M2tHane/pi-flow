@@ -294,6 +294,8 @@ export const WorkflowFile = Type.Object({
     per_task: Type.Optional(Type.Boolean()),
     /** 阶段末审查（第四轮，默认 true）：实施阶段的任务全部合入后，强模型审查一次本阶段全部代码，按模块并行修复、确认一次，再跑全量测试 */
     stage_end: Type.Optional(Type.Boolean()),
+    /** 只含测试任务（test、integration）的阶段怎么做阶段审查：skip 跳过（默认，闸门照样跑全量测试）、light 用审查者自己的模型、strong 用强模型 */
+    test_stages: Type.Optional(Type.Union([Type.Literal('skip'), Type.Literal('light'), Type.Literal('strong')])),
     max_parallel: Type.Optional(PosInt),
     low_risk: Type.Optional(Type.Object({
       enabled: Type.Optional(Type.Boolean()),

@@ -26,6 +26,7 @@ models:                         # 档位到具体模型的映射，由用户填�
 review:                         # 审查（可选，以下为默认值）
   per_task: false               # 逐任务审查：默认关闭，提交后直接合并，合并时跑全量 typecheck、lint、test；true 时每个任务按下面的风险规则审查
   stage_end: true               # 阶段末审查：实施阶段的任务全部合入后，强模型审查一次本阶段全部代码 → 按模块并行修复 → 确认一次 → 全量测试（失败自动修两轮）
+  test_stages: skip             # 只含测试任务的阶段（联调、端到端）：skip 不做阶段审查（闸门照样跑全量测试），light 用审查者自己的模型，strong 用强模型
   max_parallel: 2               # 同时进行的审查数；默认等于 limits.max_parallel
   verify_first: true            # 派审查前先跑 verify：失败直接退回实施，不花审查的钱；通过后审查后的 verify 沿用结果
   low_risk:                     # 同时满足才算低风险：只改这些路径、文件数与行数不超限、不涉及契约与 shared

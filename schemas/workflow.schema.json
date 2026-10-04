@@ -333,6 +333,22 @@
         "stage_end": {
           "type": "boolean"
         },
+        "test_stages": {
+          "anyOf": [
+            {
+              "type": "string",
+              "const": "skip"
+            },
+            {
+              "type": "string",
+              "const": "light"
+            },
+            {
+              "type": "string",
+              "const": "strong"
+            }
+          ]
+        },
         "max_parallel": {
           "type": "integer",
           "minimum": 1

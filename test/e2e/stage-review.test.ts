@@ -229,3 +229,24 @@ test('修复任务补契约：改动契约已有内容被拒，只新增被接�
     assert.match(p.store.readHandoff(p.flowId, sr.fix_tasks[0]!), /可以直接在对应契约文件里新增/);
   } finally { p.cleanup(); }
 });
+
+test('纯测试阶段（只有联调、测试任务）默认不做阶段审查，直接跑闸门；review.test_stages: light 时审查用普通档', async () => {
+  const t = mkTask('T-001', { kind: 'integration', role: 'test-engineer', scopes: ['acceptance'], writes: ['tests/e2e/**'] });
+  const p = await setupProject({ yaml: AUTO, tasks: [t] });
+  try {
+    const { engine, errors } = makeEngine(p, script(p));
+    await engine.next(p.flowId);
+    await engine.idle();
+    assert.deepEqual(errors, []);
+    assert.equal(p.store.readStageReview(p.flowId, 'S3'), null, '没有阶段审查');
+    assert.equal(p.store.readFlow(p.flowId).stage_status, 'awaiting_human');
+  } finally { p.cleanup(); }
+  const p2 = await setupProject({ yaml: AUTO.replace('  test_stages: skip ', '  test_stages: light'), tasks: [t] });
+  try {
+    const { engine } = makeEngine(p2, script(p2));
+    await engine.next(p2.flowId);
+    await engine.idle();
+    assert.equal(p2.store.readStageReview(p2.flowId, 'S3')?.status, 'done');
+    assert.deepEqual(p2.store.listRuns().filter((r) => r.role === 'reviewer').map((r) => r.review_mode), ['full']);
+  } finally { p2.cleanup(); }
+});

@@ -24,7 +24,7 @@ import { RUN_ENV_KEYS } from '../tools/subagent-tools.ts';
 import { MergeQueue, type MergeHooks, type MergeResult, type SyncResult } from './merge-queue.ts';
 import { runStageGate, gateFailedWithoutChange, type GateOutcome } from './gates.ts';
 import { ensureStageTasks } from './stages.ts';
-import { stageGateFailed, stageGatePassed, stageReviewStep } from './stage-review.ts';
+import { stageGateFailed, stageGatePassed, stageReviewStep, testStageMode } from './stage-review.ts';
 import { PROPOSAL_STAGES, STAGE_SKILLS } from '../modes/plan.ts';
 import { fixStep } from '../modes/fix.ts';
 import { existsSync, readFileSync } from 'node:fs';
@@ -260,7 +260,7 @@ export class Engine {
     let reviewMode: ReviewMode | undefined;
     if (role === REVIEWER_ROLE && task.stage_review) {
       // 阶段末审查用强模型；确认只看清单上的几处，用审查者自己的模型
-      reviewMode = task.stage_review === 'review' ? 'strong' : 'full';
+      reviewMode = task.stage_review === 'review' && testStageMode(this.d.config, this.d.store.listTasks(flowId), task.stage) !== 'light' ? 'strong' : 'full';
       if (reviewMode === 'strong') model = strongReviewModel(this.d.config, this.d.roleSettings(), role, model) ?? model;
     } else if (role === REVIEWER_ROLE) {
       const risk = assessRisk(this.d.config, task, this.d.store.listTasks(flowId), diffNumstat(task));
