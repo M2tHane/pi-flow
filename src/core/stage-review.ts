@@ -6,7 +6,8 @@
 // 记录在 flows/<id>/stage-review-<阶段>.json，引擎每次 pump 按它推进，崩溃后从中途继续。
 import type { FlowConfig } from './config.ts';
 import type { StateStore, TaskInput } from './state-store.ts';
-import type { FlowFile, StageIssue, StageReviewFile, TaskFile } from './schemas.ts';
+import type { FlowFile, ReviewBatch, StageIssue, StageReviewFile, TaskFile } from './schemas.ts';
+import { isSettled } from './state-machine.ts';
 import { git } from './git.ts';
 import { headSha, removeWorktree, taskBranch, worktreePath } from './worktree.ts';
 import { CONTRACTS_PATH, isProtected, matchesAny } from './paths.ts';
@@ -120,21 +121,27 @@ function stageBase(store: StateStore, flowId: string, stage: string): string | n
   return (first?.data?.['from'] as string | undefined) ?? null;
 }
 
-function emptyRecord(stage: string): StageReviewFile {
-  return { stage, status: 'reviewing', base_sha: null, review_task: null, reported: false, issues: [], fix_tasks: [], confirm_task: null, confirm: [], refix_tasks: [], test_rounds: [], version: 1 };
-}
+/** 实施工作（审查对象）：不含审查、确认、修复任务本身 */
+const isWork = (t: TaskFile) => t.kind !== 'analysis' && t.kind !== 'review-fix';
 
-function reviewerTask(id: string, stage: string, kind: 'review' | 'confirm', stageTasks: readonly TaskFile[]): TaskInput {
-  const scopes = [...new Set(stageTasks.flatMap((t) => t.scopes))];
-  const inputs = [...new Set(['docs/ARCHITECTURE.md', 'docs/contracts/', ...stageTasks.flatMap((t) => t.inputs)])].slice(0, 40);
+/** 阶段审查记录里所有批次的问题 */
+export const allIssues = (sr: StageReviewFile): StageIssue[] => sr.batches.flatMap((b) => b.issues);
+/** 审查或确认任务所属的批次 */
+export const batchOfTask = (sr: StageReviewFile, taskId: string): ReviewBatch | undefined =>
+  sr.batches.find((b) => b.review_task === taskId || b.confirm_task === taskId);
+
+function reviewerTask(id: string, stage: string, kind: 'review' | 'confirm', covered: readonly TaskFile[], roles: readonly string[]): TaskInput {
+  const scopes = [...new Set(covered.flatMap((t) => t.scopes))];
+  const inputs = [...new Set(['docs/ARCHITECTURE.md', 'docs/contracts/', ...covered.flatMap((t) => t.inputs)])].slice(0, 40);
+  const who = roles.join('、');
   return kind === 'review'
-    ? { id, stage, kind: 'analysis', title: `阶段 ${stage} 末审查：本阶段全部模块的代码`, role: STAGE_REVIEW_ROLE, scopes, depends_on: [], inputs, writes: [], verify: [], stage_review: 'review',
+    ? { id, stage, kind: 'analysis', title: `阶段 ${stage} 审查（${who}）：这些任务的全部代码`.slice(0, 200), role: STAGE_REVIEW_ROLE, scopes, depends_on: [], inputs, writes: [], verify: [], stage_review: 'review',
       acceptance: [
-        '读本阶段改动涉及的全部模块的代码，对照规则、契约（docs/contracts/）、ARCHITECTURE.md 与各任务的验收标准',
+        `读 handoff 中列出的任务（${who}）改动涉及的全部代码，对照规则、契约（docs/contracts/）、ARCHITECTURE.md 与各任务的验收标准`,
         '只提违反规则、契约、验收标准的问题与明确的缺陷，不提风格偏好与可有可无的改进',
         '用 flow_review_report 一次提交问题清单：每条写模块、位置、问题、期望的修改、涉及的文件；没有问题就提交空清单',
       ] }
-    : { id, stage, kind: 'analysis', title: `阶段 ${stage} 末审查：确认修复`, role: STAGE_REVIEW_ROLE, scopes, depends_on: [], inputs, writes: [], verify: [], stage_review: 'confirm',
+    : { id, stage, kind: 'analysis', title: `阶段 ${stage} 审查（${who}）：确认修复`.slice(0, 200), role: STAGE_REVIEW_ROLE, scopes, depends_on: [], inputs, writes: [], verify: [], stage_review: 'confirm',
       acceptance: [
         '逐条核对清单中的问题是否已经解决',
         '用 flow_review_confirm 提交：每个编号回答 resolved（true/false），未解决的写明原因；只能回答已有编号，不能提出新问题',
@@ -151,83 +158,111 @@ function cleanupReviewerWorktree(root: string, flowId: string, taskId: string | 
 }
 
 /**
- * 推进阶段审查。调用前提：本阶段任务全部已结束（done/cancelled）。
- * 返回 'gate' 表示审查与修复已完成（或本阶段不审查），可以跑闸门；'wait' 表示生成了新任务或在等待。
+ * 推进阶段审查（每次 pump 调用，不必等整个阶段结束）：
+ * - 某些角色在本阶段的实施任务全部合入后，就为它们开一批审查（与其他角色还在做的任务并行）；
+ * - 每批各自走审查 → 按模块修复 → 确认 → 未解决的再修一轮；
+ * - 本阶段任务全部结束、所有批次完成、没有未审查的合入时返回 'gate'（跑闸门）；否则 'wait'。
  */
 export async function stageReviewStep(d: StageReviewDeps, flowId: string): Promise<'gate' | 'wait'> {
+  // 每写一步就按最新状态再看一次：批次完成但没有生成新任务时，不会有子进程结束来触发下一次 pump
+  for (let i = 0; i < 20; i++) {
+    const r = await stepOnce(d, flowId);
+    if (r !== 'again') return r;
+  }
+  return 'wait';
+}
+
+async function stepOnce(d: StageReviewDeps, flowId: string): Promise<'gate' | 'wait' | 'again'> {
   const { store, config } = d;
   const flow = store.readFlow(flowId);
-  if (!stageReviewEnabled(config, flow)) return 'gate';
   const stage = flow.stage;
   const tasks = store.listTasks(flowId);
   const stageTasks = tasks.filter((t) => t.stage === stage);
+  const allSettled = stageTasks.every(isSettled);
+  if (!stageReviewEnabled(config, flow)) return allSettled ? 'gate' : 'wait';
   const sr = store.readStageReview(flowId, stage);
+  if (sr && sr.status !== 'reviewing') return allSettled ? 'gate' : 'wait'; // gating 之后交给闸门
 
-  if (!sr) {
-    const changed = changedTasks(tasks, stage);
-    if (!changed.length) return 'gate';
-    // 纯测试阶段（联调、端到端）默认不审查：真实冒烟中审查没有发现问题，闸门照样跑全量测试
-    if (testStageMode(config, tasks, stage) === 'skip') return 'gate';
-    const [id] = nextIds(tasks, 1);
-    const base = stageBase(store, flowId, stage);
-    const next = { ...emptyRecord(stage), base_sha: base, review_task: id! };
-    await store.updateStageReview(flowId, next, {
-      tasks: [reviewerTask(id!, stage, 'review', changed)],
-      handoffs: { [id!]: `本阶段（${stage}）已合入的任务：\n${stageTaskBrief(changed)}` },
-      actor: 'engine', reason: `阶段 ${stage} 的任务全部合入，开始阶段末审查（${id}）`,
-    });
-    return 'wait';
+  // 1. 推进进行中的批次（每次只推进一步，状态写入后由下一次 pump 继续）
+  for (const b of sr?.batches ?? []) {
+    if (b.status !== 'done' && await advanceBatch(d, flow, sr!, b, tasks)) return 'again';
   }
 
-  switch (sr.status) {
-    case 'reviewing': {
-      cleanupReviewerWorktree(d.root, flowId, sr.review_task);
-      if (!sr.reported || !sr.issues.length) {
-        await store.updateStageReview(flowId, { ...sr, status: 'gating' }, { actor: 'engine', reason: `阶段 ${stage} 末审查没有发现问题，跑全量测试` });
-        return 'gate';
-      }
-      const plan = planFixTasks(config, tasks, stage, sr.issues, 1);
-      await store.updateStageReview(flowId, { ...sr, status: 'fixing', fix_base: headSha(d.root, flow.integration_branch), fix_tasks: plan.tasks.map((t) => t.id) }, {
-        tasks: plan.tasks, handoffs: plan.handoffs, actor: 'engine',
-        reason: `阶段 ${stage} 末审查发现 ${sr.issues.length} 个问题，按模块生成 ${plan.tasks.length} 个修复任务并行修复`,
+  // 2. 开新批次：本阶段合入了、还没审查过的实施任务，且同角色在本阶段没有未结束的实施任务
+  const work = stageTasks.filter(isWork);
+  const covered = new Set(sr?.batches.flatMap((b) => b.tasks) ?? []);
+  const uncovered = work.filter((t) => t.status === 'done' && !covered.has(t.id));
+  if (uncovered.length && testStageMode(config, tasks, stage) !== 'skip') {
+    const busy = new Set(work.filter((t) => !isSettled(t)).map((t) => t.role));
+    const ready = uncovered.filter((t) => !busy.has(t.role));
+    if (ready.length) {
+      const roles = [...new Set(ready.map((t) => t.role))];
+      const [id] = nextIds(tasks, 1);
+      const batch: ReviewBatch = { id: (sr?.batches.length ?? 0) + 1, roles, tasks: ready.map((t) => t.id), status: 'reviewing', review_task: id!,
+        reported: false, issues: [], fix_tasks: [], confirm_task: null, confirm: [], refix_tasks: [] };
+      const next: StageReviewFile = sr ? { ...sr, batches: [...sr.batches, batch] }
+        : { stage, status: 'reviewing', base_sha: stageBase(store, flowId, stage), batches: [batch], test_rounds: [], version: 1 };
+      await store.updateStageReview(flowId, next, {
+        tasks: [reviewerTask(id!, stage, 'review', ready, roles)],
+        handoffs: { [id!]: `本批审查的任务（阶段 ${stage}，${roles.join('、')} 的任务已全部合入${allSettled ? '' : '；其他角色的任务还在进行，不在本批'}）：\n${stageTaskBrief(ready)}` },
+        actor: 'engine', reason: `阶段 ${stage}：${roles.join('、')} 的任务全部合入，开始第 ${batch.id} 批审查（${id}）`,
       });
-      return 'wait';
+      return 'again';
+    }
+  }
+
+  // 3. 全部结束：进入闸门
+  if (!allSettled || sr?.batches.some((b) => b.status !== 'done')) return 'wait';
+  if (sr) await store.updateStageReview(flowId, { ...sr, status: 'gating' }, { actor: 'engine', reason: `阶段 ${stage} 的审查已全部完成（${allIssues(sr).length} 个问题），跑全量测试` });
+  return 'gate';
+}
+
+/** 推进一个批次的一步；返回是否写入了新状态 */
+async function advanceBatch(d: StageReviewDeps, flow: FlowFile, sr: StageReviewFile, b: ReviewBatch, tasks: readonly TaskFile[]): Promise<boolean> {
+  const { store, config } = d;
+  const stage = flow.stage;
+  const settled = (ids: readonly (string | null)[]) => ids.every((id) => { const t = id ? tasks.find((x) => x.id === id) : undefined; return !t || isSettled(t); });
+  const save = (nb: ReviewBatch, reason: string, opts: { tasks?: TaskInput[]; handoffs?: Record<string, string> } = {}) =>
+    store.updateStageReview(flow.id, { ...sr, batches: sr.batches.map((x) => (x.id === b.id ? nb : x)) }, { ...opts, actor: 'engine', reason: `阶段 ${stage} 第 ${b.id} 批：${reason}` }).then(() => true);
+  const covered = tasks.filter((t) => b.tasks.includes(t.id));
+  switch (b.status) {
+    case 'reviewing': {
+      if (!settled([b.review_task])) return false;
+      cleanupReviewerWorktree(d.root, flow.id, b.review_task);
+      if (!b.reported || !b.issues.length) return save({ ...b, status: 'done' }, '审查没有发现问题');
+      const plan = planFixTasks(config, tasks, stage, b.issues, 1);
+      return save({ ...b, status: 'fixing', fix_base: headSha(d.root, flow.integration_branch), fix_tasks: plan.tasks.map((t) => t.id) },
+        `审查发现 ${b.issues.length} 个问题，按模块生成 ${plan.tasks.length} 个修复任务并行修复`, { tasks: plan.tasks, handoffs: plan.handoffs });
     }
     case 'fixing': {
+      if (!settled(b.fix_tasks)) return false;
       const [id] = nextIds(tasks, 1);
-      const fixes = stageTasks.filter((t) => sr.fix_tasks.includes(t.id));
-      const diff = sr.fix_base ? safeGit(d.root, ['diff', '--stat', sr.fix_base, flow.integration_branch]) : '';
-      const contractAdds = sr.fix_base ? safeGit(d.root, ['diff', sr.fix_base, flow.integration_branch, '--', 'docs/contracts']) : '';
-      await store.updateStageReview(flowId, { ...sr, status: 'confirming', confirm_task: id! }, {
-        tasks: [reviewerTask(id!, stage, 'confirm', changedTasks(tasks, stage))],
-        handoffs: { [id!]: `待确认的问题：\n${formatIssues(sr.issues)}\n\n修复任务：\n${fixes.map((t) => `- ${t.id}（${t.role}）${t.status === 'done' ? '已合入' : t.status}：${t.review_issues?.join('、') ?? ''}`).join('\n')}${diff ? `\n\n修复开始后的改动（git diff --stat ${sr.fix_base!.slice(0, 12)} HEAD）：\n${diff}` : ''}${contractAdds ? `\n\n修复时补充的契约（只允许新增；请确认没有改变需求、没有超出修复所需，否则把对应问题判为未解决并在 note 里说明）：\n${contractAdds.slice(0, 6000)}` : ''}` },
-        actor: 'engine', reason: `阶段 ${stage} 的审查修复已合入，派审查者确认（${id}）`,
+      const fixes = tasks.filter((t) => b.fix_tasks.includes(t.id));
+      const diff = b.fix_base ? safeGit(d.root, ['diff', '--stat', b.fix_base, flow.integration_branch]) : '';
+      const contractAdds = b.fix_base ? safeGit(d.root, ['diff', b.fix_base, flow.integration_branch, '--', 'docs/contracts']) : '';
+      return save({ ...b, status: 'confirming', confirm_task: id! }, `修复已合入，派审查者确认（${id}）`, {
+        tasks: [reviewerTask(id!, stage, 'confirm', covered, b.roles)],
+        handoffs: { [id!]: `待确认的问题：\n${formatIssues(b.issues)}\n\n修复任务：\n${fixes.map((t) => `- ${t.id}（${t.role}）${t.status === 'done' ? '已合入' : t.status}：${t.review_issues?.join('、') ?? ''}`).join('\n')}${diff ? `\n\n修复开始后的改动（git diff --stat ${b.fix_base!.slice(0, 12)} HEAD）：\n${diff}` : ''}${contractAdds ? `\n\n修复时补充的契约（只允许新增；请确认没有改变需求、没有超出修复所需，否则把对应问题判为未解决并在 note 里说明）：\n${contractAdds.slice(0, 6000)}` : ''}` },
       });
-      return 'wait';
     }
     case 'confirming': {
-      cleanupReviewerWorktree(d.root, flowId, sr.confirm_task);
-      const unresolved = sr.issues.filter((i) => sr.confirm.find((c) => c.id === i.id)?.resolved === false);
-      if (!unresolved.length) {
-        await store.updateStageReview(flowId, { ...sr, status: 'gating' }, { actor: 'engine', reason: `阶段 ${stage} 的审查问题已全部确认解决，跑全量测试` });
-        return 'gate';
-      }
+      if (!settled([b.confirm_task])) return false;
+      cleanupReviewerWorktree(d.root, flow.id, b.confirm_task);
+      const unresolved = b.issues.filter((i) => b.confirm.find((c) => c.id === i.id)?.resolved === false);
+      if (!unresolved.length) return save({ ...b, status: 'done' }, '问题已全部确认解决');
       const withNotes = unresolved.map((i) => {
-        const note = sr.confirm.find((c) => c.id === i.id)?.note;
+        const note = b.confirm.find((c) => c.id === i.id)?.note;
         return note ? { ...i, problem: `${i.problem}（确认时仍未解决：${note}）` } : i;
       });
       const plan = planFixTasks(config, tasks, stage, withNotes, 2);
-      await store.updateStageReview(flowId, { ...sr, status: 'refixing', refix_tasks: plan.tasks.map((t) => t.id) }, {
-        tasks: plan.tasks, handoffs: plan.handoffs, actor: 'engine',
-        reason: `阶段 ${stage} 确认后仍有 ${unresolved.length} 个问题未解决，再修一轮（不再确认）`,
-      });
-      return 'wait';
+      return save({ ...b, status: 'refixing', refix_tasks: plan.tasks.map((t) => t.id) }, `确认后仍有 ${unresolved.length} 个问题未解决，再修一轮（不再确认）`,
+        { tasks: plan.tasks, handoffs: plan.handoffs });
     }
     case 'refixing':
-      await store.updateStageReview(flowId, { ...sr, status: 'gating' }, { actor: 'engine', reason: `阶段 ${stage} 的第二轮修复已合入，跑全量测试` });
-      return 'gate';
+      if (!settled(b.refix_tasks)) return false;
+      return save({ ...b, status: 'done' }, '第二轮修复已合入');
     default:
-      return 'gate'; // gating、test_fixing、needs_human、done：交给闸门
+      return false;
   }
 }
 
@@ -312,12 +347,19 @@ export async function stageGateFailed(d: StageReviewDeps, flowId: string, stage:
 
 /** 给人看的阶段审查进展（状态视图、orchestrator 的下一步） */
 export function describeStageReview(sr: StageReviewFile): string {
+  const batch = (b: ReviewBatch) => {
+    const who = `第 ${b.id} 批（${b.roles.join('、')}）`;
+    switch (b.status) {
+      case 'reviewing': return `${who}审查中`;
+      case 'fixing': return `${who}发现 ${b.issues.length} 个问题，${b.fix_tasks.length} 个修复任务并行修复中`;
+      case 'confirming': return `${who}修复已合入，确认中`;
+      case 'refixing': return `${who}${b.confirm.filter((c) => !c.resolved).length} 个问题未解决，再修一轮`;
+      case 'done': return `${who}已完成（${b.issues.length} 个问题）`;
+    }
+  };
   switch (sr.status) {
-    case 'reviewing': return '审查者正在通读本阶段全部代码';
-    case 'fixing': return `审查发现 ${sr.issues.length} 个问题，按模块分成 ${sr.fix_tasks.length} 个修复任务并行修复中`;
-    case 'confirming': return '修复已合入，审查者逐条确认中（只能确认已有问题，不提新问题）';
-    case 'refixing': return `${sr.issues.length - sr.confirm.filter((c) => c.resolved).length} 个问题确认未解决，再修一轮（之后不再确认）`;
-    case 'gating': return sr.issues.length ? `审查的 ${sr.issues.length} 个问题已处理，跑全量测试中` : '审查没有发现问题，跑全量测试中';
+    case 'reviewing': return sr.batches.filter((b) => b.status !== 'done').map(batch).join('；') || `${sr.batches.map(batch).join('；')}；等其他任务合入`;
+    case 'gating': return allIssues(sr).length ? `审查的 ${allIssues(sr).length} 个问题已处理，跑全量测试中` : '审查没有发现问题，跑全量测试中';
     case 'test_fixing': return `全量测试失败，第 ${sr.test_rounds.length}/${MAX_TEST_ROUNDS} 轮修复中`;
     case 'needs_human': return `需要你处理：${sr.reason ?? '全量测试仍失败'}`;
     case 'done': return '阶段审查已完成';

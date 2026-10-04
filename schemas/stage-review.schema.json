@@ -6,13 +6,7 @@
     "stage",
     "status",
     "base_sha",
-    "review_task",
-    "reported",
-    "issues",
-    "fix_tasks",
-    "confirm_task",
-    "confirm",
-    "refix_tasks",
+    "batches",
     "test_rounds",
     "version"
   ],
@@ -24,9 +18,6 @@
     "status": {
       "enum": [
         "reviewing",
-        "fixing",
-        "confirming",
-        "refixing",
         "gating",
         "test_fixing",
         "needs_human",
@@ -43,114 +34,163 @@
         }
       ]
     },
-    "review_task": {
-      "anyOf": [
-        {
-          "type": "string",
-          "pattern": "^T-[0-9]{3,}$"
-        },
-        {
-          "type": "null"
-        }
-      ]
-    },
-    "reported": {
-      "type": "boolean"
-    },
-    "issues": {
+    "batches": {
       "type": "array",
       "items": {
         "type": "object",
         "required": [
           "id",
-          "module",
-          "location",
-          "problem",
-          "expected",
-          "files"
+          "roles",
+          "tasks",
+          "status",
+          "review_task",
+          "reported",
+          "issues",
+          "fix_tasks",
+          "confirm_task",
+          "confirm",
+          "refix_tasks"
         ],
         "properties": {
           "id": {
-            "type": "string",
-            "pattern": "^R-[0-9]+$"
+            "type": "integer",
+            "minimum": 1
           },
-          "module": {
-            "type": "string",
-            "minLength": 1
-          },
-          "location": {
-            "type": "string",
-            "minLength": 1
-          },
-          "problem": {
-            "type": "string",
-            "minLength": 1
-          },
-          "expected": {
-            "type": "string",
-            "minLength": 1
-          },
-          "files": {
+          "roles": {
             "type": "array",
             "items": {
               "type": "string",
               "minLength": 1
-            },
-            "minItems": 1
-          }
-        },
-        "additionalProperties": false
-      }
-    },
-    "fix_base": {
-      "type": "string"
-    },
-    "fix_tasks": {
-      "type": "array",
-      "items": {
-        "type": "string",
-        "pattern": "^T-[0-9]{3,}$"
-      }
-    },
-    "confirm_task": {
-      "anyOf": [
-        {
-          "type": "string",
-          "pattern": "^T-[0-9]{3,}$"
-        },
-        {
-          "type": "null"
-        }
-      ]
-    },
-    "confirm": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "required": [
-          "id",
-          "resolved"
-        ],
-        "properties": {
-          "id": {
-            "type": "string",
-            "pattern": "^R-[0-9]+$"
+            }
           },
-          "resolved": {
+          "tasks": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^T-[0-9]{3,}$"
+            }
+          },
+          "status": {
+            "enum": [
+              "reviewing",
+              "fixing",
+              "confirming",
+              "refixing",
+              "done"
+            ]
+          },
+          "review_task": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^T-[0-9]{3,}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reported": {
             "type": "boolean"
           },
-          "note": {
+          "issues": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "module",
+                "location",
+                "problem",
+                "expected",
+                "files"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "pattern": "^R-[0-9]+$"
+                },
+                "module": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "location": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "problem": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "expected": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "files": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "minItems": 1
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "fix_base": {
             "type": "string"
+          },
+          "fix_tasks": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^T-[0-9]{3,}$"
+            }
+          },
+          "confirm_task": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^T-[0-9]{3,}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "confirm": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "resolved"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "pattern": "^R-[0-9]+$"
+                },
+                "resolved": {
+                  "type": "boolean"
+                },
+                "note": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "refix_tasks": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^T-[0-9]{3,}$"
+            }
           }
         },
         "additionalProperties": false
-      }
-    },
-    "refix_tasks": {
-      "type": "array",
-      "items": {
-        "type": "string",
-        "pattern": "^T-[0-9]{3,}$"
       }
     },
     "test_rounds": {

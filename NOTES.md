@@ -179,7 +179,7 @@
 
 101. 契约到函数级（第 108、113 条修订：只写模块边界、按需写细）：每个模块一个契约文件，写对外函数的名字、参数、返回值、错误（REST 照旧）；任务 inputs 列出依赖的契约条目。只改技能与提示，程序不校验格式。
 102. 逐任务审查可关闭（`review.per_task`，默认 false）：新增 `in_progress → queued_merge`（`submit_direct`，检查同 submit）；合并时 verify 非空的任务跑全量 typecheck、lint、test（不再用受影响测试），失败按 merge_verify_fail 退回并接续对话。设计阶段文档、fix 流程、先行验收测试照旧逐任务审查（设计阶段只有一个任务，审查兼查 extras）。修订第 45 条（关闭审查时）。测试配置固定 `per_task: true`。
-103. 阶段末审查（`review.stage_end`，默认 true；测试配置固定 false）：实施阶段（非设计阶段、非 fix）任务全部结束后由程序推进 `flows/<id>/stage-review-<阶段>.json`（reviewing → fixing → confirming → refixing → gating → test_fixing / needs_human → done），每步的记录、新任务与 handoff 在同一事务内写入，崩溃后从中途继续。审查与确认是程序生成的只读 analysis 任务（`stage_review`，角色 reviewer，审查用强模型、确认用普通档），经 `report` 转 done。
+103. 阶段末审查（第 117 条修订：按角色分批提前开始；`review.stage_end`，默认 true；测试配置固定 false）：实施阶段（非设计阶段、非 fix）任务全部结束后由程序推进 `flows/<id>/stage-review-<阶段>.json`（reviewing → fixing → confirming → refixing → gating → test_fixing / needs_human → done），每步的记录、新任务与 handoff 在同一事务内写入，崩溃后从中途继续。审查与确认是程序生成的只读 analysis 任务（`stage_review`，角色 reviewer，审查用强模型、确认用普通档），经 `report` 转 done。
 104. 新工具 `flow_review_report`（问题文件必须是具体路径、不能是契约或受保护文件、要有实施角色能写，否则拒绝）与 `flow_review_confirm`（参数只有 `{id, resolved, note}`，id 必须在清单中且每个都要回答；Pi 自己也按 schema 拒绝多余字段）；reviewer 角色隐式拥有。修复任务用已有的 kind `review-fix`，按（模块，角色）分组、writes = 问题涉及的文件。
 105. 闸门失败（auto 命令）时从输出中提取仓库里的文件，按写过它的任务找角色（writes 取那些任务的 writes），生成第 n 轮修复任务；两轮后或定位不到时转 needs_human（"需要你处理"，`/flow gate` 重跑不再自动修）。阶段审查结束后被修订重新打开的阶段不再审查。
 106. `/flow next` 先 pump 再派发（复跑看板时发现）：提交直接进合并队列后，引擎在"提交"与"合并"之间重启，任务会停在 queued_merge，只有 pump 会处理它。
@@ -193,6 +193,7 @@
 114. 任务粒度跟实施模型走：拆任务（S1/F1、修订）的提示列出各实施角色的模型（与 architect 同模型或 strong 档算强模型）；`decompose-dag` 规定强模型按模块或按层拆大任务，小项目（四五千行内）每个角色一个任务，弱模型按切片拆小任务。程序不强制任务数。
 115. 纯测试阶段的审查（`review.test_stages`，默认 skip）：阶段内合入的任务都是 test/integration 时不做阶段审查（闸门照样跑全量测试；全 gpt 复跑中这类审查 0 个问题），light 用普通档，strong 用强模型。
 116. 批量合并（`limits.merge_batch`，默认 3；修订第 81 条"合并列车暂不实现"：不逐任务审查后每次合并都跑全量测试，瓶颈变了）：队首连续的普通任务先在临时 worktree 依次 cherry-pick，只跑一次全量验证，通过后逐个 merging → done、集成分支依次快进（仍只有一个 merging）；冲突、验证失败或含 merge-fix、承载先行测试、同步修复、fix 流程时退回逐个合并。
+117. 阶段审查按角色分批提前开始（修订第 103 条）：某角色在本阶段的实施任务全部合入就开一批审查（与其他角色的任务并行），记录改为 `batches[]`，每批各自审查 → 修复 → 确认 → 再修一轮，问题编号跨批连续；修复任务不再触发新批；所有批次完成、阶段任务全部结束后才进入 gating。全 gpt 复跑中功能阶段的审查要等最后一个前端任务（第 101 分钟）才开始。
 
 ## 真实模型实验
 

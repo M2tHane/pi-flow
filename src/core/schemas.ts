@@ -407,7 +407,8 @@ export const RevisionTask = Type.Object({
 export type RevisionTask = Static<typeof RevisionTask>;
 
 // —— 阶段末审查（第四轮）：本阶段任务全部合入后审查一次 → 按模块并行修复 → 只确认不新增 → 全量测试与有限重试 ——
-export const STAGE_REVIEW_STATUSES = ['reviewing', 'fixing', 'confirming', 'refixing', 'gating', 'test_fixing', 'needs_human', 'done'] as const;
+export const STAGE_REVIEW_STATUSES = ['reviewing', 'gating', 'test_fixing', 'needs_human', 'done'] as const;
+export const REVIEW_BATCH_STATUSES = ['reviewing', 'fixing', 'confirming', 'refixing', 'done'] as const;
 export const StageIssue = Type.Object({
   id: Type.String({ pattern: '^R-[0-9]+$' }),
   module: Type.String({ minLength: 1 }),
@@ -418,22 +419,34 @@ export const StageIssue = Type.Object({
 }, { additionalProperties: false });
 export type StageIssue = Static<typeof StageIssue>;
 
-export const StageReviewFile = Type.Object({
-  stage: Type.String({ minLength: 1 }),
-  status: Type.Enum(STAGE_REVIEW_STATUSES),
-  /** 本阶段第一次合并前的集成分支提交：审查看 base_sha..HEAD */
-  base_sha: Nullable(Type.String()),
+/** 一批审查（第四轮后续）：某些角色的任务全部合入后就审查它们的代码，不必等整个阶段；每批各走一遍审查 → 修复 → 确认 */
+export const ReviewBatch = Type.Object({
+  id: Type.Integer({ minimum: 1 }),
+  /** 本批覆盖的角色与任务 */
+  roles: Type.Array(Type.String({ minLength: 1 })),
+  tasks: Type.Array(TaskId),
+  status: Type.Enum(REVIEW_BATCH_STATUSES),
   review_task: Nullable(TaskId),
   /** 审查者是否已提交清单（可以为空清单） */
   reported: Type.Boolean(),
   issues: Type.Array(StageIssue),
-  /** 第一轮修复开始时的集成分支提交：确认时看之后的改动 */
+  /** 修复开始时的集成分支提交：确认时看之后的改动 */
   fix_base: Type.Optional(Type.String()),
   fix_tasks: Type.Array(TaskId),
   confirm_task: Nullable(TaskId),
   confirm: Type.Array(Type.Object({ id: Type.String({ pattern: '^R-[0-9]+$' }), resolved: Type.Boolean(), note: Type.Optional(Type.String()) }, { additionalProperties: false })),
   /** 确认未解决的问题再修一轮（不再确认） */
   refix_tasks: Type.Array(TaskId),
+}, { additionalProperties: false });
+export type ReviewBatch = Static<typeof ReviewBatch>;
+
+export const StageReviewFile = Type.Object({
+  stage: Type.String({ minLength: 1 }),
+  /** reviewing：各批审查进行中；gating 起是阶段级的全量测试与有限重试 */
+  status: Type.Enum(STAGE_REVIEW_STATUSES),
+  /** 本阶段第一次合并前的集成分支提交：审查看 base_sha..HEAD */
+  base_sha: Nullable(Type.String()),
+  batches: Type.Array(ReviewBatch),
   /** 全量测试失败后的修复轮次（最多两轮） */
   test_rounds: Type.Array(Type.Object({ command: Type.String(), tasks: Type.Array(TaskId), at: IsoTime }, { additionalProperties: false })),
   reason: Type.Optional(Type.String()),

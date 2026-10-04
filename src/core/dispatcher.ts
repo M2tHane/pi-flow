@@ -24,7 +24,7 @@ import { RUN_ENV_KEYS } from '../tools/subagent-tools.ts';
 import { MergeQueue, type MergeHooks, type MergeResult, type SyncResult } from './merge-queue.ts';
 import { runStageGate, gateFailedWithoutChange, type GateOutcome } from './gates.ts';
 import { ensureStageTasks } from './stages.ts';
-import { stageGateFailed, stageGatePassed, stageReviewStep, testStageMode } from './stage-review.ts';
+import { batchOfTask, stageGateFailed, stageGatePassed, stageReviewStep, testStageMode } from './stage-review.ts';
 import { PROPOSAL_STAGES, STAGE_SKILLS } from '../modes/plan.ts';
 import { fixStep } from '../modes/fix.ts';
 import { existsSync, readFileSync } from 'node:fs';
@@ -358,8 +358,9 @@ export class Engine {
         if (!from || !task.worktree) return undefined;
         try { const s = git(task.worktree, ['diff', '--stat', from, 'HEAD']).trim(); return s.length > 8000 ? `${s.slice(0, 8000)}\n…` : s; } catch { return undefined; }
       };
+      const batch = sr ? batchOfTask(sr, task.id) : undefined;
       stageReview = { kind: task.stage_review, baseSha: sr?.base_sha ?? null, diffStat: stat(sr?.base_sha),
-        ...(task.stage_review === 'confirm' ? { issues: sr?.issues ?? [], fixBase: sr?.fix_base ?? null, fixDiffStat: stat(sr?.fix_base) } : {}) };
+        ...(task.stage_review === 'confirm' ? { issues: batch?.issues ?? [], fixBase: batch?.fix_base ?? null, fixDiffStat: stat(batch?.fix_base) } : {}) };
     }
     // 实施类角色的临时目录（项目与 worktree 之外）：做实验、建临时文件，run 结束后删除
     const scratch = mode === 'impl' && config.role(role).writes.length ? scratchDir(root, runId) : undefined;
@@ -564,12 +565,13 @@ export class Engine {
       if (flow.stage_status !== 'active' || this.gating.has(flowId)) return;
       const created = await ensureStageTasks(deps, flowId);
       if (created.length) { await this.promote(flowId); this.notify(); return; }
+      // 阶段审查（第四轮）：角色的任务全部合入就开一批审查，不必等整个阶段；审查、修复、确认都完成后才跑闸门
+      const step = await stageReviewStep(deps, flowId);
+      if (step === 'wait') { await this.promote(flowId); this.notify(); return; }
       const stageTasks = this.d.store.listTasks(flowId).filter((t) => t.stage === flow.stage);
       if (!stageTasks.every(isSettled)) return;
       // 计划修订待用户批准时不提交闸门（批准后可能新增本阶段的任务）
       if (this.d.store.readRevision(flowId)?.status === 'proposed') return;
-      // 阶段末审查（第四轮）：审查、按模块修复、确认都完成后才跑闸门；生成了新任务时等它们结束
-      if (await stageReviewStep(deps, flowId) === 'wait') { await this.promote(flowId); this.notify(); return; }
       if (!force && gateFailedWithoutChange(this.d.store, flowId, flow.stage)) return;
       await this.d.store.transitionStage(flowId, { to: 'awaiting_gate', trigger: 'submit_gate', actor: 'engine' });
       this.gating.add(flowId);

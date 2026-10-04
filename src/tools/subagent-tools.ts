@@ -345,12 +345,15 @@ export async function flowReviewReport(ctx: ToolContext, p: Static<typeof Review
   const t = checkRun(ctx);
   if (t.stage_review !== 'review' || t.status !== 'in_progress') throw new FlowToolError('flow_review_report 只能在阶段审查任务中使用。');
   const sr = ctx.store.readStageReview(ctx.env.flow, t.stage);
-  if (!sr || sr.review_task !== t.id || sr.status !== 'reviewing') throw new FlowToolError('本阶段的审查记录不在等待清单的状态，本次运行无效，请停止工作。');
+  const batch = sr?.batches.find((b) => b.review_task === t.id);
+  if (!sr || !batch || batch.status !== 'reviewing') throw new FlowToolError('本阶段的审查记录不在等待清单的状态，本次运行无效，请停止工作。');
   const tasks = ctx.store.listTasks(ctx.env.flow);
   const errors = p.issues.flatMap((x, n) => issueFileErrors(ctx.config, tasks, `第 ${n + 1} 条（${x.location}）`, x.files));
   if (errors.length) throw new FlowToolError(`问题清单未保存：\n${errors.map((e) => `- ${e}`).join('\n')}\n建议：逐条修正后重新调用 flow_review_report。`);
-  const issues = p.issues.map((x, n) => ({ id: `R-${n + 1}`, module: x.module.trim(), location: x.location.trim(), problem: x.problem.trim(), expected: x.expected.trim(), files: [...new Set(x.files)] }));
-  await ctx.store.updateStageReview(ctx.env.flow, { ...sr, reported: true, issues }, { actor: actor(ctx), reason: `阶段 ${t.stage} 审查清单：${issues.length} 个问题` });
+  // 编号接着本阶段其他批次的问题往下排
+  const first = Math.max(0, ...sr.batches.filter((b) => b.id !== batch.id).flatMap((b) => b.issues.map((i) => Number(i.id.slice(2))))) + 1;
+  const issues = p.issues.map((x, n) => ({ id: `R-${first + n}`, module: x.module.trim(), location: x.location.trim(), problem: x.problem.trim(), expected: x.expected.trim(), files: [...new Set(x.files)] }));
+  await ctx.store.updateStageReview(ctx.env.flow, { ...sr, batches: sr.batches.map((b) => (b.id === batch.id ? { ...b, reported: true, issues } : b)) }, { actor: actor(ctx), reason: `阶段 ${t.stage} 审查清单：${issues.length} 个问题` });
   await finishStageReviewTask(ctx, t, `阶段审查结论：${p.summary}\n${issues.length ? formatIssues(issues) : '没有发现问题。'}`, '提交阶段审查清单');
   const modules = [...new Set(issues.map((i) => i.module))];
   return { text: issues.length
@@ -362,8 +365,9 @@ export async function flowReviewConfirm(ctx: ToolContext, p: Static<typeof Revie
   const t = checkRun(ctx);
   if (t.stage_review !== 'confirm' || t.status !== 'in_progress') throw new FlowToolError('flow_review_confirm 只能在确认修复的任务中使用。');
   const sr = ctx.store.readStageReview(ctx.env.flow, t.stage);
-  if (!sr || sr.confirm_task !== t.id || sr.status !== 'confirming') throw new FlowToolError('本阶段的审查记录不在等待确认的状态，本次运行无效，请停止工作。');
-  const known = new Set(sr.issues.map((i) => i.id));
+  const batch = sr?.batches.find((b) => b.confirm_task === t.id);
+  if (!sr || !batch || batch.status !== 'confirming') throw new FlowToolError('本阶段的审查记录不在等待确认的状态，本次运行无效，请停止工作。');
+  const known = new Set(batch.issues.map((i) => i.id));
   const seen = new Set<string>();
   const errors: string[] = [];
   for (const r of p.results) {
@@ -375,7 +379,7 @@ export async function flowReviewConfirm(ctx: ToolContext, p: Static<typeof Revie
   if (missing.length) errors.push(`还没有回答：${missing.join('、')}（每个编号都要回答）`);
   if (errors.length) throw new FlowToolError(`确认未保存：\n${errors.map((e) => `- ${e}`).join('\n')}`);
   const confirm = p.results.map((r) => ({ id: r.id, resolved: r.resolved, ...(r.note?.trim() ? { note: r.note.trim() } : {}) }));
-  await ctx.store.updateStageReview(ctx.env.flow, { ...sr, confirm }, { actor: actor(ctx), reason: `阶段 ${t.stage} 确认：${confirm.filter((c) => c.resolved).length}/${confirm.length} 已解决` });
+  await ctx.store.updateStageReview(ctx.env.flow, { ...sr, batches: sr.batches.map((b) => (b.id === batch.id ? { ...b, confirm } : b)) }, { actor: actor(ctx), reason: `阶段 ${t.stage} 确认：${confirm.filter((c) => c.resolved).length}/${confirm.length} 已解决` });
   const unresolved = confirm.filter((c) => !c.resolved);
   await finishStageReviewTask(ctx, t, `确认结果：\n${confirm.map((c) => `${c.id}：${c.resolved ? '已解决' : `未解决${c.note ? `（${c.note}）` : ''}`}`).join('\n')}`, '提交确认结果');
   return { text: unresolved.length

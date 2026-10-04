@@ -18,11 +18,11 @@ const until = async (cond: () => boolean, ms = 30_000) => {
   const end = Date.now() + ms;
   while (!cond()) { if (Date.now() > end) throw new Error('等待超时'); await new Promise((r) => setTimeout(r, 20)); }
 };
-const TASKS = () => [mkTask('T-001'), mkTask('T-002', { role: 'frontend-engineer', scopes: ['frontend'], writes: ['src/web/t-002/**'] })];
+const TASKS = () => [mkTask('T-001'), mkTask('T-002')];
 const ISSUES = [
   { module: 'server', location: 'src/server/t-001/a.ts:1', problem: '没有校验输入', expected: '非法输入抛 ValidationError', files: ['src/server/t-001/a.ts'] },
   { module: 'server', location: 'src/server/t-001/b.ts:1', problem: '缺少测试', expected: '补上错误路径的测试', files: ['src/server/t-001/b.ts'] },
-  { module: 'web', location: 'src/web/t-002/x.ts:1', problem: '与契约的字段名不符', expected: '改成 accountId', files: ['src/web/t-002/x.ts'] },
+  { module: 'records', location: 'src/server/t-002/x.ts:1', problem: '与契约的字段名不符', expected: '改成 accountId', files: ['src/server/t-002/x.ts'] },
 ];
 
 async function write(a: FakeAgent, files: Record<string, string>) {
@@ -48,7 +48,7 @@ function script(p: Project, opts: { report?: (a: FakeAgent) => Promise<void>; co
   };
 }
 
-test('阶段末审查：3 条问题分属两个模块 → 两个修复任务并行 → 确认时清单外编号与漏答被拒、一条未解决 → 只再修一轮不再确认 → 全量测试通过', async () => {
+test('阶段审查：3 条问题分属两个模块 → 两个修复任务并行 → 确认时清单外编号与漏答被拒、一条未解决 → 只再修一轮不再确认 → 全量测试通过', async () => {
   const p = await setupProject({ yaml: AUTO, tasks: TASKS() });
   try {
     const rejected: string[] = [];
@@ -72,7 +72,7 @@ test('阶段末审查：3 条问题分属两个模块 → 两个修复任务并�
         const t = p.store.readTask(p.flowId, a.env.task);
         const sr = p.store.readStageReview(p.flowId, 'S3')!;
         // 第一轮的两个修复任务同时在做（并行派发）
-        if (sr.fix_tasks.includes(t.id)) await until(() => sr.fix_tasks.every((id) => !!p.store.readTask(p.flowId, id).lease));
+        if (sr.batches[0]!.fix_tasks.includes(t.id)) await until(() => sr.batches[0]!.fix_tasks.every((id) => !!p.store.readTask(p.flowId, id).lease));
         await write(a, Object.fromEntries(t.writes.map((w) => [w, `fixed ${t.id}`])));
       },
     }));
@@ -85,14 +85,14 @@ test('阶段末审查：3 条问题分属两个模块 → 两个修复任务并�
 
     const sr = p.store.readStageReview(p.flowId, 'S3')!;
     assert.equal(sr.status, 'done');
-    assert.deepEqual(sr.issues.map((i) => i.id), ['R-1', 'R-2', 'R-3']);
-    const fixes = sr.fix_tasks.map((id) => p.store.readTask(p.flowId, id));
+    assert.deepEqual(sr.batches[0]!.issues.map((i) => i.id), ['R-1', 'R-2', 'R-3']);
+    const fixes = sr.batches[0]!.fix_tasks.map((id) => p.store.readTask(p.flowId, id));
     assert.deepEqual(fixes.map((t) => [t.kind, t.role, t.review_issues, t.writes, t.status]), [
       ['review-fix', 'backend-engineer', ['R-1', 'R-2'], ['src/server/t-001/a.ts', 'src/server/t-001/b.ts'], 'done'],
-      ['review-fix', 'frontend-engineer', ['R-3'], ['src/web/t-002/x.ts'], 'done'],
+      ['review-fix', 'backend-engineer', ['R-3'], ['src/server/t-002/x.ts'], 'done'],
     ]);
-    assert.equal(sr.refix_tasks.length, 1);
-    const refix = p.store.readTask(p.flowId, sr.refix_tasks[0]!);
+    assert.equal(sr.batches[0]!.refix_tasks.length, 1);
+    const refix = p.store.readTask(p.flowId, sr.batches[0]!.refix_tasks[0]!);
     assert.deepEqual([refix.role, refix.review_issues, refix.status], ['backend-engineer', ['R-2'], 'done']);
     assert.match(p.store.readHandoff(p.flowId, refix.id), /仍缺少错误路径的测试/);
     // 审查者只运行两次：审查一次、确认一次；第二轮修复后不再确认
@@ -103,7 +103,7 @@ test('阶段末审查：3 条问题分属两个模块 → 两个修复任务并�
     assert.match(prompts[0]!, /本阶段的改动[\s\S]*git diff [0-9a-f]{12} HEAD/);
     assert.match(prompts[1]!, /待确认的问题[\s\S]*R-2［server］[\s\S]*flow_review_confirm/);
     assert.equal(p.store.readFlow(p.flowId).stage_status, 'awaiting_human', 'S3 是最后一个阶段：全量测试通过后等用户批准');
-    assert.equal(p.git('show', `flow/${p.flowId}/integration:src/web/t-002/x.ts`), `fixed ${fixes[1]!.id}`);
+    assert.equal(p.git('show', `flow/${p.flowId}/integration:src/server/t-002/x.ts`), `fixed ${fixes[1]!.id}`);
     assert.deepEqual((await p.store.verifyIntegrity()).errors, []);
   } finally { p.cleanup(); }
 });
@@ -118,7 +118,7 @@ test('阶段末审查：没有问题直接跑全量测试；测试失败按日�
     assert.deepEqual(errors, []);
     const sr = p.store.readStageReview(p.flowId, 'S3')!;
     assert.equal(sr.status, 'needs_human', JSON.stringify(sr));
-    assert.equal(sr.issues.length, 0);
+    assert.equal(sr.batches[0]!.issues.length, 0);
     assert.equal(sr.test_rounds.length, 2);
     assert.match(sr.reason ?? '', /e2e.*自动修复 2 轮后仍失败/);
     for (const round of sr.test_rounds) {
@@ -144,7 +144,7 @@ const fresh = (p: Project) => new StateStore(p.dir, { limits: p.config.limits })
 async function crashAndResume(p: Project, hangWhen: (t: ReturnType<Project['store']['readTask']>) => boolean) {
   const confirmAll = async (a: FakeAgent) => {
     const sr = p.store.readStageReview(p.flowId, 'S3')!;
-    assert.ok((await a.call('flow_review_confirm', { results: sr.issues.map((i) => ({ id: i.id, resolved: true })) })).ok);
+    assert.ok((await a.call('flow_review_confirm', { results: sr.batches[0]!.issues.map((i) => ({ id: i.id, resolved: true })) })).ok);
   };
   const report = async (a: FakeAgent) => { assert.ok((await a.call('flow_review_report', { summary: 's', issues: ISSUES.slice(0, 1) })).ok); };
   const base = script(p, { report, confirm: confirmAll });
@@ -157,7 +157,7 @@ async function crashAndResume(p: Project, hangWhen: (t: ReturnType<Project['stor
   assert.ok(r.ok, r.brief);
   const ok = makeEngine({ ...p, store }, script({ ...p, store }, { report, confirm: async (a) => {
     const sr = store.readStageReview(p.flowId, 'S3')!;
-    assert.ok((await a.call('flow_review_confirm', { results: sr.issues.map((i) => ({ id: i.id, resolved: true })) })).ok);
+    assert.ok((await a.call('flow_review_confirm', { results: sr.batches[0]!.issues.map((i) => ({ id: i.id, resolved: true })) })).ok);
   } }));
   await ok.engine.pump(p.flowId);
   await ok.engine.idle();
@@ -165,7 +165,7 @@ async function crashAndResume(p: Project, hangWhen: (t: ReturnType<Project['stor
   const sr = store.readStageReview(p.flowId, 'S3')!;
   assert.equal(sr.status, 'done', JSON.stringify(sr));
   assert.equal(store.readFlow(p.flowId).stage_status, 'awaiting_human');
-  assert.equal(sr.fix_tasks.length, 1, '恢复后不重复生成修复任务');
+  assert.equal(sr.batches[0]!.fix_tasks.length, 1, '恢复后不重复生成修复任务');
   assert.deepEqual((await store.verifyIntegrity()).errors, []);
   return { store, sr };
 }
@@ -174,10 +174,10 @@ test('崩溃恢复：修复中强杀后 /flow resume，修复任务重新派发�
   const p = await setupProject({ yaml: AUTO, tasks: [mkTask('T-001')] });
   try {
     const { store, sr } = await crashAndResume(p, (t) => t.kind === 'review-fix');
-    const fix = store.readTask(p.flowId, sr.fix_tasks[0]!);
+    const fix = store.readTask(p.flowId, sr.batches[0]!.fix_tasks[0]!);
     assert.equal(fix.status, 'done');
     assert.equal(fix.interruptions, 1);
-    assert.ok(sr.confirm_task && store.readTask(p.flowId, sr.confirm_task).status === 'done');
+    assert.ok(sr.batches[0]!.confirm_task && store.readTask(p.flowId, sr.batches[0]!.confirm_task).status === 'done');
   } finally { p.cleanup(); }
 });
 
@@ -185,11 +185,11 @@ test('崩溃恢复：确认中强杀后 /flow resume，确认任务重新派发�
   const p = await setupProject({ yaml: AUTO, tasks: [mkTask('T-001')] });
   try {
     const { store, sr } = await crashAndResume(p, (t) => t.stage_review === 'confirm');
-    const confirm = store.readTask(p.flowId, sr.confirm_task!);
+    const confirm = store.readTask(p.flowId, sr.batches[0]!.confirm_task!);
     assert.equal(confirm.status, 'done');
     assert.equal(confirm.interruptions, 1);
-    assert.deepEqual(sr.confirm.map((c) => c.resolved), [true]);
-    for (const id of [sr.review_task!, sr.confirm_task!]) {
+    assert.deepEqual(sr.batches[0]!.confirm.map((c) => c.resolved), [true]);
+    for (const id of [sr.batches[0]!.review_task!, sr.batches[0]!.confirm_task!]) {
       assert.ok(!existsSync(worktreePath(p.dir, p.flowId, id)), `${id} 的 worktree 已回收`);
       assert.equal(p.git('branch', '--list', `flow/${p.flowId}/${id}`), '', `${id} 的分支已删除`);
     }
@@ -225,8 +225,8 @@ test('修复任务补契约：改动契约已有内容被拒，只新增被接�
     const sr = p.store.readStageReview(p.flowId, 'S3')!;
     assert.equal(sr.status, 'done');
     assert.match(p.git('show', `flow/${p.flowId}/integration:docs/contracts/server.md`), /## validateThing/);
-    assert.match(p.store.readHandoff(p.flowId, sr.confirm_task!), /修复时补充的契约[\s\S]*\+## validateThing/);
-    assert.match(p.store.readHandoff(p.flowId, sr.fix_tasks[0]!), /可以直接在对应契约文件里新增/);
+    assert.match(p.store.readHandoff(p.flowId, sr.batches[0]!.confirm_task!), /修复时补充的契约[\s\S]*\+## validateThing/);
+    assert.match(p.store.readHandoff(p.flowId, sr.batches[0]!.fix_tasks[0]!), /可以直接在对应契约文件里新增/);
   } finally { p.cleanup(); }
 });
 
@@ -249,4 +249,47 @@ test('纯测试阶段（只有联调、测试任务）默认不做阶段审查�
     assert.equal(p2.store.readStageReview(p2.flowId, 'S3')?.status, 'done');
     assert.deepEqual(p2.store.listRuns().filter((r) => r.role === 'reviewer').map((r) => r.review_mode), ['full']);
   } finally { p2.cleanup(); }
+});
+
+test('按角色分批审查：后端任务先合入就开第一批审查，与还在做的前端任务并行；前端合入后开第二批；两批都完成才跑闸门；编号接着往下排', async () => {
+  const tasks = [mkTask('T-001'), mkTask('T-002', { role: 'frontend-engineer', scopes: ['frontend'], writes: ['src/web/t-002/**'] })];
+  const p = await setupProject({ yaml: AUTO, tasks });
+  try {
+    const inner = script(p, {
+      report: async (a) => {
+        const sr = p.store.readStageReview(p.flowId, 'S3')!;
+        const b = sr.batches.find((x) => x.review_task === a.env.task)!;
+        const issue = b.roles.includes('backend-engineer') ? ISSUES[0]! : { module: 'web', location: 'src/web/t-002/x.ts:1', problem: 'p', expected: 'e', files: ['src/web/t-002/x.ts'] };
+        assert.ok((await a.call('flow_review_report', { summary: 's', issues: [issue] })).ok);
+      },
+      confirm: async (a) => {
+        const sr = p.store.readStageReview(p.flowId, 'S3')!;
+        const b = sr.batches.find((x) => x.confirm_task === a.env.task)!;
+        assert.ok((await a.call('flow_review_confirm', { results: b.issues.map((i) => ({ id: i.id, resolved: true })) })).ok);
+      },
+      fix: async (a) => {
+        const t = p.store.readTask(p.flowId, a.env.task);
+        await write(a, Object.fromEntries(t.writes.map((w) => [w, `fixed ${t.id}`])));
+      },
+    });
+    // 前端任务等第一批审查开始后才提交
+    const { engine, errors } = makeEngine(p, async (role, nth, a) => {
+      if (a.env.task === 'T-002' && nth === 1) await until(() => !!p.store.readStageReview(p.flowId, 'S3')?.batches.length);
+      return inner(role, nth, a);
+    });
+    await engine.next(p.flowId);
+    await engine.idle();
+    assert.deepEqual(errors, []);
+    const sr = p.store.readStageReview(p.flowId, 'S3')!;
+    assert.equal(sr.status, 'done');
+    assert.deepEqual(sr.batches.map((b) => [b.id, b.roles, b.tasks, b.status, b.issues.map((i) => i.id)]), [
+      [1, ['backend-engineer'], ['T-001'], 'done', ['R-1']],
+      [2, ['frontend-engineer'], ['T-002'], 'done', ['R-2']],
+    ]);
+    const evs = p.store.readEvents();
+    const batch1 = evs.find((e) => /开始第 1 批审查/.test(e.reason ?? ''))!;
+    const frontSubmit = evs.find((e) => e.task === 'T-002' && e.trigger === 'submit_direct')!;
+    assert.ok(batch1.seq < frontSubmit.seq, '第一批审查在前端任务提交之前就开始了');
+    assert.equal(p.store.readFlow(p.flowId).stage_status, 'awaiting_human');
+  } finally { p.cleanup(); }
 });

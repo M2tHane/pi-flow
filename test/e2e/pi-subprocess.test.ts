@@ -237,9 +237,9 @@ test('真实 pi 子进程：阶段末审查——审查者用 flow_review_report
     assert.deepEqual(errors, []);
     const sr = p.store.readStageReview(p.flowId, 'S3')!;
     assert.equal(sr.status, 'done', JSON.stringify(sr));
-    assert.deepEqual(sr.issues.map((i) => [i.id, i.module, i.files]), [['R-1', 'server', ['src/server/t-001/a.ts']]]);
-    assert.deepEqual(sr.confirm, [{ id: 'R-1', resolved: true }]);
-    const fix = p.store.readTask(p.flowId, sr.fix_tasks[0]!);
+    assert.deepEqual(sr.batches[0]!.issues.map((i) => [i.id, i.module, i.files]), [['R-1', 'server', ['src/server/t-001/a.ts']]]);
+    assert.deepEqual(sr.batches[0]!.confirm, [{ id: 'R-1', resolved: true }]);
+    const fix = p.store.readTask(p.flowId, sr.batches[0]!.fix_tasks[0]!);
     assert.equal(fix.status, 'done');
     // 修复任务接着 T-001 的对话继续（fork），不从头读代码
     assert.equal(fix.fork_from_task, 'T-001');
