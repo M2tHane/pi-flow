@@ -189,6 +189,8 @@
 
 ## 真实模型实验
 
+第四轮的完整实验记录（各阶段用时、暴露的问题、之后的优化）见 `docs/EXPERIMENTS-4.md`。
+
 脚本：`scripts/real-build.ts`（pi-flow 全流程，`--desc`/`--desc-file`、`--feature-file`、`--dir` 续跑）、`scripts/baseline-build.ts`（原生 pi 对照）、`node scripts/demo.ts --real-fix`。日志在 `~/pi-flow-runs/`，评测用例与看板需求、隐藏测试也在那里（不进仓库）。pi-flow 一侧：architect、reviewer 用 gpt-6.1-sol（high），实施角色用本地 glm-5.3-flash（low），失败后升级到 gpt。
 
 | 日期 | 项目 | 做法 | 耗时 | token（输入/输出/缓存读） | 结果 |
