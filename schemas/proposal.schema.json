@@ -144,6 +144,13 @@
         "minLength": 1
       }
     },
+    "assumptions": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
     "report": {
       "type": "object",
       "required": [

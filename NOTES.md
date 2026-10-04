@@ -188,6 +188,7 @@
 109. 阶段审查的修复任务（review-fix）可以补契约：guard 放行写 `docs/contracts/`（不受角色可写范围限制、不计入 writes，避免修复任务互斥），提交时有删除或修改已有行的契约文件被拒（只能新增）；确认任务的 handoff 附上补充的契约，由审查者核对是否改变需求。
 110. 残留进程防护：guard 拦下后台运行（单独的 `&`）、`setsid`、`disown`（`nohup` 不带 `&` 无害，仍按前缀处理）；子进程结束后用 lsof 找出工作目录在该任务 worktree 或临时目录里的进程并结束（`killStrayProcesses` 可关），记一条事件。
 111. 修复任务接着原作者的对话：review-fix 任务记录 `fork_from_task`（写过这些文件最多的同角色已完成任务），派发时 fork 它最后一次提交的会话（同模型、≤400 KB，否则从头开始），提示说明"对话是之前的任务、现在是新 worktree"。
+112. architect 少提问：有合理默认方案时直接采用，S1/F1 写进提案的 `assumptions`（批准时与 extras 一起列给用户，"需要你处理"里提示条数），S0/F0 写进文档的"约束与假设"；只有无法合理假设、会改变数据模型或多个接口的才 flow_block（全 gpt 复跑中 F1 连问三次停住）。
 
 ## 真实模型实验
 
@@ -218,6 +219,7 @@
 
 修改 `agents/`、`rules/`、`skills/` 会改变子进程系统提示的稳定前缀，提供商的提示缓存失效一次；`rules/` 的改动只影响之后 `/flow init` 的新项目。改动时在此追加一行。
 
+- 10-03（第 112 条）：architect 角色提示；`design-contract`、`write-prd`、`write-feature-spec` 技能；工具参数多了 assumptions。
 - 10-03（第 108、109 条）：architect 与各实施角色、reviewer 角色提示；`design-contract`、`decompose-dag` 技能。
 - 10-03（第 103 条）：reviewer（阶段审查）、orchestrator、backend、frontend、db、infra、test、ui 角色提示（review-fix 只修分到的问题）；`decompose-dag` 技能；工具声明多了 flow_review_report、flow_review_confirm。
 - 10-03（第 101 条）：architect 角色提示；`design-contract`、`decompose-dag` 技能。

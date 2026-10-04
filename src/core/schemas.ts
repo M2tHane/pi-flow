@@ -365,6 +365,8 @@ export const ProposalFile = Type.Object({
   tasks: Type.Array(ProposedTask, { minItems: 1 }),
   /** 文档（契约、架构）中超出需求的设计，由用户在批准时决定是否保留（第三轮后续：契约不超出需求） */
   extras: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
+  /** 需求没说清、architect 按默认方案处理的地方（第四轮后续：有合理默认值时不阻塞提问，批准时列给用户） */
+  assumptions: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
   report: Type.Object({
     task_count: Type.Integer(), critical_path: Type.Array(Type.String()), critical_path_length: Type.Integer(),
     max_width: Type.Integer(), hard_ratio: Type.Number(), warnings: Type.Array(Type.String()),

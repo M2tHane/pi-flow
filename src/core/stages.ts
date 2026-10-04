@@ -117,5 +117,8 @@ export function proposalSummary(store: StateStore, flowId: string): string {
   const extras = p.extras?.length
     ? `\n超出需求的设计（${p.extras.length} 项，需要你确认；不同意就 /flow reject "删掉第 N 项……"）：\n${p.extras.map((x, i) => `  ${i + 1}. ${x}`).join('\n')}`
     : '\narchitect 声明文档没有超出需求的设计。';
-  return `任务提案（${p.stage}）：\n${formatDagReport(p.report)}\n${p.tasks.map((t) => `- ${t.id} [${t.stage}/${t.kind}] ${t.title}（${t.role}）${t.depends_on.length ? ` ← ${t.depends_on.map((x) => `${x.task}${x.type === 'soft' ? '~' : ''}`).join(',')}` : ''}`).join('\n')}${extras}`;
+  const assumed = p.assumptions?.length
+    ? `\n按默认方案处理的地方（${p.assumptions.length} 项，architect 没有停下来问你；不同意就 /flow reject "第 N 项改成……"）：\n${p.assumptions.map((x, i) => `  ${i + 1}. ${x}`).join('\n')}`
+    : '';
+  return `任务提案（${p.stage}）：\n${formatDagReport(p.report)}\n${p.tasks.map((t) => `- ${t.id} [${t.stage}/${t.kind}] ${t.title}（${t.role}）${t.depends_on.length ? ` ← ${t.depends_on.map((x) => `${x.task}${x.type === 'soft' ? '~' : ''}`).join(',')}` : ''}`).join('\n')}${extras}${assumed}`;
 }
