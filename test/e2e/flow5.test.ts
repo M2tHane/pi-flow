@@ -4,29 +4,13 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { setupProject, type Project } from '../helpers/project.ts';
-import { REAL_TEMPLATE_YAML } from '../helpers/config.ts';
 import { makeEngine } from '../helpers/engine.ts';
 import type { FakeAgent } from '../fixtures/fake-subagent/launcher.ts';
 import { startFlow } from '../../src/core/stages.ts';
-import { runFlowCommand, type CommandEnv } from '../../src/commands/flow.ts';
+import { runFlowCommand } from '../../src/commands/flow.ts';
+import { FLOW5_YAML, SETTINGS5, cmdEnv } from '../helpers/flow5.ts';
 import { renderStatus } from '../../src/core/status-view.ts';
 import { statusText } from '../../src/tools/orchestrator-tools.ts';
-import type { RoleSettingsFile } from '../../src/core/schemas.ts';
-
-/** 全量测试：仓库里有 BROKEN 文件时失败 */
-export const FLOW5_YAML = REAL_TEMPLATE_YAML
-  .replace(/commands:[\s\S]*?\nlimits:/, 'commands:\n  install: "true"\n  typecheck: "true"\n  lint: "true"\n  test: "test ! -e BROKEN"\nlimits:')
-  .replace(/^  auto_dispatch: true .*$/m, '  auto_dispatch: false');
-export const SETTINGS5: RoleSettingsFile = { version: 1, roles: Object.fromEntries(
-  ['orchestrator', 'user-advocate', 'dev-advocate', 'analyst', 'designer', 'architect', 'implementer', 'acceptor', 'researcher'].map((r) => [r, { model: 'fake/m' }])) };
-
-export function cmdEnv(p: Project, engine: ReturnType<typeof makeEngine>['engine']): CommandEnv {
-  return {
-    root: p.dir, packageRoot: path.join(import.meta.dirname, '../..'), ui: null,
-    engine: () => ({ store: p.store, engine, config: p.config }), store: () => p.store,
-    roleSettings: () => SETTINGS5, availableModels: () => [], activateOrchestrator: () => {}, waitForIdle: true,
-  };
-}
 
 const MODULES = [
   { id: 'M-1', title: '底座：项目骨架与公共组件', writes: ['src/base/**'], shared: ['src/routes.ts'], acceptance: ['服务能启动', '首页能打开'] },

@@ -6,9 +6,9 @@ import { isFinished } from './state-store.ts';
 import { isLeadingTest } from './dag.ts';
 import { budgetState, formatBudget } from './cost-control.ts';
 import { activePauses, describePause } from './model-pause.ts';
-import { describeStageReview } from './stage-review.ts';
+import { MAX_GATE_ROUNDS, describeAcceptance } from './acceptance.ts';
 import { type FlowFile, type Phase, type TaskFile } from './schemas.ts';
-import { PROPOSAL_STAGES } from '../modes/plan.ts';
+import { DESIGN_STAGES, PROPOSAL_STAGES } from '../modes/plan.ts';
 
 export type PhaseOrDone = Phase | 'done';
 
@@ -88,7 +88,8 @@ export function lastFailureKind(store: StateStore, flowId: string, taskId: strin
 
 /** expectFail：测试必须先失败（fix 的复现测试、先行验收测试） */
 export function taskActivity(t: TaskFile, failureKind: string | null, expectFail: 'repro' | 'leading' | null = null): string {
-  const working = t.stage_review === 'review' ? '阶段审查中' : t.stage_review === 'confirm' ? '确认修复中' : t.kind === 'analysis' ? '定位中' : t.kind === 'review-fix' ? '修复中' : '实现中';
+  const working = t.accept_of ? (t.accept_kind === 'confirm' ? '复查中' : '验收中') : t.advocate ? '写意见中'
+    : t.stage_review === 'review' ? '阶段审查中' : t.stage_review === 'confirm' ? '确认修复中' : t.kind === 'analysis' ? '分析中' : t.kind === 'review-fix' ? '修复中' : t.kind === 'doc' ? '撰写中' : '实现中';
   const base = t.status === 'in_progress' ? (t.lease ? working : '等待重新派发')
     : t.status === 'review' ? '审查中'
       : t.status === 'verifying' ? (expectFail === 'repro' ? '确认复现中' : expectFail === 'leading' ? '确认测试先失败' : '验证中')
@@ -124,12 +125,15 @@ export function actionsNeeded(store: StateStore, config: FlowConfig): Action[] {
     }
     if (flow.mode !== 'fix' && flow.stage_status === 'active') {
       const gate = [...store.readEvents()].reverse().find((e) => e.flow === flow.id && e.type === 'gate_result');
-      const sr = store.readStageReview(flow.id, flow.stage);
-      if (sr?.status === 'needs_human') {
-        out.push({ key: `${flow.id}:stage-review:${flow.stage}:${sr.version}`, text: `实施阶段的${short(sr.reason ?? '全量测试仍失败', 200)}（失败日志：/flow-status --detail）`,
-          command: '用 /flow replan "<怎么修>" 交给 architect 安排修复任务；处理后执行 /flow gate 重跑' });
-      } else if (gate?.to === 'active' && gate.data?.['stage'] === flow.stage) {
-        out.push({ key: `${flow.id}:gatefail:${gate.seq}`, text: `阶段检查未通过：${short(gate.reason ?? '')}`, command: '修复后执行 /flow gate' });
+      const rounds = (flow.gate_rounds ?? []).filter((r) => r.stage === flow.stage).length;
+      // 模块验收两轮修复后仍不通过（第五轮）
+      for (const a of store.listAcceptances(flow.id).filter((x) => x.status === 'needs_human')) {
+        const t = tasks.find((x) => x.id === a.task);
+        out.push({ key: `${flow.id}:accept:${a.task}:${a.version}`, text: `模块 ${a.task}「${short(t?.title ?? '', 40)}」验收${short(a.reason ?? '未通过', 200)}，依赖它的模块在等待`,
+          command: `/flow accept ${a.task} 人工放行；或 /flow-add "<怎么改>" --task <修复任务>、/flow replan "<怎么改>" 交给 architect` });
+      }
+      if (gate?.to === 'active' && gate.data?.['stage'] === flow.stage && (DESIGN_STAGES.has(flow.stage) || rounds >= MAX_GATE_ROUNDS || !tasks.some((t) => t.stage === flow.stage && !['done', 'cancelled'].includes(t.status)))) {
+        out.push({ key: `${flow.id}:gatefail:${gate.seq}`, text: `阶段检查未通过${rounds >= MAX_GATE_ROUNDS ? `（已自动修复 ${rounds} 轮）` : ''}：${short(gate.reason ?? '')}`, command: '用 /flow replan "<怎么修>" 交给 architect，或处理后执行 /flow gate 重跑' });
       }
     }
     const budget = budgetState(store, config, flow);
@@ -193,8 +197,15 @@ export function renderFlow(store: StateStore, config: FlowConfig, flow: FlowFile
     ? `正在进行：\n${active.map((t) => `- ${t.id} ${short(t.title, 40)}（${t.lease?.role ?? t.role}）${taskActivity(t, t.attempts ? lastFailureKind(store, flow.id, t.id) : null,
       t.kind !== 'test' ? null : flow.mode === 'fix' ? 'repro' : isLeadingTest(t, tasks) ? 'leading' : null)}`).join('\n')}`
     : `正在进行：${flow.stage_status === 'awaiting_human' ? '无（等待你审批）' : flow.stage_status === 'awaiting_gate' ? '阶段检查中' : '无'}`);
-  const sr = flow.mode !== 'fix' ? store.readStageReview(flow.id, flow.stage) : null;
-  if (sr && sr.status !== 'done') lines.push(`阶段审查：${describeStageReview(sr)}`);
+  // 模块与验收进度（第五轮）
+  const mods = tasks.filter((t) => t.needs_acceptance && t.status !== 'cancelled');
+  if (mods.length) {
+    lines.push(`模块：\n${mods.map((t) => {
+      const a = store.readAcceptance(flow.id, t.id);
+      const state = a ? describeAcceptance(a) : t.status === 'done' ? '等待验收' : taskActivity(t, null);
+      return `- ${t.id} ${short(t.title, 40)}：${state}`;
+    }).join('\n')}`);
+  }
   const blocked = tasks.filter((t) => t.status === 'blocked');
   lines.push(blocked.length ? `阻塞：${blocked.map((t) => t.id).join('、')}（见上方"需要你处理"）` : '阻塞：无');
   return lines.join('\n');

@@ -32,7 +32,7 @@ export interface Project {
   cleanup: () => void;
 }
 
-export async function setupProject(opts: { yaml?: string; tasks?: TaskInput[]; now?: () => Date; files?: Record<string, string> } = {}): Promise<Project> {
+export async function setupProject(opts: { yaml?: string; tasks?: TaskInput[]; now?: () => Date; files?: Record<string, string>; stages?: string[] } = {}): Promise<Project> {
   const repo = tmpRepo();
   const yaml = opts.yaml ?? PROJECT_YAML;
   writeFileSync(path.join(repo.dir, 'workflow.yaml'), yaml);
@@ -49,7 +49,7 @@ export async function setupProject(opts: { yaml?: string; tasks?: TaskInput[]; n
   const config = parseConfig(yaml);
   const store = await StateStore.init(repo.dir, { ...(opts.now ? { now: opts.now } : {}), limits: config.limits });
   const base = repo.git('rev-parse', 'HEAD');
-  const flow = await store.createFlow({ mode: 'build', title: '演示', stages: ['S3'], base_sha: base });
+  const flow = await store.createFlow({ mode: 'build', title: '演示', stages: opts.stages ?? ['S3'], base_sha: base });
   ensureIntegrationBranch(repo.dir, flow.integration_branch, base);
   if (opts.tasks?.length) await store.addTasks(flow.id, opts.tasks, 'architect');
   const cleanup = () => { rmSync(worktreesRoot(repo.dir), { recursive: true, force: true }); repo.cleanup(); };
