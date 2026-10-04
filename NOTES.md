@@ -177,7 +177,7 @@
 
 **第四轮（2026-10-03 起，`docs/HANDOFF-4.md`）**
 
-101. 契约到函数级：每个模块一个契约文件，写对外函数的名字、参数、返回值、错误（REST 照旧）；任务 inputs 列出依赖的契约条目。只改技能与提示，程序不校验格式。
+101. 契约到函数级（第 108、113 条修订：只写模块边界、按需写细）：每个模块一个契约文件，写对外函数的名字、参数、返回值、错误（REST 照旧）；任务 inputs 列出依赖的契约条目。只改技能与提示，程序不校验格式。
 102. 逐任务审查可关闭（`review.per_task`，默认 false）：新增 `in_progress → queued_merge`（`submit_direct`，检查同 submit）；合并时 verify 非空的任务跑全量 typecheck、lint、test（不再用受影响测试），失败按 merge_verify_fail 退回并接续对话。设计阶段文档、fix 流程、先行验收测试照旧逐任务审查（设计阶段只有一个任务，审查兼查 extras）。修订第 45 条（关闭审查时）。测试配置固定 `per_task: true`。
 103. 阶段末审查（`review.stage_end`，默认 true；测试配置固定 false）：实施阶段（非设计阶段、非 fix）任务全部结束后由程序推进 `flows/<id>/stage-review-<阶段>.json`（reviewing → fixing → confirming → refixing → gating → test_fixing / needs_human → done），每步的记录、新任务与 handoff 在同一事务内写入，崩溃后从中途继续。审查与确认是程序生成的只读 analysis 任务（`stage_review`，角色 reviewer，审查用强模型、确认用普通档），经 `report` 转 done。
 104. 新工具 `flow_review_report`（问题文件必须是具体路径、不能是契约或受保护文件、要有实施角色能写，否则拒绝）与 `flow_review_confirm`（参数只有 `{id, resolved, note}`，id 必须在清单中且每个都要回答；Pi 自己也按 schema 拒绝多余字段）；reviewer 角色隐式拥有。修复任务用已有的 kind `review-fix`，按（模块，角色）分组、writes = 问题涉及的文件。
@@ -189,6 +189,7 @@
 110. 残留进程防护：guard 拦下后台运行（单独的 `&`）、`setsid`、`disown`（`nohup` 不带 `&` 无害，仍按前缀处理）；子进程结束后用 lsof 找出工作目录在该任务 worktree 或临时目录里的进程并结束（`killStrayProcesses` 可关），记一条事件。
 111. 修复任务接着原作者的对话：review-fix 任务记录 `fork_from_task`（写过这些文件最多的同角色已完成任务），派发时 fork 它最后一次提交的会话（同模型、≤400 KB，否则从头开始），提示说明"对话是之前的任务、现在是新 worktree"。
 112. architect 少提问：有合理默认方案时直接采用，S1/F1 写进提案的 `assumptions`（批准时与 extras 一起列给用户，"需要你处理"里提示条数），S0/F0 写进文档的"约束与假设"；只有无法合理假设、会改变数据模型或多个接口的才 flow_block（全 gpt 复跑中 F1 连问三次停住）。
+113. 契约按需写细（修订第 101 条）：只有被别的任务直接调用的函数写到函数级；只通过自己 REST 接口对外的模块只写接口与数据模型（全 gpt 复跑中 760 行契约用了 30 分钟）。只改技能与提示。
 
 ## 真实模型实验
 
@@ -219,7 +220,7 @@
 
 修改 `agents/`、`rules/`、`skills/` 会改变子进程系统提示的稳定前缀，提供商的提示缓存失效一次；`rules/` 的改动只影响之后 `/flow init` 的新项目。改动时在此追加一行。
 
-- 10-03（第 112 条）：architect 角色提示；`design-contract`、`write-prd`、`write-feature-spec` 技能；工具参数多了 assumptions。
+- 10-03（第 112、113 条）：architect 角色提示；`design-contract`、`write-prd`、`write-feature-spec` 技能；工具参数多了 assumptions。
 - 10-03（第 108、109 条）：architect 与各实施角色、reviewer 角色提示；`design-contract`、`decompose-dag` 技能。
 - 10-03（第 103 条）：reviewer（阶段审查）、orchestrator、backend、frontend、db、infra、test、ui 角色提示（review-fix 只修分到的问题）；`decompose-dag` 技能；工具声明多了 flow_review_report、flow_review_confirm。
 - 10-03（第 101 条）：architect 角色提示；`design-contract`、`decompose-dag` 技能。
