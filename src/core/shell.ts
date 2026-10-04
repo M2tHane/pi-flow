@@ -31,6 +31,8 @@ export interface SimpleCommand {
 export interface ParseResult {
   commands: SimpleCommand[];
   errors: string[];
+  /** 含后台运行（单独的 &） */
+  background?: boolean;
 }
 
 const REDIRECT_OPS = ['&>>', '<<<', '<<-', '>>', '>|', '<>', '<<', '>&', '<&', '&>', '>', '<'];
@@ -89,6 +91,7 @@ class Parser {
       const sep = SEPARATORS.find((op) => s.startsWith(op, this.i));
       if (sep) {
         this.i += sep.length;
+        if (sep === '&') this.out.background = true;
         this.flush();
         if (sep === '\n') this.readHeredocBodies();
         continue;

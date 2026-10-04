@@ -17,7 +17,7 @@ import { heldByRevision } from './revision.ts';
 import { assessRisk, budgetState, diffNumstat, escalationModel, escalationPolicy, hardFanout, resolveModelRef, reviewPolicy, strongReviewModel } from './cost-control.ts';
 import { carriedTestOf, computeReady, isLeadingTest } from './dag.ts';
 import { selectDispatchable } from './scheduler.ts';
-import { createTaskWorktree, ensureLocalExcludes, scratchDir, worktreesRoot } from './worktree.ts';
+import { createTaskWorktree, ensureLocalExcludes, scratchDir, worktreePath as worktreePathOf, worktreesRoot } from './worktree.ts';
 import { precheckOf, runPrecheck, runVerify } from './verify-runner.ts';
 import { git } from './git.ts';
 import { RUN_ENV_KEYS } from '../tools/subagent-tools.ts';
@@ -28,6 +28,7 @@ import { stageGateFailed, stageGatePassed, stageReviewStep } from './stage-revie
 import { STAGE_SKILLS } from '../modes/plan.ts';
 import { fixStep } from '../modes/fix.ts';
 import { existsSync, readFileSync } from 'node:fs';
+import { killStrays } from './strays.ts';
 import { activePause, classifyUnavailable, clearPause, describePause, pauseActive, recordPause } from './model-pause.ts';
 import type { ModelPause } from './schemas.ts';
 
@@ -68,6 +69,8 @@ export interface EngineDeps {
   /** 技能目录（skills/<name>/SKILL.md）；子进程以 --no-skills 运行，技能由提示注入 */
   packageSkillsDir?: string;
   onGate?: (r: GateOutcome) => void;
+  /** 子进程结束后结束它留在 worktree 里的进程（默认开；测试可关） */
+  killStrayProcesses?: boolean;
   /** 主分支同步完成的回调 */
   onSync?: (flowId: string, r: SyncResult) => void;
 }
@@ -408,6 +411,12 @@ export class Engine {
   private async onExit(runId: string, r: RunOutcome): Promise<void> {
     const active = this.runs.get(runId);
     this.runs.delete(runId);
+    // 子进程结束后，结束它在 worktree 或临时目录里留下的进程（例如被放到后台、没人等的测试）
+    if (active && this.d.killStrayProcesses !== false) {
+      const wt = this.d.store.readTask(active.flow, active.task).worktree ?? worktreePathOf(this.d.root, active.flow, active.task);
+      const killed = killStrays([wt, scratchDir(this.d.root, runId)]);
+      if (killed.length) await this.d.store.recordEvent({ flow: active.flow, task: active.task, actor: 'dispatcher', type: 'note', reason: `结束 ${runId} 留下的 ${killed.length} 个残留进程`, data: { run: runId, pids: killed } }).catch(() => {});
+    }
     rmSync(scratchDir(this.d.root, runId), { recursive: true, force: true });
     if (!active) return;
     const { store } = this.d;

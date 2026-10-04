@@ -2,6 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { setupProject } from '../helpers/project.ts';
 import { makeEngine } from '../helpers/engine.ts';
@@ -143,5 +144,36 @@ test('原地打转：连续 5 次相同的工具调用被拦下并提示换思�
     assert.equal(t.status, 'done');
     assert.equal(t.attempts, 1);
     assert.ok(p.store.readEvents().some((e) => e.type === 'note' && /原地打转/.test(e.reason ?? '')));
+  } finally { p.cleanup(); }
+});
+
+test('残留进程：子进程把命令放到后台被 guard 拦下；运行结束后，工作目录在 worktree 里的残留进程被结束', async () => {
+  const p = await setupProject({ tasks: [mkTask('T-001', { verify: ['test'] })] });
+  try {
+    let orphan = 0;
+    const { engine } = makeEngine(p, async (role, _n, a) => {
+      if (role === 'reviewer') { await a.call('flow_approve', { decision: 'pass' }); return; }
+      await a.call('flow_claim');
+      const bg = await a.call('bash', { command: 'sleep 30 &' });
+      assert.equal(bg.ok, false);
+      assert.match(bg.text, /禁止把命令放到后台运行/);
+      const nh = await a.call('bash', { command: 'setsid sleep 30' });
+      assert.equal(nh.ok, false);
+      // 模拟绕过 guard 留下的进程（例如脚本内部起的后台进程）：工作目录在 worktree 里
+      const wt = p.store.readTask(p.flowId, 'T-001').worktree!;
+      const child = spawn('sleep', ['60'], { cwd: wt, detached: true, stdio: 'ignore' });
+      child.unref();
+      orphan = child.pid!;
+      await a.call('write', { path: 'src/server/t-001/a.ts', content: 'ok' });
+      await a.call('flow_note', { text: '完成' });
+      await a.call('flow_submit', { summary: 's' });
+    });
+    await engine.next(p.flowId);
+    await engine.idle();
+    const t1 = p.store.readTask(p.flowId, 'T-001');
+    assert.equal(t1.status, 'done', `${t1.blocked_reason} | ${t1.last_failure}`);
+    const alive = (() => { try { process.kill(orphan, 0); return true; } catch { return false; } })();
+    assert.equal(alive, false, '残留进程已被结束');
+    assert.ok(p.store.readEvents().some((e) => e.type === 'note' && /残留进程/.test(e.reason ?? '')));
   } finally { p.cleanup(); }
 });

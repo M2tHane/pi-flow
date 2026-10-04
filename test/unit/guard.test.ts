@@ -269,3 +269,12 @@ test('阶段审查的修复任务可以写契约（不受角色可写范围限�
   blocked(checkToolCall(call('write', { path: 'workflow.yaml', content: '' }), fix));
   blocked(checkToolCall(call('write', { path: 'docs/contracts/web.md', content: '' }), ctx('backend-engineer', { contractsLocked: false, writes: ['src/server/a.ts'] })), 'write_paths');
 });
+
+test('禁止后台运行：单独的 & 被拦下，&& 与 2>&1 不受影响；setsid、disown 被拦下', () => {
+  const c = ctx('backend-engineer');
+  blocked(checkToolCall(bash('node --test tests/a.test.js &'), c), 'bash', /后台运行/);
+  blocked(checkToolCall(bash('sleep 1 & echo done'), c), 'bash', /后台运行/);
+  blocked(checkToolCall(bash('setsid node x.js'), c), 'bash');
+  allowed(checkToolCall(bash('node --test 2>&1 | tail -5'), c));
+  allowed(checkToolCall(bash('ls && echo ok'), c));
+});

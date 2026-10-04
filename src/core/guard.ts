@@ -51,6 +51,7 @@ const IMPL_FORBIDDEN: Record<string, string> = {
   tee: '请用 write/edit 工具写文件',
   curl: '只有 researcher 可以联网', wget: '只有 researcher 可以联网', ssh: '禁止远程连接', scp: '禁止远程连接', sftp: '禁止远程连接',
   eval: 'eval 无法校验，请直接写出命令', popd: '不支持 popd',
+  setsid: '新会话中的进程不受超时管理，请前台运行', disown: '后台进程不受超时管理，请前台运行',
 };
 /** 实施类角色可以对临时目录与任务 writes 内的文件使用的文件操作 */
 const FILE_OPS = new Set(['rm', 'mv', 'cp', 'rmdir']);
@@ -223,6 +224,8 @@ class BashChecker {
     if (depth > 4) return deny('bash', '嵌套的 shell 层数过多，无法校验');
     const parsed = parseShell(command);
     if (parsed.errors.length) return deny('bash', `无法解析的命令（${parsed.errors[0]}），已阻断。请改写为简单命令。`);
+    // 后台运行的进程脱离 bash 超时的管理，结束外层后会留下孤儿进程（真实冒烟：死循环的测试在后台堆积，占满 CPU）
+    if (parsed.background) return deny('bash', '禁止把命令放到后台运行（&）：后台进程不受超时管理，容易留下一直运行的孤儿进程。请前台运行；需要限时就给 bash 调用设置 timeout。');
     let cwd = startCwd;
     // 同一条命令中先用字面量赋值的变量（例如 D=/tmp/x; cp a $D/b），在校验时代入；其余变量仍按无法校验处理
     const vars = new Map<string, string>();
