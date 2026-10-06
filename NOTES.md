@@ -227,3 +227,4 @@
 140. 界面模块：`flow_propose_modules` 的模块多了 `ui` 与 `ui_pages`（prototype/*.html，必须在 architect 工作区里存在）；程序把页面与设计规范加进输入，并追加验收标准"界面按原型实现""界面遵循 DESIGN.md"，acceptor 逐条确认。未做：`flow_revise_plan` 新增的模块没有这两个字段（architect 自己写 inputs 与验收标准）。
 141. 主 agent 的选择题提问用插件 @tian.zuo/pi-ask-user（MIT，已核实 0.2.1：工具 `ask_user`，终端界面弹对话框，无界面返回 no-ui）：模板工具组 `ask`，orchestrator 允许；装在主会话的 pi 里，没装时 `/flow doctor` 与开始流程时提醒，讨论改用文字提问。
 142. `/flow-config` 菜单与 `show` 给每个角色标上做什么；README 以交互菜单为主，`set`/`unset` 保留给没有界面的场景。
+143. 删除 `learn-demo.html`（内容已过时，维护成本高），改为 `docs/pi-flow.drawio`（6 页：流程总览、角色、需求讨论、模块的生命周期、架构与安全、修复与中途变更）；流程变化时同步更新它。
