@@ -20,6 +20,7 @@ import { enforceToolCall } from '../core/guard.ts';
 import { dirtyFiles, newDrift, nextStep, turnContext } from '../core/context-injector.ts';
 import { parseAgentFile } from '../core/agents.ts';
 import { runFlowConfig, type ModelOption } from '../commands/flow-config.ts';
+import { RoleTable, type RoleRow, type TableModel } from '../commands/role-table.ts';
 import { runFlowCommand, runFlowBuild, runFlowFix, FLOW_USAGE, type CommandEnv, type EngineHandle } from '../commands/flow.ts';
 import { DispatchParams, ReplanParams, RequirementsParams, WaitParams, activeFlowId, flowDispatch, flowReplan, flowRequirements, flowWait, statusText } from '../tools/orchestrator-tools.ts';
 import { discussionSkills } from '../core/requirements.ts';
@@ -461,7 +462,12 @@ export default function piFlow(pi: ExtensionAPI): void {
     handler: async (args, ctx) => {
       try {
         const { config } = loadProjectConfig(ctx.cwd);
-        const ui = ctx.hasUI ? { select: (t: string, o: string[]) => ctx.ui.select(t, o), notify: (m: string, l?: 'info' | 'warning' | 'error') => ctx.ui.notify(m, l) } : null;
+        const ui = ctx.hasUI ? {
+          select: (t: string, o: string[]) => ctx.ui.select(t, o),
+          notify: (m: string, l?: 'info' | 'warning' | 'error') => ctx.ui.notify(m, l),
+          // 只有终端界面能承载自定义组件；其他模式退回逐级菜单
+          ...(ctx.mode === 'tui' ? { editTable: (rows: RoleRow[], tableModels: TableModel[]) => editRoleTable(ctx, rows, tableModels) } : {}),
+        } : null;
         report(ctx, await runFlowConfig(args, { ui, models: availableModels(ctx), config, settingsPath: roleSettingsPath() }));
         // 换了模型的角色不再等被暂停的模型：立即继续
         sessions.get(ctx.cwd)?.handle?.engine.retryPaused();
@@ -470,6 +476,21 @@ export default function piFlow(pi: ExtensionAPI): void {
       }
     },
   });
+}
+
+/** 用 ctx.ui.custom 承载角色表格 */
+function editRoleTable(ctx: ExtensionContext, rows: RoleRow[], models: TableModel[]): Promise<RoleRow[] | null> {
+  const table = new RoleTable(rows, models);
+  return ctx.ui.custom<RoleRow[] | null>((tui, _theme, _kb, done) => ({
+    render: (width) => table.render(width),
+    handleInput: (data) => {
+      const r = table.handleInput(data);
+      if (r === 'save') done(table.rows);
+      else if (r === 'cancel') done(null);
+      else tui.requestRender();
+    },
+    invalidate: () => {},
+  }));
 }
 
 export { ORCHESTRATOR_TOOLS };

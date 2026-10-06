@@ -7,10 +7,13 @@ import {
 } from '../core/role-settings.ts';
 import { escalationModel } from '../core/cost-control.ts';
 import { splitArgs } from './args.ts';
+import type { RoleRow, TableModel } from './role-table.ts';
 
 export interface UiPort {
   select(title: string, options: string[]): Promise<string | undefined>;
   notify(message: string, level?: 'info' | 'warning' | 'error'): void;
+  /** 表格式编辑（终端界面提供）：返回修改后的各行，放弃时返回 null；没有时退回逐级菜单 */
+  editTable?(rows: RoleRow[], models: TableModel[]): Promise<RoleRow[] | null>;
 }
 
 export interface ModelOption {
@@ -60,7 +63,7 @@ export async function runFlowConfig(args: string, deps: FlowConfigDeps): Promise
   const sub = argv[0];
   if (!sub) {
     if (!deps.ui) return `当前模式没有交互界面。\n${USAGE}`;
-    return interactive(deps, deps.ui);
+    return deps.ui.editTable ? tableEdit(deps, deps.ui) : interactive(deps, deps.ui);
   }
   switch (sub) {
     case 'show': return describeAll(deps);
@@ -242,4 +245,46 @@ async function editRoles(deps: FlowConfigDeps, ui: UiPort): Promise<void> {
     save(deps, role, validateSetting(deps, role, { ...(model ? { model } : {}), ...(thinking ? { thinking } : {}) }));
     ui.notify(`已保存：${role} → ${describeRole(deps, role)}`, 'info');
   }
+}
+
+function tableRows(deps: FlowConfigDeps): RoleRow[] {
+  const settings = loadRoleSettings(deps.settingsPath);
+  const noSettings: ReturnType<typeof loadRoleSettings> = { version: 1, roles: {} };
+  return roles(deps).map((role) => {
+    const wf = resolveRoleModel(deps.config, noSettings, role);
+    const own = settings.roles[role] ?? {};
+    const defEscalate = wf.model ? escalationModel(deps.config, noSettings, role, wf.model) : null;
+    return {
+      role, purpose: ROLE_PURPOSE[role] ?? '',
+      ...(own.model ? { model: own.model } : {}),
+      ...(own.escalate_model ? { escalate: own.escalate_model } : {}),
+      ...(own.thinking ? { thinking: own.thinking } : {}),
+      defaults: {
+        ...(wf.model ? { model: wf.model } : {}),
+        ...(defEscalate ? { escalate: defEscalate } : {}),
+        ...(wf.thinking ? { thinking: wf.thinking } : {}),
+      },
+    };
+  });
+}
+
+async function tableEdit(deps: FlowConfigDeps, ui: UiPort): Promise<string> {
+  const edited = await ui.editTable!(tableRows(deps), deps.models.map((m) => ({ ref: m.ref, levels: m.levels })));
+  if (!edited) return '已放弃修改。';
+  // 先全部校验再写入，避免写一半
+  const values = edited.map((r) => {
+    let escalate: string | undefined;
+    if (r.escalate) {
+      escalate = findModel(deps, r.escalate)?.ref;
+      if (!escalate) throw new FlowConfigError(`模型 ${r.escalate} 不可用。执行 /flow-config models 查看可用模型`);
+    }
+    return {
+      role: r.role, escalate,
+      setting: validateSetting(deps, r.role, { ...(r.model ? { model: r.model } : {}), ...(r.thinking ? { thinking: r.thinking } : {}) }),
+    };
+  });
+  let settings = loadRoleSettings(deps.settingsPath);
+  for (const v of values) settings = setEscalation(setRole(settings, v.role, v.setting), v.role, v.escalate);
+  saveRoleSettings(deps.settingsPath, settings, deps.now?.());
+  return `已保存各角色的模型、备用模型与思考强度。\n${describeAll(deps)}`;
 }
