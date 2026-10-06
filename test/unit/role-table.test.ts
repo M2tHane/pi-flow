@@ -17,8 +17,6 @@ const rows = (): RoleRow[] => [
   { role: 'architect', purpose: '模块规划', defaults: { model: 'a/big' } },
   { role: 'implementer', purpose: '模块实现', defaults: {} },
 ];
-const RIGHT = '\x1b[C';
-const LEFT = '\x1b[D';
 const DOWN = '\x1b[B';
 
 test('按键名：传统序列与 Kitty 序列', () => {
@@ -33,38 +31,61 @@ test('按键名：传统序列与 Kitty 序列', () => {
   assert.equal(keyName('x'), undefined);
 });
 
-test('上下选行、Tab 切列、左右改值', () => {
+const ENTER = '\r';
+const ESC = '\x1b';
+const UP = '\x1b[A';
+
+test('Enter 打开选择列表，上下选择，Enter 确认，Esc 返回不改', () => {
   const t = new RoleTable(rows(), models);
-  t.handleInput(RIGHT);                       // 模型列：默认 → a/big
-  assert.equal(t.rows[0]!.model, 'a/big');
-  t.handleInput(RIGHT);
+  t.handleInput(ENTER);                       // 模型列：列表 [默认, a/big, b/small]
+  assert.deepEqual(t.picker!.options, [undefined, 'a/big', 'b/small']);
+  t.handleInput(DOWN); t.handleInput(DOWN);
+  t.handleInput(ENTER);
   assert.equal(t.rows[0]!.model, 'b/small');
-  t.handleInput(LEFT);
-  t.handleInput(LEFT);                        // 回到默认
+  assert.equal(t.picker, null);
+  t.handleInput(ENTER);                       // 再打开：高亮停在当前值
+  assert.equal(t.picker!.index, 2);
+  t.handleInput(UP); t.handleInput(UP);       // 回到"默认"
+  t.handleInput(ESC);                         // Esc 只关列表
+  assert.equal(t.rows[0]!.model, 'b/small');
+  t.handleInput(ENTER); t.handleInput(UP); t.handleInput(UP); t.handleInput(ENTER);
   assert.equal(t.rows[0]!.model, undefined);
-  t.handleInput('\t');                        // 备用模型列
-  t.handleInput(LEFT);                        // 默认 ← 向前绕到最后一个
-  assert.equal(t.rows[0]!.escalate, 'b/small');
-  t.handleInput('\t');                        // 思考强度列
-  t.handleInput(RIGHT);                       // 默认模型 a/big 的级别：off
-  assert.equal(t.rows[0]!.thinking, 'off');
+});
+
+test('Tab 切列、选行；备用模型与思考强度；Backspace 恢复默认；Esc 保存退出', () => {
+  const t = new RoleTable(rows(), models);
+  t.handleInput('\t'); t.handleInput(ENTER); t.handleInput(DOWN); t.handleInput(ENTER);
+  assert.equal(t.rows[0]!.escalate, 'a/big');
+  t.handleInput('\t'); t.handleInput(ENTER);          // 思考强度：默认模型 a/big 的 off/low/high
+  assert.deepEqual(t.picker!.options, [undefined, 'off', 'low', 'high']);
+  t.handleInput(DOWN); t.handleInput(DOWN); t.handleInput(ENTER);
+  assert.equal(t.rows[0]!.thinking, 'low');
   t.handleInput(DOWN);
   assert.equal(t.row, 1);
-  t.handleInput('\x7f');                      // Backspace 恢复默认
-  assert.equal(t.rows[1]!.thinking, undefined);
-  assert.equal(t.handleInput('\r'), 'save');
-  assert.equal(t.handleInput('\x1b'), 'cancel');
+  t.handleInput(UP);
+  t.handleInput('\x7f');
+  assert.equal(t.rows[0]!.thinking, undefined);
+  assert.equal(t.handleInput(ESC), 'save');
 });
 
 test('换到不支持当前思考强度的模型时，思考强度回到默认', () => {
   const t = new RoleTable(rows(), models);
-  t.handleInput(RIGHT); t.handleInput('\t'); t.handleInput('\t');
-  t.handleInput(RIGHT); t.handleInput(RIGHT); t.handleInput(RIGHT);   // a/big：off、low、high
+  t.handleInput('\t'); t.handleInput('\t');
+  t.handleInput(ENTER); t.handleInput(DOWN); t.handleInput(DOWN); t.handleInput(DOWN); t.handleInput(ENTER);
   assert.equal(t.rows[0]!.thinking, 'high');
-  t.handleInput('\t');                                                  // 回到模型列
-  t.handleInput(RIGHT);                                                 // b/small 只支持 off
+  t.handleInput('\t');                                 // 回到模型列
+  t.handleInput(ENTER); t.handleInput(DOWN); t.handleInput(DOWN); t.handleInput(ENTER);   // b/small 只支持 off
   assert.equal(t.rows[0]!.model, 'b/small');
   assert.equal(t.rows[0]!.thinking, undefined);
+});
+
+test('列表打开时底部提示换成列表的按键，且不超宽', () => {
+  const t = new RoleTable(rows(), models);
+  assert.match(t.render(120).at(-1)!, /Enter 修改当前格.*Esc 保存并退出/);
+  t.handleInput(ENTER);
+  const lines = t.render(60);
+  assert.match(lines.at(-1)!, /Enter 确认.*Esc 返回/);
+  assert.ok(lines.some((l) => l.includes('选择 architect 的模型')));
 });
 
 test('渲染：每行不超过终端宽度，含表头与当前行标记', () => {
@@ -76,6 +97,7 @@ test('渲染：每行不超过终端宽度，含表头与当前行标记', () =>
   const text = t.render(120).join('\n').replace(/\x1b\[[0-9;]*m/g, '');
   assert.match(text, /角色\s+职责\s+模型\s+备用模型\s+思考强度/);
   assert.match(text, /→ architect/);
+  assert.match(t.render(120).at(-1)!, /Esc 保存并退出/);
 });
 
 test('/flow-config 表格：保存各行的模型、备用模型与思考强度，放弃时不写', async () => {

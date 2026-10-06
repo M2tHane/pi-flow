@@ -67,12 +67,14 @@ const BOLD = '\x1b[1m';
 const DIM = '\x1b[2m';
 const RESET = '\x1b[0m';
 
-export type TableResult = 'save' | 'cancel' | undefined;
+export type TableResult = 'save' | undefined;
 
 export class RoleTable {
   readonly rows: RoleRow[];
   row = 0;
   col: Column = 'model';
+  /** 打开时是选择列表：候选值（第一个为"默认"）与当前高亮 */
+  picker: { options: (string | undefined)[]; index: number } | null = null;
   private readonly models: TableModel[];
 
   constructor(rows: RoleRow[], models: TableModel[]) {
@@ -100,13 +102,16 @@ export class RoleTable {
     return [undefined, ...this.models.map((m) => m.ref)];
   }
 
-  private step(delta: 1 | -1): void {
+  private current(r: RoleRow, col: Column): string | undefined {
+    return col === 'model' ? r.model : col === 'escalate' ? r.escalate : r.thinking;
+  }
+
+  private openPicker(): void {
     const r = this.rows[this.row]!;
-    const opts = this.options(r, this.col);
-    const cur = this.col === 'model' ? r.model : this.col === 'escalate' ? r.escalate : r.thinking;
-    const at = cur === undefined ? 0 : opts.findIndex((o) => o?.toLowerCase() === cur.toLowerCase());
-    const next = opts[(at + delta + opts.length) % opts.length];
-    this.set(r, this.col, next);
+    const options = this.options(r, this.col);
+    const cur = this.current(r, this.col);
+    const at = cur === undefined ? 0 : options.findIndex((o) => o?.toLowerCase() === cur.toLowerCase());
+    this.picker = { options, index: Math.max(0, at) };
   }
 
   private set(r: RoleRow, col: Column, value: string | undefined): void {
@@ -120,16 +125,23 @@ export class RoleTable {
   }
 
   handleInput(data: string): TableResult {
-    switch (keyName(data)) {
+    const key = keyName(data);
+    const p = this.picker;
+    if (p) {
+      if (key === 'up') p.index = (p.index - 1 + p.options.length) % p.options.length;
+      else if (key === 'down') p.index = (p.index + 1) % p.options.length;
+      else if (key === 'enter') { this.set(this.rows[this.row]!, this.col, p.options[p.index]); this.picker = null; }
+      else if (key === 'escape') this.picker = null;
+      return undefined;
+    }
+    switch (key) {
       case 'up': this.row = (this.row - 1 + this.rows.length) % this.rows.length; break;
       case 'down': this.row = (this.row + 1) % this.rows.length; break;
       case 'tab': this.col = COLUMNS[(COLUMNS.indexOf(this.col) + 1) % COLUMNS.length]!; break;
       case 'shift-tab': this.col = COLUMNS[(COLUMNS.indexOf(this.col) + COLUMNS.length - 1) % COLUMNS.length]!; break;
-      case 'left': this.step(-1); break;
-      case 'right': this.step(1); break;
+      case 'enter': this.openPicker(); break;
       case 'delete': this.set(this.rows[this.row]!, this.col, undefined); break;
-      case 'enter': return 'save';
-      case 'escape': return 'cancel';
+      case 'escape': return 'save';
       default: break;
     }
     return undefined;
@@ -175,7 +187,26 @@ export class RoleTable {
     lines.push(line(HEADERS, false, true));
     body.forEach((b, i) => lines.push(line(b, i === this.row)));
     lines.push('');
-    lines.push(`${DIM}${fit('↑↓ 选择角色  Tab 切换列  ←→ 更换模型 / 思考强度  Backspace 恢复默认  Enter 保存  Esc 放弃', width).trimEnd()}${RESET}`);
+    const p = this.picker;
+    if (p) {
+      const r = this.rows[this.row]!;
+      const colName = { model: '模型', escalate: '备用模型', thinking: '思考强度' }[this.col];
+      lines.push(`${BOLD}选择 ${r.role} 的${colName}${RESET}`);
+      const VISIBLE = 10;
+      const start = Math.min(Math.max(0, p.index - Math.floor(VISIBLE / 2)), Math.max(0, p.options.length - VISIBLE));
+      const shown = p.options.slice(start, start + VISIBLE);
+      if (start > 0) lines.push(`${DIM}  ↑ 还有 ${start} 项${RESET}`);
+      shown.forEach((o, i) => {
+        const label = o ?? (r.defaults[this.col] ? `默认（${r.defaults[this.col]}）` : '默认');
+        const mark = this.current(r, this.col)?.toLowerCase() === o?.toLowerCase() ? ' ✓' : '';
+        const text = fit(`${label}${mark}`, Math.max(1, width - 2)).trimEnd();
+        lines.push(start + i === p.index ? `${REVERSE}→ ${text}${RESET}` : `  ${text}`);
+      });
+      if (start + VISIBLE < p.options.length) lines.push(`${DIM}  ↓ 还有 ${p.options.length - start - VISIBLE} 项${RESET}`);
+      lines.push('');
+    }
+    const hint = p ? '↑↓ 选择  Enter 确认  Esc 返回' : '↑↓ 选择角色  Tab 切换列  Enter 修改当前格  Backspace 恢复默认  Esc 保存并退出';
+    lines.push(`${DIM}${fit(hint, width).trimEnd()}${RESET}`);
     return lines;
   }
 }

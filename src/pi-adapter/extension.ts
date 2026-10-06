@@ -486,7 +486,6 @@ function editRoleTable(ctx: ExtensionContext, rows: RoleRow[], models: TableMode
     handleInput: (data) => {
       const r = table.handleInput(data);
       if (r === 'save') done(table.rows);
-      else if (r === 'cancel') done(null);
       else tui.requestRender();
     },
     invalidate: () => {},
