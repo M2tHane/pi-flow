@@ -15,6 +15,13 @@ declare module '@earendil-works/pi-coding-agent' {
     notify(message: string, type?: 'info' | 'warning' | 'error'): void;
     /** 页脚状态栏文字；undefined 清除（只在终端界面显示） */
     setStatus(key: string, text: string | undefined): void;
+    /** 临时把键盘焦点交给自定义组件，组件调用 done 后返回（Pi 1.0.0 ExtensionUIContext.custom） */
+    custom<T>(factory: (
+      tui: { requestRender(force?: boolean): void },
+      theme: unknown,
+      keybindings: unknown,
+      done: (result: T) => void,
+    ) => { render(width: number): string[]; handleInput?(data: string): void; invalidate(): void }): Promise<T>;
   }
   export interface ExtensionContext {
     ui: ExtensionUIContext;

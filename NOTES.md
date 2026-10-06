@@ -228,6 +228,7 @@
 141. 主 agent 的选择题提问用插件 @tian.zuo/pi-ask-user（MIT，已核实 0.2.1：工具 `ask_user`，终端界面弹对话框，无界面返回 no-ui）：模板工具组 `ask`，orchestrator 允许；装在主会话的 pi 里，没装时 `/flow doctor` 与开始流程时提醒，讨论改用文字提问。
 142. `/flow-config` 菜单与 `show` 给每个角色标上做什么；README 以交互菜单为主，`set`/`unset` 保留给没有界面的场景。
 143. 删除 `learn-demo.html`（内容已过时，维护成本高），改为 `docs/pi-flow.drawio`（6 页：流程总览、角色、需求讨论、模块的生命周期、架构与安全、修复与中途变更）；流程变化时同步更新它。
+144. `/flow-config` 终端界面改为一张角色表（角色、职责、模型、备用模型、思考强度）：↑↓ 选行、Tab 切列、Enter 打开该格的选择列表（↑↓ 选、Enter 确认、Esc 返回）、Backspace 恢复默认、表格里 Esc 保存并退出，按键提示固定在最下面一行（先做过 ←→ 改值，用户改为列表）；用 `ctx.ui.custom`（pi-tui 组件接口，Pi 1.0.0）承载，按键与渲染是纯逻辑（`src/commands/role-table.ts`，不 import pi-tui，自己识别传统与 Kitty 按键序列）；RPC 等无自定义组件的模式退回逐级菜单。
 
 ## 真实模型实验
 

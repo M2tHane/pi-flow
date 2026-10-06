@@ -91,7 +91,15 @@ pi                          # 正常启动 pi，pi-flow 随之加载
 
 ### 为各角色选择模型：`/flow-config`
 
-所有角色的模型与思考级别（effort）都在 `/flow-config` 里配置：在 pi 中输入 `/flow-config` → "设置各角色的模型与思考级别"，列表里是 workflow.yaml 中的全部角色（主 agent orchestrator、designer、architect、implementer、acceptor、reviewer、researcher），每个角色标着做什么、当前生效的模型与思考级别和来源。依次选择角色、模型（只列出你在 Pi 中已配置可用的模型）、思考级别（只列出该模型支持的级别）；"设置失败后升级用的模型"在同一个菜单里。设置保存在 `~/.pi/agent/pi-flow.json`，优先于项目 `workflow.yaml` 中的模型档位。
+所有角色的模型、备用模型与思考强度都在 `/flow-config` 里配置。在 pi 中输入 `/flow-config`，出现一张表：每行一个角色（主 agent orchestrator、designer、architect、implementer、acceptor、reviewer、researcher），列是 角色 · 职责 · 模型 · 备用模型 · 思考强度。
+
+- `↑` `↓` 选择角色，`Tab` 切换列（`Shift+Tab` 反向）。
+- `Enter` 打开当前格的选择列表：模型与备用模型列出你在 Pi 中已配置可用的模型，思考强度只列出当前模型支持的级别；第一项"默认"表示用 workflow.yaml 的设置（括号里是它的实际取值）。列表里 `↑` `↓` 选择，`Enter` 确认，`Esc` 不改直接返回。换了模型后，新模型不支持的思考强度会自动回到默认。
+- `Backspace` 把当前格恢复为默认；表格里按 `Esc` 保存并退出。
+- 所有按键提示显示在窗口最下面一行，随当前状态（表格或列表）变化。
+- 备用模型是同一任务失败多次后改用的模型。
+
+设置保存在 `~/.pi/agent/pi-flow.json`，优先于项目 `workflow.yaml` 中的模型档位。非终端界面（RPC）下退回逐级菜单。
 
 没有交互界面时（`pi -p`、RPC、脚本）可以用子命令：`/flow-config show`、`models`、`set <角色> <provider/model|default> [思考级别|default]`、`unset <角色|all>`、`escalate <角色> <provider/model|default>`。
 
