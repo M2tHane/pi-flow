@@ -25,6 +25,8 @@ import { RUN_ENV_KEYS } from '../tools/subagent-tools.ts';
 import { MergeQueue, type MergeHooks, type MergeResult, type SyncResult } from './merge-queue.ts';
 import { runStageGate, gateFailedWithoutChange, type GateOutcome } from './gates.ts';
 import { ensureStageTasks } from './stages.ts';
+import { REQUIREMENTS_STAGE, reopenRequirements } from './requirements.ts';
+import { finalReviewStep } from './final-review.ts';
 import { acceptanceStep, allAccepted, failedOf, gateFailed } from './acceptance.ts';
 import { DESIGN_STAGES } from '../modes/plan.ts';
 import { PROPOSAL_STAGES, skillsFor } from '../modes/plan.ts';
@@ -258,7 +260,7 @@ export class Engine {
     const { root, config, store } = this.d;
     const agent = loadAgent(role, root, this.d.packageAgentsDir);
     const { rules } = ruleFilesFor(config, root, task.scopes);
-    const mode = task.accept_of ? 'accept' : 'impl';
+    const mode = task.accept_of ? 'accept' : task.final_review ? 'review' : 'impl';
     // 独立验收：逐条验收全部标准，或只复查上次没通过的条目
     let accept: { kind: 'check' | 'confirm'; items: { id: string; text: string; last?: string }[] } | undefined;
     if (task.accept_of) {
@@ -467,6 +469,8 @@ export class Engine {
         return;
       }
       if (flow.stage_status !== 'active' || this.gating.has(flowId)) return;
+      // 需求讨论（D0）由主会话和用户进行，提交需求说明后才执行闸门
+      if (flow.stage === REQUIREMENTS_STAGE && !flow.requirements?.submitted) return;
       const created = await ensureStageTasks(deps, flowId);
       if (created.length) { await this.promote(flowId); this.notify(); return; }
       // 模块独立验收（第五轮）：模块合并后派验收；没通过的交回实现者修复、再复查。验收推进后可能有模块可以开工
@@ -476,7 +480,11 @@ export class Engine {
       if (!stageTasks.every(isSettled) || !allAccepted(all, flow.stage)) return;
       // 计划修订待用户批准时不提交闸门（批准后可能新增本阶段的任务）
       if (this.d.store.readRevision(flowId)?.status === 'proposed') return;
-      if (!force && gateFailedWithoutChange(this.d.store, flowId, flow.stage)) return;
+      // 最终代码审查（可选，review.final）：所有模块验收通过后、阶段闸门前；必须改的自动修，建议等用户挑选
+      const review = await finalReviewStep(deps, flowId);
+      if (review.changed) { await this.promote(flowId); this.notify(); }
+      if (review.wait) return;
+      if (!force && flow.stage !== REQUIREMENTS_STAGE && gateFailedWithoutChange(this.d.store, flowId, flow.stage)) return;
       await this.d.store.transitionStage(flowId, { to: 'awaiting_gate', trigger: 'submit_gate', actor: 'engine' });
       this.gating.add(flowId);
       this.notify();
@@ -490,7 +498,8 @@ export class Engine {
               if (r.reason) await this.d.store.recordEvent({ flow: flowId, actor: 'engine', type: 'note', reason: `需要你处理：${r.reason}`, data: { needs_human: true, stage: g.stage } });
             }
             // 设计阶段缺产出（例如没有提交模块清单、没有项目规则）：让写作者接着原会话补上，最多 3 次
-            if (DESIGN_STAGES.has(g.stage) && this.d.store.listTasks(flowId).filter((t) => t.stage === g.stage && t.title.startsWith('修订：')).length < 3) {
+            if (g.stage === REQUIREMENTS_STAGE) await reopenRequirements(this.d.store, flowId, `阶段检查未通过：${g.reasons.join('；')}`, 'gate');
+            else if (DESIGN_STAGES.has(g.stage) && this.d.store.listTasks(flowId).filter((t) => t.stage === g.stage && t.title.startsWith('修订：')).length < 3) {
               await ensureStageTasks(deps, flowId, `阶段检查未通过：${g.reasons.join('；')}`);
             }
           }

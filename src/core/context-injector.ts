@@ -7,9 +7,11 @@ import { isSettled } from './state-machine.ts';
 import { heldByRevision } from './revision.ts';
 import { selectDispatchable } from './scheduler.ts';
 import { git } from './git.ts';
-import type { ModelPause, TaskFile } from './schemas.ts';
+import type { FlowFile, ModelPause, TaskFile } from './schemas.ts';
+import { REQUIREMENTS_STAGE } from './requirements.ts';
+import { FINAL_REVIEW_DOC, LEVEL_LABEL } from './final-review.ts';
 
-export interface NextStep { summary: string; next: string; tool: 'flow_dispatch' | 'flow_wait' | 'none'; task?: string }
+export interface NextStep { summary: string; next: string; tool: 'flow_dispatch' | 'flow_wait' | 'flow_requirements' | 'none'; task?: string }
 
 /** paused：任务下一次派发要用的模型正被暂停时返回暂停记录（来自 Engine.pausedFor） */
 export type PausedOf = (flowId: string, t: TaskFile) => ModelPause | null;
@@ -27,6 +29,12 @@ export function nextStep(store: StateStore, maxParallel: number, activeRunCount 
   if (flow.stage_status === 'awaiting_human') return { summary, next: `阶段 ${flow.stage} 的闸门等待用户批准。请向用户说明结果，请其执行 /flow-approve；你只能等待。`, tool: 'none' };
   if (flow.stage_status === 'awaiting_gate') return { summary, next: '程序正在执行阶段闸门检查，调用 flow_wait 等待结果。', tool: 'flow_wait' };
   if (flow.stage_status !== 'active') return { summary, next: '流程已结束或中止。向用户汇报即可。', tool: 'none' };
+  if (flow.stage === REQUIREMENTS_STAGE && flow.mode !== 'fix' && !flow.requirements?.submitted) return { summary, next: requirementsNext(flow), tool: 'flow_requirements' };
+  const review = store.readFinalReview(flowId);
+  if (review?.status === 'awaiting_user' && review.stage === flow.stage) {
+    const left = review.findings.filter((f) => !review.fixed.includes(f.id));
+    return { summary, next: `最终代码审查已完成（${FINAL_REVIEW_DOC}），还有 ${left.length} 条没修：${left.map((f) => `${f.id}【${LEVEL_LABEL[f.level]}】${f.problem.slice(0, 60)}`).join('；')}。向用户概述这些条目，请用户挑选：/flow review fix <R-编号>... 交给负责的模块修复，或 /flow review done 都不修；你只能等待。`, tool: 'none' };
+  }
 
   const budget = config ? budgetState(store, config, flow) : null;
   const overBudget = budget?.exceeded ? '本流程的预算已用完，程序暂停派发新任务。向用户说明，请其用 /flow budget 提高预算后继续。' : null;
@@ -58,6 +66,16 @@ export function nextStep(store: StateStore, maxParallel: number, activeRunCount 
   if (human.length) return { summary, next: `模块 ${human.map((a) => a.task).join('、')} 的验收两轮修复后仍未通过（${(human[0]!.reason ?? '').slice(0, 120)}），依赖它们的模块在等待。向用户说明，请其决定：/flow accept <任务> 人工放行，或用 flow_replan 转达修改要求；你只能等待。`, tool: 'none' };
   if (stageTasks.length && stageTasks.every(isSettled)) return { summary, next: '本阶段任务全部完成，等待程序进行验收与阶段检查；调用 flow_wait。', tool: 'flow_wait' };
   return { summary, next: '当前阶段没有任务。向用户说明并等待指示。', tool: 'none' };
+}
+
+/** 需求讨论（D0）：主会话直接和用户逐轮讨论（见技能 grilling、write-requirements） */
+function requirementsNext(flow: FlowFile): string {
+  const r = flow.requirements;
+  const what = flow.mode === 'build' ? '这个新项目' : '这次要加的功能';
+  const head = r?.feedback
+    ? `需求说明被打回（第 ${r.rounds} 次），意见：${r.feedback}\n带着这些意见继续和用户讨论，改好后重新提交。`
+    : `现在是需求讨论：和用户逐轮讨论${what}（用户的描述：${flow.title}）。`;
+  return `${head}\n每轮把能问的问题一次问完，编号并给出你推荐的答案，然后等用户回答；需要的事实自己查（read、grep、find、ls${flow.mode === 'feature' ? '，先了解相关的现有代码' : ''}），决定交给用户。要问到：谁用、核心场景、MVP 范围与验收标准、术语、界面风格、是否需要先看原型。用户确认共识后，按技能 write-requirements 写成需求说明，调用 flow_requirements(content, prototype) 提交${r?.path ? `（写到 ${r.path}）` : ''}；提交后等用户 /flow-approve。不要自己修改代码，也不要调用 flow_dispatch。`;
 }
 
 export function turnContext(store: StateStore, maxParallel: number, activeRunCount = 0, config?: FlowConfig, paused?: PausedOf): string {

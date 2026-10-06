@@ -8,7 +8,7 @@ import { execFileSync } from 'node:child_process';
 import lockfile from 'proper-lockfile';
 import {
   validate, type FlowFile, type MergeQueueFile, type RunFile, type ProposalFile, type KnowledgeFile, type ModelPausesFile, type RevisionFile, type SchemaKind, type StageStatus, type StateFile,
-  type TaskFile, type TaskStatus, type FlowEvent, type NotesFile, type AcceptanceFile,
+  type TaskFile, type TaskStatus, type FlowEvent, type NotesFile, type AcceptanceFile, type FinalReviewFile,
 } from './schemas.ts';
 import {
   IN_FLIGHT, planStageTransition, planTransition, type Facts, type StageTrigger, type TaskPatch, type Trigger,
@@ -63,6 +63,7 @@ export const proposalRel = (flow: string) => `flows/${flow}/proposal.json`;
 export const revisionRel = (flow: string) => `flows/${flow}/revision.json`;
 export const stageEvidenceRel = (flow: string, stage: string) => `flows/${flow}/evidence/stage-${stage}`;
 export const acceptanceRel = (flow: string, task: string) => `flows/${flow}/acceptance/${task}.json`;
+export const finalReviewRel = (flow: string) => `flows/${flow}/final-review.json`;
 const MQ_REL = 'merge-queue.json';
 export const KNOWLEDGE_REL = 'knowledge.json';
 /** 任务的结构化笔记：同一任务的所有运行共用一份 */
@@ -81,6 +82,7 @@ export function schemaKindOf(rel: string): SchemaKind | null {
   if (rel === KNOWLEDGE_REL) return 'knowledge';
   if (rel === MODEL_PAUSES_REL) return 'model-pauses';
   if (/^flows\/[^/]+\/acceptance\/[^/]+\.json$/.test(rel)) return 'acceptance';
+  if (/^flows\/[^/]+\/final-review\.json$/.test(rel)) return 'final-review';
   if (rel === MAIN_NOTES_REL || /^flows\/[^/]+\/notes\/[^/]+\.json$/.test(rel)) return 'notes';
   return null;
 }
@@ -170,7 +172,7 @@ export interface CreateFlowInput {
 }
 
 export type TaskInput = Pick<TaskFile, 'id' | 'stage' | 'kind' | 'title' | 'role' | 'scopes' | 'depends_on' | 'inputs'
-  | 'writes' | 'acceptance' | 'verify'> & Partial<Pick<TaskFile, 'merge_fix_for' | 'conflict_files' | 'worktree' | 'branch' | 'base_sha' | 'sync_main' | 'replan' | 'fork_from_task' | 'shared' | 'needs_acceptance' | 'advocate' | 'accept_of' | 'accept_kind'>>;
+  | 'writes' | 'acceptance' | 'verify'> & Partial<Pick<TaskFile, 'merge_fix_for' | 'conflict_files' | 'worktree' | 'branch' | 'base_sha' | 'sync_main' | 'replan' | 'fork_from_task' | 'shared' | 'needs_acceptance' | 'accept_of' | 'accept_kind' | 'final_review'>>;
 
 export interface IntegrityReport { ok: boolean; errors: string[] }
 
@@ -497,9 +499,9 @@ export class StateStore {
       ...(t.fork_from_task ? { fork_from_task: t.fork_from_task } : {}),
       ...(t.shared?.length ? { shared: [...t.shared] } : {}),
       ...(t.needs_acceptance ? { needs_acceptance: true } : {}),
-      ...(t.advocate ? { advocate: t.advocate } : {}),
       ...(t.accept_of ? { accept_of: t.accept_of } : {}),
       ...(t.accept_kind ? { accept_kind: t.accept_kind } : {}),
+      ...(t.final_review ? { final_review: true } : {}),
     };
     return tx.putTask(flow, task);
   }
@@ -531,6 +533,28 @@ export class StateStore {
       if ((next.status === 'accepted') !== !!mod.accepted) tx.putTask(flow, { ...mod, accepted: next.status === 'accepted' });
       tx.event({ flow, task: next.task, actor: opts.actor, type: 'note', reason: opts.reason,
         data: { acceptance: next.status, round: next.round, ...(added.length ? { tasks: added.map((t) => t.id) } : {}) } });
+      return saved;
+    });
+  }
+
+  readFinalReview(flow: string): FinalReviewFile | null {
+    return this.readJsonRel<FinalReviewFile>(finalReviewRel(flow));
+  }
+
+  /** 推进最终代码审查记录（第五轮，可选）：同一事务内写记录、新增任务与 handoff。next.version 必须基于当前版本（新记录忽略） */
+  async updateFinalReview(flow: string, next: FinalReviewFile, opts: { tasks?: readonly TaskInput[]; handoffs?: Record<string, string>; actor: string; reason: string }): Promise<FinalReviewFile> {
+    return this.transaction((tx) => {
+      tx.readFlow(flow);
+      const rel = finalReviewRel(flow);
+      const cur = tx.readJson<FinalReviewFile>(rel);
+      const saved = tx.putJson(rel, 'final-review', { ...next, version: cur ? next.version : 1 });
+      const added = (opts.tasks ?? []).map((t) => this.putNewTask(tx, flow, t, opts.actor));
+      for (const [task, text] of Object.entries(opts.handoffs ?? {})) {
+        const h = handoffRel(flow, task);
+        tx.putText(h, `${tx.readText(h) ?? ''}\n## ${tx.ts} ${opts.actor}\n\n${text.trim()}\n`);
+      }
+      tx.event({ flow, actor: opts.actor, type: 'note', reason: opts.reason,
+        data: { final_review: next.status, ...(added.length ? { tasks: added.map((t) => t.id) } : {}) } });
       return saved;
     });
   }
@@ -966,7 +990,17 @@ export class StateStore {
     });
   }
 
-  /** 设置要跳过的阶段（D0 汇总者判断不需要原型、或用户在批准时指定）；只能跳过尚未到达的阶段 */
+  /** 记录需求讨论的状态（D0）：提交需求说明、用户打回或闸门未通过 */
+  async setRequirements(flowId: string, r: NonNullable<FlowFile['requirements']>, actor: string, reason: string): Promise<FlowFile> {
+    return this.transaction((tx) => {
+      const f = tx.readFlow(flowId);
+      const saved = tx.putFlow({ ...f, requirements: r });
+      tx.event({ flow: flowId, actor, type: 'note', reason, data: { requirements: r.submitted ? 'submitted' : 'discussing', rounds: r.rounds } });
+      return saved;
+    });
+  }
+
+  /** 设置要跳过的阶段（提交需求时判断不需要原型、或用户在批准时指定）；只能跳过尚未到达的阶段 */
   async setSkipStages(flowId: string, skip: string[], actor: string, reason: string): Promise<FlowFile> {
     return this.transaction((tx) => {
       const f = tx.readFlow(flowId);

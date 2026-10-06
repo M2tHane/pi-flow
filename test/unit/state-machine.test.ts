@@ -95,8 +95,8 @@ test('适配已有测试：flow_submit 算出的 test_adjustments 不算越出 w
   assert.equal(again.task.test_adjustments, undefined, '重新提交时按本次的改动重算');
 });
 
-test('只读任务（需求讨论、验收、计划修订）提交结论：不能有改动，要有 handoff', () => {
-  const a = inProgress({ kind: 'analysis', advocate: 'user', writes: [] });
+test('只读任务（验收、计划修订）提交结论：不能有改动，要有 handoff', () => {
+  const a = inProgress({ kind: 'analysis', replan: 'x', writes: [] });
   ok(planTransition(a, 'done', 'report', facts({ token: TOKEN, diff_files: [] })));
   bad(planTransition(a, 'done', 'report', facts({ token: TOKEN, diff_files: ['x.ts'] })), /只读任务不得有改动/);
   bad(planTransition(a, 'done', 'report', facts({ token: TOKEN, handoff_written: false })), /handoff/);

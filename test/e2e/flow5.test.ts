@@ -1,16 +1,17 @@
 // 第五轮新流程（fake-subagent 驱动）：需求讨论 → 原型 → 模块规划（含项目专属规则）→ 按模块实施、合并、独立验收 → 合入主分支。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { setupProject, type Project } from '../helpers/project.ts';
 import { makeEngine } from '../helpers/engine.ts';
 import type { FakeAgent } from '../fixtures/fake-subagent/launcher.ts';
 import { startFlow } from '../../src/core/stages.ts';
-import { runFlowCommand } from '../../src/commands/flow.ts';
+import { runFlowBuild, runFlowCommand } from '../../src/commands/flow.ts';
 import { FLOW5_YAML, SETTINGS5, cmdEnv } from '../helpers/flow5.ts';
 import { renderStatus } from '../../src/core/status-view.ts';
-import { statusText } from '../../src/tools/orchestrator-tools.ts';
+import { flowRequirements, statusText } from '../../src/tools/orchestrator-tools.ts';
+import { nextStep } from '../../src/core/context-injector.ts';
 
 const MODULES = [
   { id: 'M-1', title: '底座：项目骨架与公共组件', writes: ['src/base/**'], shared: ['src/routes.ts'], acceptance: ['服务能启动', '首页能打开'] },
@@ -18,11 +19,13 @@ const MODULES = [
   { id: 'M-3', title: '标签：给待办打标签', writes: ['src/tag/**'], shared: ['src/routes.ts'], acceptance: ['可以新增标签'], depends_on: [{ module: 'M-1', reason: '需要底座' }] },
 ];
 
-async function drive(p: Project, engine: ReturnType<typeof makeEngine>['engine'], flowId: string, onHuman: (stage: string) => Promise<void>) {
+/** onRequirements：需求讨论中（主会话和用户讨论）时调用，模拟主会话提交需求说明 */
+async function drive(p: Project, engine: ReturnType<typeof makeEngine>['engine'], flowId: string, onHuman: (stage: string) => Promise<void>, onRequirements: () => Promise<void>) {
   for (let i = 0; i < 80; i++) {
     if (!p.store.readState().active_flow) return;
     const f = p.store.readFlow(flowId);
     if (f.stage_status === 'awaiting_human') { await onHuman(f.stage); continue; }
+    if (f.stage === 'D0' && f.stage_status === 'active' && !f.requirements?.submitted) { await onRequirements(); continue; }
     const sig = () => `${p.store.readFlow(flowId).version}|${p.store.listTasks(flowId).map((t) => `${t.id}:${t.status}:${t.accepted ?? ''}`).join(',')}`;
     const before = sig();
     await engine.pump(flowId);
@@ -33,7 +36,7 @@ async function drive(p: Project, engine: ReturnType<typeof makeEngine>['engine']
   throw new Error('流程未在预期步数内结束');
 }
 
-test('第五轮全流程：两方意见并行 → 汇总（打回后接着改）→ 原型 → 模块规划与项目规则 → 底座先行、两个模块并行 → 验收不通过交回修复再复查 → 合入主分支', async () => {
+test('第五轮全流程：主会话提交需求说明（打回后带着意见再讨论、重新提交）→ 原型 → 模块规划与项目规则 → 底座先行、两个模块并行 → 验收不通过交回修复再复查 → 合入主分支', async () => {
   const p = await setupProject({ yaml: FLOW5_YAML });
   try {
     await p.store.transitionStage(p.flowId, { to: 'aborted', trigger: 'abort', actor: 'human' });
@@ -60,16 +63,7 @@ test('第五轮全流程：两方意见并行 → 汇总（打回后接着改）
         return;
       }
       assert.ok((await a.call('flow_claim')).ok);
-      if (role === 'user-advocate' || role === 'dev-advocate') {
-        const early = await a.call('flow_submit', { summary: 'x' });
-        assert.ok(!early.ok && /先用 flow_note 写下/.test(early.text));
-        await a.call('flow_note', { text: role === 'user-advocate' ? '用户视角：待办要能打标签' : '开发视角：建议用 SQLite' });
-        assert.ok((await a.call('flow_submit', { summary: '意见' })).ok);
-        return;
-      }
-      if (role === 'analyst') {
-        await a.call('write', { path: 'docs/requirements.md', content: `# 需求说明（${t.id}）\n风格：蓝白简约\n` });
-      } else if (role === 'designer') {
+      if (role === 'designer') {
         await a.call('write', { path: 'prototype/index.html', content: '<html>原型</html>' });
       } else if (role === 'architect') {
         await a.call('write', { path: 'docs/modules.md', content: '# 模块\n' });
@@ -97,7 +91,7 @@ test('第五轮全流程：两方意见并行 → 汇总（打回后接着改）
         if (t.kind === 'review-fix') await a.call('write', { path: `${dir}/home.ts`, content: '// 首页\n' });
       }
       await a.call('flow_note', { text: '完成' });
-      const s = await a.call('flow_submit', { summary: t.title, ...(role === 'analyst' ? { prototype: true } : {}) });
+      const s = await a.call('flow_submit', { summary: t.title });
       assert.ok(s.ok, s.text);
     };
     const { engine, errors } = makeEngine({ ...p, flowId: flow.id }, script, SETTINGS5);
@@ -108,15 +102,17 @@ test('第五轮全流程：两方意见并行 → 汇总（打回后接着改）
       const env = cmdEnv(p, engine);
       if (stage === 'D0' && !rejected) {
         rejected = true;
-        // 两方意见并行，汇总者在它们之后；打回后只生成汇总者的修订任务
-        const d0 = p.store.listTasks(flow.id).filter((x) => x.stage === 'D0');
-        assert.deepEqual(d0.map((x) => x.role), ['user-advocate', 'dev-advocate', 'analyst']);
-        assert.match(prompts['analyst']![0]!, /用户视角：待办要能打标签[\s\S]*开发视角：建议用 SQLite/);
-        assert.match(await runFlowCommand('reject "补充：标签要有颜色"', env), /生成修订任务/);
-        const rev = p.store.listTasks(flow.id).at(-1)!;
-        assert.equal(rev.role, 'analyst');
-        assert.equal(rev.fork_from_task, d0[2]!.id);
-        assert.match(p.store.readHandoff(flow.id, rev.id), /标签要有颜色/);
+        // 需求讨论没有子任务：需求说明由主会话提交到集成分支；打回后带着意见回到讨论
+        assert.deepEqual(p.store.listTasks(flow.id).filter((x) => x.stage === 'D0'), []);
+        assert.match(p.git('show', `${flow.integration_branch}:docs/requirements.md`), /第 1 版/);
+        assert.match(await runFlowCommand('reject "补充：标签要有颜色"', env), /继续和你讨论/);
+        const f = p.store.readFlow(flow.id);
+        assert.equal(f.stage_status, 'active');
+        assert.deepEqual([f.requirements?.submitted, f.requirements?.rounds, f.requirements?.feedback], [false, 1, '补充：标签要有颜色']);
+        const step = nextStep(p.store, 3, 0, p.config);
+        assert.equal(step.tool, 'flow_requirements');
+        assert.match(step.next, /标签要有颜色/);
+        assert.deepEqual(p.store.listTasks(flow.id), []);
         return;
       }
       if (stage === 'D2') {
@@ -127,7 +123,18 @@ test('第五轮全流程：两方意见并行 → 汇总（打回后接着改）
         assert.match(readFileSync(path.join(p.dir, 'rules/project.md'), 'utf8'), /用 SQLite/);
         return;
       }
+      if (stage === 'D1') {
+        await assert.rejects(flowRequirements(p.dir, p.store, engine, { content: '# 改需求', prototype: true }), /需求讨论（D0）已结束/);
+        assert.match(p.git('show', `${flow.integration_branch}:docs/requirements.md`), /第 2 版[\s\S]*标签有颜色/);
+      }
       await runFlowCommand(stage === 'E' ? 'approve --yes' : 'approve', env);
+    }, async () => {
+      // 主会话和用户讨论后提交需求说明：第一次讨论前没有任何任务，主 agent 收到的指引是讨论需求
+      const step = nextStep(p.store, 3, 0, p.config);
+      assert.equal(step.tool, 'flow_requirements');
+      const v = (p.store.readFlow(flow.id).requirements?.rounds ?? 0) + 1;
+      const r = await flowRequirements(p.dir, p.store, engine, { content: `# 需求说明（第 ${v} 版）\n风格：蓝白简约\n${v > 1 ? '- 标签有颜色\n' : ''}`, prototype: true });
+      assert.match(r.text, /请用户查看后执行 \/flow-approve/);
     });
     assert.deepEqual(errors, []);
     assert.deepEqual(seen, ['D0', 'D0', 'D1', 'D2', 'E']);
@@ -163,24 +170,36 @@ test('第五轮全流程：两方意见并行 → 汇总（打回后接着改）
   } finally { p.cleanup(); }
 });
 
-test('需求阶段：汇总者判断没有界面时跳过原型阶段；用户批准时可以用 --prototype 改回来', async () => {
-  for (const flag of ['', '--prototype']) {
+test('需求阶段：主会话提交时说明不需要原型就跳过原型阶段；/flow-build --from 直接把需求文档交给用户审批', async () => {
+  for (const prototype of [false, true]) {
     const p = await setupProject({ yaml: FLOW5_YAML });
     try {
       await p.store.transitionStage(p.flowId, { to: 'aborted', trigger: 'abort', actor: 'human' });
       const flow = await startFlow({ root: p.dir, store: p.store, config: p.config }, 'build', '做一个命令行工具');
-      const { engine } = makeEngine({ ...p, flowId: flow.id }, async (role, _n, a) => {
-        await a.call('flow_claim');
-        if (role === 'analyst') await a.call('write', { path: 'docs/requirements.md', content: '# 需求\n风格：无界面\n' });
-        await a.call('flow_note', { text: '意见' });
-        assert.ok((await a.call('flow_submit', { summary: 's', ...(role === 'analyst' ? { prototype: false } : {}) })).ok);
-      }, SETTINGS5);
-      for (let i = 0; i < 6 && p.store.readFlow(flow.id).stage_status !== 'awaiting_human'; i++) { await engine.pump(flow.id); await engine.next(flow.id); await engine.idle(); }
-      assert.deepEqual(p.store.readFlow(flow.id).skip_stages, ['D1']);
-      assert.match(renderStatus(p.store, p.config), /\[需求\] → 原型（跳过） → 规划/);
-      await runFlowCommand(`approve ${flag}`.trim(), cmdEnv(p, engine));
-      assert.equal(p.store.readFlow(flow.id).stage, flag ? 'D1' : 'D2');
-      assert.match(renderStatus(p.store, p.config), flag ? /需求 ✓ → \[原型\] → 规划/ : /需求 ✓ → 原型（跳过） → \[规划\]/);
+      const { engine } = makeEngine({ ...p, flowId: flow.id }, async () => {}, SETTINGS5);
+      await engine.pump(flow.id);
+      await engine.idle();
+      assert.equal(p.store.readFlow(flow.id).stage_status, 'active', '没提交需求说明前不执行闸门');
+      await assert.rejects(flowRequirements(p.dir, p.store, engine, { content: '   ', prototype }), /不能为空/);
+      await flowRequirements(p.dir, p.store, engine, { content: '# 需求\n风格：无界面\n', prototype });
+      assert.equal(p.store.readFlow(flow.id).stage_status, 'awaiting_human');
+      assert.deepEqual(p.store.readFlow(flow.id).skip_stages ?? [], prototype ? [] : ['D1']);
+      if (!prototype) assert.match(renderStatus(p.store, p.config), /\[需求\] → 原型（跳过） → 规划/);
+      await runFlowCommand('approve', cmdEnv(p, engine));
+      assert.equal(p.store.readFlow(flow.id).stage, prototype ? 'D1' : 'D2');
     } finally { p.cleanup(); }
   }
+  const p = await setupProject({ yaml: FLOW5_YAML });
+  try {
+    await p.store.transitionStage(p.flowId, { to: 'aborted', trigger: 'abort', actor: 'human' });
+    const { engine } = makeEngine(p, async () => {}, SETTINGS5);
+    writeFileSync(`${p.dir}.req.md`, '# 记账工具\n- R1 记一笔账\n');
+    const out = await runFlowBuild(`--from ${p.dir}.req.md --no-prototype`, cmdEnv(p, engine));
+    assert.match(out, /已把需求文档写入 docs\/requirements\.md（不做原型）/);
+    const f = p.store.readFlow(p.store.readState().active_flow!);
+    assert.equal(f.title, '记账工具');
+    assert.equal(f.stage_status, 'awaiting_human');
+    assert.deepEqual(f.skip_stages, ['D1']);
+    assert.match(p.git('show', `${f.integration_branch}:docs/requirements.md`), /R1 记一笔账/);
+  } finally { rmSync(`${p.dir}.req.md`, { force: true }); p.cleanup(); }
 });

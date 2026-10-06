@@ -9,6 +9,11 @@
 > - `test-adjust.ts` 保留（第 6 节原定删除）：模块的可写范围有限，接口变化仍会让别的模块已有的测试失败（NOTES 第 130 条）。
 > - 未做：`/flow-status --detail` 按模块显示 notes 的 current 与 todo（第 3.1 节）；workflow.yaml 里的全局 `shared_files` 列表（第 4 节），公共文件只能由 D2 按模块登记。
 > - 命令按用户的要求是 `/flow-approve`、`/flow-reject "<意见>"`、`/flow-add "<需求>"`、`/flow-resume`、`/flow-status --detail`；验收人工放行是 `/flow accept <任务>`。
+>
+> **之后的改动（2026-10-06，吸收 mattpocock/skills，MIT；NOTES 第 134–138 条）**：
+> - 需求讨论（D0）改为**主 agent 直接和用户逐轮讨论**（技能 grilling、write-requirements），用 `flow_requirements` 提交，程序写入需求说明；不再有 user-advocate、dev-advocate、analyst（下文第 1、2、7 节的 D0 描述已被取代）。`/flow-build --from <文件>` 跳过讨论。
+> - architect 多写术语表 `docs/glossary.md`（技能 domain-modeling）；模块切分规则改为纵向切片、铺垫性重构排前、每个模块写测试接口（技能 plan-modules）；implementer 用技能 tdd。
+> - 可选的最终代码审查（`review.final`，默认关）：模块都验收后一个 reviewer 审查整个流程的改动，必须改自动修一轮，建议由用户 `/flow review fix` 挑选。
 
 ## 0. 用户已定的决定
 

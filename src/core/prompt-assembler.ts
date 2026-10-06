@@ -36,7 +36,7 @@ export interface AssembleInput {
   flowId: string;
   handoff: string;
   /** impl：需要提交改动或结论的任务；accept：独立验收（逐条验收或只复查没通过的条目） */
-  mode: 'impl' | 'accept';
+  mode: 'impl' | 'accept' | 'review';
   /** 独立验收：check 逐条验收全部条目；confirm 只复查上次没通过的条目 */
   accept?: { kind: 'check' | 'confirm'; items: { id: string; text: string; last?: string }[] };
   commands: Record<string, string>;
@@ -141,6 +141,10 @@ export function assemblePrompt(i: AssembleInput): AssembledPrompt {
     parts.push(i.accept.kind === 'check'
       ? '开始：构建并运行，逐条验收，最后调用 flow_accept 一次提交全部条目的结论。'
       : '开始：只复查上面的条目，最后调用 flow_accept_confirm 提交结论；只能回答这些编号，不能提出新问题。');
+    return { system, user: parts.join('\n\n') };
+  }
+  if (i.mode === 'review') {
+    parts.push('开始：用任务说明里的 git diff 命令查看改动，按技能 code-review 逐个文件审查，最后调用 flow_review_report 一次提交全部问题（没有问题提交空列表）。不要修改仓库里的文件。');
     return { system, user: parts.join('\n\n') };
   }
   parts.push('开始：先调用 flow_claim，然后按工作流程完成任务，最后 flow_note 写 handoff 并 flow_submit。');

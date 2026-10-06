@@ -19,6 +19,8 @@ limits:
   auto_dispatch: true           # ready 任务由程序自动派发，主 agent 只负责沟通
   continue_session: true        # 返工、验收修复、恢复时接着原来的会话继续
   merge_batch: 3                # 合并队列里最多 3 个模块一起 rebase、只跑一次全量测试，失败再逐个合并；1 关闭
+review:
+  final: false                  # 最终代码审查：所有模块验收通过后，一个审查者对照项目规范审查整个流程的改动；必须改的自动修，建议由你挑选
 context:
   compact_at: 0.7               # 上下文占用到 70% 时压缩；压缩后靠 notes（结构化笔记）与 history（历史检索）延续
 models:                         # 档位到具体模型的映射；也可以用 /flow-config 按角色设置
@@ -46,12 +48,12 @@ modes:
       - { id: D2, name: planning,     phase: planning,     gate: { human: true } }
       - { id: E,  name: modules,      phase: execution,    gate: { all_tasks_done: true, auto: [test], human: true } }
 scopes:
-  requirements: { writes: ["docs/requirements.md", "docs/requirements/**"] }
   prototype:    { writes: ["prototype/**"] }
-  planning:     { writes: ["docs/modules.md", "docs/interfaces/**", "docs/adr/**", "docs/rules-draft/**", "AGENTS.md"] }
+  planning:     { writes: ["docs/modules.md", "docs/glossary.md", "docs/interfaces/**", "docs/adr/**", "docs/rules-draft/**", "AGENTS.md"] }
   code:         { rules: [rules/global.md, rules/project.md], writes: ["**"] }   # 模块的实际可写范围由规划阶段为每个模块指定；受保护路径（.flow、.git、workflow.yaml、rules、.pi）一律不可写
   research:     { writes: ["docs/research/**"] }
   acceptance:   { rules: [rules/global.md, rules/project.md], writes: [] }
+  review:       { rules: [rules/global.md, rules/project.md], writes: [] }
 tool_groups:                    # 已核实：pi-serena 0.9.20、pi-codegraph 0.1.10、pi-web-access 0.35.0
   serena_read: [serena_get_symbols_overview, serena_find_symbol, serena_find_referencing_symbols, serena_search_for_pattern,
                 serena_find_declaration, serena_find_implementations, serena_get_diagnostics_for_file]
@@ -62,12 +64,10 @@ tool_groups:                    # 已核实：pi-serena 0.9.20、pi-codegraph 0.
                 codegraph_node, codegraph_status, codegraph_files]
   web:         [web_search, fetch_content, get_search_content, source_check]
 roles:                          # notes、history、flow_block、flow_learn 所有角色隐式拥有
-  orchestrator:  { model: strong, tools: [read, flow_status, flow_dispatch, flow_wait], read_paths: ["docs/**", "prototype/**", ".flow/**"], writes: [] }
-  user-advocate: { model: strong, scopes: [], tools: [read, "@codegraph", flow_note, flow_submit], writes: [] }
-  dev-advocate:  { model: strong, scopes: [], tools: [read, bash_readonly, "@serena_read", "@codegraph", flow_note, flow_submit], writes: [] }
-  analyst:       { model: strong, scopes: [requirements], tools: [read, write, edit, "@codegraph", flow_note, flow_submit] }
+  orchestrator:  { model: strong, tools: [read, grep, find, ls, flow_status, flow_dispatch, flow_wait, flow_requirements], read_paths: ["**"], writes: [] }   # 需求讨论时要查现有代码；不能写
   designer:      { model: strong, scopes: [prototype], tools: [read, write, edit, flow_note, flow_submit] }
   architect:     { model: strong, scopes: [planning], tools: [codemode, read, write, edit, bash_readonly, "@serena_read", "@codegraph", flow_propose_modules, flow_note, flow_submit] }
   implementer:   { model: strong, scopes: [code], tools: [read, write, edit, bash, "@serena_read", "@serena_edit", "@codegraph", flow_sync, flow_note, flow_submit] }
   acceptor:      { model: strong, scopes: [acceptance], tools: [read, bash, "@serena_read", "@codegraph", flow_accept, flow_accept_confirm] }
+  reviewer:      { model: strong, scopes: [review], tools: [read, bash_readonly, "@serena_read", "@codegraph", flow_review_report] }   # 只在 review.final 开启时使用
   researcher:    { model: medium, scopes: [research], tools: [read, write, "@web", flow_note, flow_submit] }

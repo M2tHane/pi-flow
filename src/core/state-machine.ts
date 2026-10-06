@@ -172,7 +172,7 @@ export const TRANSITIONS: readonly Rule[] = [
       ...need(t.kind === 'analysis', '只有 analysis 任务可以直接提交结论'),
       ...need((f.diff_files ?? []).length === 0, `只读任务不得有改动：${(f.diff_files ?? []).join('、')}`),
       ...need(f.handoff_written, '尚未写 handoff，请先调用 flow_note'),
-      ...need(!!t.replan || !!t.advocate || !!t.accept_of, '缺少结构化结论'),
+      ...need(!!t.replan || !!t.accept_of || !!t.final_review, '缺少结构化结论'),
     ],
     effect: (t) => { t.impl_run = t.lease!.run_id; t.lease = null; t.worktree = null; },
   },

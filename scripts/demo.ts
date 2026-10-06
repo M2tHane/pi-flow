@@ -48,14 +48,16 @@ async function fakeBuild(): Promise<void> {
     console.log(`演示目录：${dir}`);
     sh(dir, 'git', ['init', '-q', '-b', 'main']);
     writeFileSync(path.join(agentDir, 'pi-flow.json'), JSON.stringify({ version: 1, roles: Object.fromEntries(
-      ['user-advocate', 'dev-advocate', 'analyst', 'architect', 'implementer', 'acceptor'].map((r) => [r, { model: `fakellm/demo-${r}` }])) }));
+      ['architect', 'implementer', 'acceptor'].map((r) => [r, { model: `fakellm/demo-${r}` }])) }));
 
     step('/flow init，然后把命令换成演示项目能跑的版本');
     await pi(dir, ['/flow init'], env, extra);
     writeWorkflowCommands(dir, { install: 'true', typecheck: 'true', lint: 'true', test: 'node --test', e2e: 'node --test' });
 
-    step('/flow-build：创建流程，用户视角与开发视角各写一版意见，汇总者写成需求说明（无界面，跳过原型）');
-    await pi(dir, ['/flow-build --direct "做一个待办应用"'], env, extra);
+    step('/flow-build --from：用写好的需求文档开始（演示不跑主会话的需求讨论；无界面，跳过原型）');
+    const req = path.join(agentDir, 'requirements.md');
+    writeFileSync(req, '# 待办应用\n\n## 需求清单\n- R1（MVP）添加与列出待办。done-when：add 之后 list 能看到它\n\n## 界面风格\n无界面\n');
+    await pi(dir, [`/flow-build --from ${req} --no-prototype`], env, extra);
     const store = new StateStore(dir);
     for (let i = 0; i < 20 && store.readState().active_flow; i++) {
       const f = store.readFlow(store.readState().active_flow!);

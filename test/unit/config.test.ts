@@ -37,16 +37,19 @@ test('工具组展开；bash_readonly 映射为 bash 并标记只读', () => {
   assert.ok(be.tools.has('serena_replace_symbol_body'));
   assert.ok(be.tools.has('serena_find_symbol'));
   assert.equal(be.bash, 'full');
-  // 开发视角（需求讨论）：只读 bash，意见写在 handoff 里
+  // architect：只读 bash（读代码、跑只读命令），写文件只用 write/edit
   const real = parseConfig(REAL_TEMPLATE_YAML);
-  const rv = real.roles['dev-advocate']!;
+  const rv = real.roles['architect']!;
   assert.equal(rv.bash, 'readonly');
   assert.ok(rv.tools.has('bash'));
   assert.ok(!rv.tools.has('bash_readonly'));
-  const rt = real.activeTools('dev-advocate');
-  assert.deepEqual(rt.slice(0, 2), ['read', 'bash']);
-  assert.ok(rt.includes('serena_find_symbol') && rt.includes('codegraph_impact') && rt.includes('flow_submit') && rt.includes('flow_block') && rt.includes('notes') && rt.includes('history'));
-  assert.ok(!rt.some((t) => real.toolKind(t) === 'write'), '只读角色不应启用写工具');
+  const rt = real.activeTools('architect');
+  assert.ok(rt.includes('bash') && rt.includes('serena_find_symbol') && rt.includes('codegraph_impact') && rt.includes('flow_submit') && rt.includes('flow_block') && rt.includes('notes') && rt.includes('history'));
+  // orchestrator：需求讨论时读代码（read、grep、find、ls），隐式拥有 flow_requirements，没有写工具
+  const ot = real.activeTools('orchestrator');
+  assert.ok(ot.includes('grep') && ot.includes('flow_requirements') && ot.includes('flow_replan'));
+  assert.ok(!ot.some((t) => real.toolKind(t) === 'write'));
+  assert.deepEqual(real.roles['orchestrator']!.readPaths, ['**']);
   assert.ok(real.activeTools('acceptor').includes('flow_accept') && !real.activeTools('acceptor').some((t) => real.toolKind(t) === 'write'));
   assert.ok(!c.toolKind('serena_rename_symbol') || c.toolKind('serena_rename_symbol') === 'other');
   assert.ok(!c.activeTools('orchestrator').includes('flow_block'));
@@ -82,11 +85,17 @@ test('角色的 writes 不能手写为与 scopes 不一致', () => {
 });
 
 test('越权配置被拒：orchestrator 有写工具、无 writes 的角色有写工具、验收与模块清单工具给了别的角色', () => {
-  assert.match(errorsOf(REAL_TEMPLATE_YAML.replace('tools: [read, flow_status', 'tools: [read, bash, flow_status')).join(), /orchestrator.*bash/);
-  const dev = 'tools: [read, bash_readonly, "@serena_read", "@codegraph", flow_note, flow_submit]';
-  assert.ok(REAL_TEMPLATE_YAML.includes(dev));
-  assert.match(errorsOf(REAL_TEMPLATE_YAML.replace(dev, 'tools: [read, bash_readonly, "@serena_read", "@serena_edit", "@codegraph", flow_note, flow_submit]')).join(), /dev-advocate.*serena_replace_symbol_body/);
-  assert.match(errorsOf(REAL_TEMPLATE_YAML.replace(dev, 'tools: [read, bash_readonly, "@serena_read", "@codegraph", flow_note, flow_submit, flow_accept]')).join(), /flow_accept 只能分配给 acceptor/);
-  assert.match(errorsOf(REAL_TEMPLATE_YAML.replace(dev, 'tools: [read, bash_readonly, "@serena_read", "@codegraph", flow_note, flow_submit, flow_propose_modules]')).join(), /flow_propose_modules 只能分配给 architect/);
-  assert.match(errorsOf(REAL_TEMPLATE_YAML.replace(dev, 'tools: [read, bash, bash_readonly, "@serena_read", "@codegraph", flow_note, flow_submit]')).join(), /bash_readonly/);
+  assert.match(errorsOf(REAL_TEMPLATE_YAML.replace('tools: [read, grep, find, ls, flow_status', 'tools: [read, bash, grep, find, ls, flow_status')).join(), /orchestrator.*bash/);
+  const acc = 'tools: [read, bash, "@serena_read", "@codegraph", flow_accept, flow_accept_confirm]';
+  const des = 'tools: [read, write, edit, flow_note, flow_submit]';
+  assert.ok(REAL_TEMPLATE_YAML.includes(acc) && REAL_TEMPLATE_YAML.includes(des));
+  assert.match(errorsOf(REAL_TEMPLATE_YAML.replace(acc, 'tools: [read, bash, "@serena_read", "@serena_edit", "@codegraph", flow_accept, flow_accept_confirm]')).join(), /acceptor.*serena_replace_symbol_body/);
+  assert.match(errorsOf(REAL_TEMPLATE_YAML.replace(des, 'tools: [read, write, edit, flow_note, flow_submit, flow_accept]')).join(), /flow_accept 只能分配给 acceptor/);
+  assert.match(errorsOf(REAL_TEMPLATE_YAML.replace(des, 'tools: [read, write, edit, flow_note, flow_submit, flow_propose_modules]')).join(), /flow_propose_modules 只能分配给 architect/);
+  assert.match(errorsOf(REAL_TEMPLATE_YAML.replace(des, 'tools: [read, write, edit, flow_note, flow_submit, flow_requirements]')).join(), /flow_requirements 只能分配给 orchestrator/);
+  assert.match(errorsOf(REAL_TEMPLATE_YAML.replace(des, 'tools: [read, write, edit, flow_note, flow_submit, flow_review_report]')).join(), /flow_review_report 只能分配给 reviewer/);
+  // 最终代码审查默认关闭；开启时需要 reviewer 角色
+  assert.equal(parseConfig(REAL_TEMPLATE_YAML).raw.review?.final, false);
+  assert.match(errorsOf(REAL_TEMPLATE_YAML.replace('final: false', 'final: true').replace(/^  reviewer:.*\n/m, '')).join(), /review\.final 开启时需要 reviewer 角色/);
+  assert.match(errorsOf(REAL_TEMPLATE_YAML.replace(des, 'tools: [read, write, edit, bash, bash_readonly, flow_note, flow_submit]')).join(), /bash_readonly/);
 });

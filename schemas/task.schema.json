@@ -285,18 +285,6 @@
     "accepted": {
       "type": "boolean"
     },
-    "advocate": {
-      "anyOf": [
-        {
-          "type": "string",
-          "const": "user"
-        },
-        {
-          "type": "string",
-          "const": "dev"
-        }
-      ]
-    },
     "accept_of": {
       "type": "string",
       "pattern": "^T-[0-9]{3,}$"
@@ -312,6 +300,9 @@
           "const": "confirm"
         }
       ]
+    },
+    "final_review": {
+      "type": "boolean"
     },
     "created_by": {
       "type": "string",

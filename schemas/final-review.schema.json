@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pi-flow/final-review.schema.json",
+  "type": "object",
+  "required": [
+    "stage",
+    "status",
+    "base",
+    "head",
+    "review_task",
+    "findings",
+    "fixed",
+    "fix_tasks",
+    "version"
+  ],
+  "properties": {
+    "stage": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "enum": [
+        "reviewing",
+        "fixing",
+        "awaiting_user",
+        "done"
+      ]
+    },
+    "base": {
+      "type": "string",
+      "minLength": 7
+    },
+    "head": {
+      "type": "string",
+      "minLength": 7
+    },
+    "review_task": {
+      "type": "string",
+      "pattern": "^T-[0-9]{3,}$"
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "level",
+          "basis",
+          "files",
+          "location",
+          "problem",
+          "expected"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^R-[0-9]+$"
+          },
+          "level": {
+            "enum": [
+              "must",
+              "suggest"
+            ]
+          },
+          "basis": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 1,
+            "maxItems": 20
+          },
+          "location": {
+            "type": "string",
+            "maxLength": 500
+          },
+          "problem": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "expected": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "summary": {
+      "type": "string",
+      "maxLength": 2000
+    },
+    "fixed": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^R-[0-9]+$"
+      }
+    },
+    "fix_tasks": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^T-[0-9]{3,}$"
+      }
+    },
+    "decided": {
+      "type": "boolean"
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    }
+  },
+  "additionalProperties": false
+}

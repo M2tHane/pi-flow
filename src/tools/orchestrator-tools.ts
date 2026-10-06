@@ -11,6 +11,7 @@ import { PROPOSAL_STAGES } from '../modes/plan.ts';
 import type { FlowConfig } from '../core/config.ts';
 import { RevisionError, formatRevision, openReplan, startReplan } from '../core/revision.ts';
 import { actionsNeeded } from '../core/status-view.ts';
+import { RequirementsError, submitRequirements } from '../core/requirements.ts';
 
 export const DispatchParams = Type.Object({ task_id: Type.String({ pattern: '^T-[0-9]{3,}$' }) });
 export const WaitParams = Type.Object({
@@ -40,6 +41,32 @@ export async function flowReplan(root: string, store: StateStore, config: FlowCo
   } catch (e) {
     return { text: `已生成修订任务 ${id}，暂时无法派发（${(e as Error).message}），名额空出后用 flow_dispatch(${id}) 派发。${after}`, details: { task: id } };
   }
+}
+
+export const RequirementsParams = Type.Object({
+  content: Type.String({ minLength: 1, description: '完整的需求说明（Markdown，结构见技能 write-requirements）' }),
+  prototype: Type.Boolean({ description: '是否需要原型阶段：有界面且用户想先看原型为 true；没有界面或只改后端为 false' }),
+});
+
+/** 需求讨论（D0）：用户确认共识后提交需求说明；程序提交到集成分支并执行阶段闸门，之后等用户审批 */
+export async function flowRequirements(root: string, store: StateStore, engine: Engine, p: Static<typeof RequirementsParams>): Promise<ToolResult> {
+  const flowId = activeFlowId(store);
+  let r: { path: string; sha: string | null };
+  try {
+    r = await submitRequirements(root, store, flowId, p.content, p.prototype, 'orchestrator');
+  } catch (e) {
+    if (e instanceof RequirementsError) throw new FlowToolError(e.message);
+    throw e;
+  }
+  await engine.pump(flowId);
+  await engine.idle();
+  const f = store.readFlow(flowId);
+  const proto = p.prototype ? '接下来做原型' : '跳过原型，直接进入规划';
+  if (f.stage_status === 'awaiting_human') {
+    return { text: `已提交需求说明 ${r.path}${r.sha ? '' : '（内容没有变化）'}，${proto}。请用户查看后执行 /flow-approve，或 /flow-reject "<意见>" 打回；你只能等待。`, details: { path: r.path } };
+  }
+  const reason = f.requirements?.feedback;
+  return { text: `已提交需求说明 ${r.path}，阶段 ${f.stage}（${f.stage_status}）${!f.requirements?.submitted && reason ? `。检查未通过：${reason}，请修改后重新提交` : ''}。`, details: { path: r.path } };
 }
 
 export function activeFlowId(store: StateStore): string {

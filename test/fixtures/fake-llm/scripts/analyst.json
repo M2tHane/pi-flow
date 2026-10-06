@@ -1,7 +1,0 @@
-{ "steps": [
-  { "tool_calls": [ { "name": "flow_claim", "arguments": {} } ] },
-  { "tool_calls": [ { "name": "write", "arguments": { "path": "docs/requirements.md", "content": "# 待办应用需求说明\n\n## 非目标\n- 不做多人协作\n\n## 验收标准\n- 新建后列表多一条\n\n## 风格\n无界面（命令行）\n" } } ] },
-  { "tool_calls": [ { "name": "flow_note", "arguments": { "text": "需求说明已汇总两方意见；无界面，跳过原型" } } ] },
-  { "tool_calls": [ { "name": "flow_submit", "arguments": { "summary": "需求说明", "prototype": false } } ] },
-  { "text": "完成" }
-] }

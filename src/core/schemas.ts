@@ -74,6 +74,10 @@ export const FlowFile = Type.Object({
   }, { additionalProperties: false }))),
   /** 跳过的阶段（第五轮：没有界面时跳过原型阶段 D1） */
   skip_stages: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
+  /** 需求讨论（D0）：主会话追问用户后经 flow_requirements 提交；submitted 为 false 时主会话继续追问。feedback 是用户最近一次打回的意见（或闸门未通过的原因） */
+  requirements: Type.Optional(Type.Object({
+    submitted: Type.Boolean(), rounds: Type.Integer({ minimum: 0 }), path: Type.Optional(Type.String()), feedback: Type.Optional(Type.String()),
+  }, { additionalProperties: false })),
   version: Type.Integer({ minimum: 1 }),
 }, { additionalProperties: false });
 export type FlowFile = Static<typeof FlowFile>;
@@ -136,11 +140,11 @@ export const TaskFile = Type.Object({
   needs_acceptance: Type.Optional(Type.Boolean()),
   /** 独立验收已通过 */
   accepted: Type.Optional(Type.Boolean()),
-  /** 需求讨论（第五轮 D0）的只读任务：user 用户视角、dev 开发视角，意见写进 handoff */
-  advocate: Type.Optional(Type.Union([Type.Literal('user'), Type.Literal('dev')])),
   /** 独立验收任务（第五轮，kind=analysis，角色 acceptor）：验收的模块任务与类型（check 逐条验收，confirm 只复查没通过的条目） */
   accept_of: Type.Optional(TaskId),
   accept_kind: Type.Optional(Type.Union([Type.Literal('check'), Type.Literal('confirm')])),
+  /** 最终代码审查任务（第五轮，可选，kind=analysis，角色 reviewer）：结论用 flow_review_report 提交 */
+  final_review: Type.Optional(Type.Boolean()),
   created_by: Type.String({ minLength: 1 }),
   version: Type.Integer({ minimum: 1 }),
 }, { additionalProperties: false });
@@ -303,6 +307,8 @@ export const WorkflowFile = Type.Object({
   testing: Type.Optional(Type.Object({ adjust_tests: Type.Optional(Type.Boolean()) }, { additionalProperties: false })),
   /** 项目知识库：auto_candidates 为 true 时，合并后验证失败会提炼为知识候选（默认关闭：真实冒烟中这些候选多是一次性细节） */
   knowledge: Type.Optional(Type.Object({ auto_candidates: Type.Optional(Type.Boolean()) }, { additionalProperties: false })),
+  /** 最终代码审查（第五轮，默认关闭）：实施阶段所有模块验收通过后、阶段闸门前，审查者对照项目规范审查整个流程的改动 */
+  review: Type.Optional(Type.Object({ final: Type.Optional(Type.Boolean()) }, { additionalProperties: false })),
   /** 上下文管理（第五轮）：compact_at 为触发压缩的上下文占比（默认 0.7）；压缩后靠 notes 与 history 延续 */
   context: Type.Optional(Type.Object({ compact_at: Type.Optional(Type.Number({ minimum: 0.3, maximum: 0.95 })) }, { additionalProperties: false })),
   /** 每个流程的成本预算（第二轮 I）：tokens 计输入 + 输出；cost 为 Pi 报告的金额。超出后暂停派发新任务 */
@@ -492,6 +498,41 @@ export const AcceptanceFile = Type.Object({
 }, { additionalProperties: false });
 export type AcceptanceFile = Static<typeof AcceptanceFile>;
 
+// —— 最终代码审查（第五轮，可选，.flow/flows/<流程>/final-review.json）：只由程序写入 ——
+
+export const REVIEW_LEVELS = ['must', 'suggest'] as const;
+export const ReviewFinding = Type.Object({
+  id: Type.String({ pattern: '^R-[0-9]+$' }),
+  /** must：必须改（违反成文规范或明确的缺陷，自动交给负责的模块修复）；suggest：建议（用户挑选要修的） */
+  level: Type.Enum(REVIEW_LEVELS),
+  /** 依据：规范出处（文件 + 哪一条）或坏味道名称 */
+  basis: Type.String({ minLength: 1, maxLength: 500 }),
+  files: Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: 20 }),
+  /** 位置：函数名或行号范围 */
+  location: Type.String({ maxLength: 500 }),
+  problem: Type.String({ minLength: 1, maxLength: 2000 }),
+  expected: Type.String({ minLength: 1, maxLength: 2000 }),
+}, { additionalProperties: false });
+export type ReviewFinding = Static<typeof ReviewFinding>;
+export const FINAL_REVIEW_STATUSES = ['reviewing', 'fixing', 'awaiting_user', 'done'] as const;
+export const FinalReviewFile = Type.Object({
+  stage: Type.String({ minLength: 1 }),
+  status: Type.Enum(FINAL_REVIEW_STATUSES),
+  /** 审查的改动范围：base..head（集成分支与主分支的分叉点到审查开始时的集成分支） */
+  base: Type.String({ minLength: 7 }),
+  head: Type.String({ minLength: 7 }),
+  review_task: TaskId,
+  findings: Type.Array(ReviewFinding),
+  summary: Type.Optional(Type.String({ maxLength: 2000 })),
+  /** 已交给模块修复的条目（必须改自动修；建议由用户 /flow review fix 挑选），每条只修一轮，不再复审 */
+  fixed: Type.Array(Type.String({ pattern: '^R-[0-9]+$' })),
+  fix_tasks: Type.Array(TaskId),
+  /** 用户已经挑选过（/flow review fix 或 done）：修复完成后直接结束，不再等待 */
+  decided: Type.Optional(Type.Boolean()),
+  version: Type.Integer({ minimum: 1 }),
+}, { additionalProperties: false });
+export type FinalReviewFile = Static<typeof FinalReviewFile>;
+
 // —— 结构化笔记（.flow/flows/<流程>/notes/<任务>.json、.flow/notes/main.json）：agent 用 notes 工具维护，每次请求原样放回上下文 ——
 
 export const NOTE_SECTIONS = ['goal', 'done', 'todo', 'current', 'decisions', 'pitfalls'] as const;
@@ -541,6 +582,7 @@ export const SCHEMAS = {
   'model-pauses': ModelPausesFile,
   notes: NotesFile,
   acceptance: AcceptanceFile,
+  'final-review': FinalReviewFile,
 } as const;
 export type SchemaKind = keyof typeof SCHEMAS;
 

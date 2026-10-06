@@ -211,6 +211,29 @@
         "minLength": 1
       }
     },
+    "requirements": {
+      "type": "object",
+      "required": [
+        "submitted",
+        "rounds"
+      ],
+      "properties": {
+        "submitted": {
+          "type": "boolean"
+        },
+        "rounds": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "path": {
+          "type": "string"
+        },
+        "feedback": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
     "version": {
       "type": "integer",
       "minimum": 1

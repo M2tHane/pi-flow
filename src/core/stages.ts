@@ -7,6 +7,7 @@ import { ensureIntegrationBranch } from './worktree.ts';
 import { mergeToMain } from './release.ts';
 import { DESIGN_STAGES, PROPOSAL_STAGES, STAGE_WRITER, designTasks, revisionTask, type FlowMode, type PlannedTask } from '../modes/plan.ts';
 import { formatDagReport } from './dag.ts';
+import { REQUIREMENTS_STAGE, reopenRequirements } from './requirements.ts';
 
 export interface StageDeps { root: string; store: StateStore; config: FlowConfig }
 
@@ -45,7 +46,7 @@ export async function ensureStageTasks(d: StageDeps, flowId: string, revision?: 
   const ids = planned.map((_, i) => nextTaskId(d.store, flowId, i));
   const tasks: TaskInput[] = planned.map(({ after, ...t }, i) => ({
     ...t, id: ids[i]!,
-    depends_on: (after ?? []).map((k) => ({ task: ids[k]!, type: 'hard' as const, reason: '汇总需要两方的意见' })),
+    depends_on: (after ?? []).map((k) => ({ task: ids[k]!, type: 'hard' as const, reason: '等前置任务完成' })),
   }));
   if (!tasks.length) return [];
   await d.store.addTasks(flowId, tasks, 'engine');
@@ -101,6 +102,10 @@ export async function rejectStage(d: StageDeps, flowId: string, feedback: string
   if (!DESIGN_STAGES.has(flow.stage)) throw new Error(`阶段 ${flow.stage} 没有可修订的设计产物；如需补充工作，请完成本流程后用 /flow-build --feature 发起新功能。`);
   if (!feedback.trim()) throw new Error('打回必须写明意见：/flow-reject "<意见>"');
   await d.store.transitionStage(flowId, { to: 'active', trigger: 'reject', actor: 'human', reason: feedback });
+  if (flow.stage === REQUIREMENTS_STAGE && flow.mode !== 'fix') {
+    await reopenRequirements(d.store, flowId, feedback, 'human');
+    return `已打回需求说明，主会话会带着你的意见继续和你讨论。`;
+  }
   const ids = await ensureStageTasks(d, flowId, feedback);
   return `已打回阶段 ${flow.stage}，生成修订任务 ${ids.join('、')}。`;
 }

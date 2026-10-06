@@ -64,7 +64,7 @@ test('调度模式：orchestrator 不能自己写代码，只能 dispatch/wait�
     const reqs = all.filter((x) => x.model === 'orch');
     assert.match(JSON.stringify(reqs[1].last), /Tool write not found/);
     // 只启用了 orchestrator 的工具
-    assert.deepEqual([...reqs[0].tools].sort(), ['flow_dispatch', 'flow_replan', 'flow_status', 'flow_wait', 'history', 'notes', 'read']);
+    assert.deepEqual([...reqs[0].tools].sort(), ['flow_dispatch', 'flow_replan', 'flow_requirements', 'flow_status', 'flow_wait', 'history', 'notes', 'read']);
     const sys = JSON.stringify(reqs[0].system);
     assert.match(sys, /你是 pi-flow 的主会话/);
     assert.match(sys, /唯一允许的下一步.*flow_dispatch\(T-001\)/);
@@ -80,19 +80,17 @@ test('调度模式：orchestrator 不能自己写代码，只能 dispatch/wait�
   }
 });
 
-test('真实 pi：空仓库执行 /flow-build，用户视角与开发视角各写一版意见，汇总者写成需求说明，停在等待你审阅', { skip: !piAvailable && 'pi 不可用', timeout: 300_000 }, async () => {
+test('真实 pi：空仓库执行 /flow-build，主 agent 逐轮问用户、自己查代码，用户确认后提交需求说明，停在等待你审阅', { skip: !piAvailable && 'pi 不可用', timeout: 300_000 }, async () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'pi-flow-build-'));
   const agentDir = mkdtempSync(path.join(tmpdir(), 'pi-flow-agentdir-'));
   try {
     execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir });
-    writeFileSync(path.join(agentDir, 'pi-flow.json'), JSON.stringify({ version: 1, roles: {
-      orchestrator: { model: 'fakellm/plain' }, 'user-advocate': { model: 'fakellm/advocate-user' },
-      'dev-advocate': { model: 'fakellm/advocate-dev' }, analyst: { model: 'fakellm/analyst' } } }));
+    writeFileSync(path.join(agentDir, 'pi-flow.json'), JSON.stringify({ version: 1, roles: { orchestrator: { model: 'fakellm/grill' } } }));
     const provider = path.join(ROOT, 'test/fixtures/fake-llm/provider.ts');
     const out = await new Promise<{ status: number | null; text: string }>((resolve) => {
       const c = spawn('pi', ['-p', '--no-session', '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-context-files',
         '-e', provider, '-e', path.join(ROOT, 'src/pi-adapter/extension.ts'), '--model', 'fakellm/plain',
-        '/flow-build "做一个待办应用"'], {
+        '/flow-build "做一个待办应用"', '帮我做个待办', '只有我自己用，就按你推荐的写'], {
         cwd: dir, stdio: ['ignore', 'pipe', 'pipe'],
         env: { ...process.env, PI_OFFLINE: '1', PI_SKIP_VERSION_CHECK: '1', PI_CODING_AGENT_DIR: agentDir, FAKE_LLM_URL: llm.url, FAKE_LLM_SCRIPTS: SCRIPTS, PI_FLOW_EXTRA_EXTENSIONS: provider },
       });
@@ -108,17 +106,18 @@ test('真实 pi：空仓库执行 /flow-build，用户视角与开发视角各�
     const flow = store.readFlow('B-001');
     assert.equal(flow.stage, 'D0');
     assert.equal(flow.stage_status, 'awaiting_human', out.text);
-    const tasks = store.listTasks('B-001');
-    assert.deepEqual(tasks.map((t) => [t.role, t.status]), [['user-advocate', 'done'], ['dev-advocate', 'done'], ['analyst', 'done']]);
-    assert.match(execFileSync('git', ['show', 'flow/B-001/integration:docs/requirements.md'], { cwd: dir, encoding: 'utf8' }), /待办应用需求说明/);
+    assert.deepEqual(flow.skip_stages, ['D1'], '没有界面，跳过原型');
+    assert.deepEqual(store.listTasks('B-001'), [], '需求讨论不派子任务');
+    assert.match(execFileSync('git', ['show', 'flow/B-001/integration:docs/requirements.md'], { cwd: dir, encoding: 'utf8' }), /待办应用需求说明[\s\S]*## 术语/);
     assert.match(out.text, /\/flow-approve/);
     const all = readFileSync(LOG, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
-    // 汇总者的提示里有两方意见（上游 handoff）
-    const an = all.find((x) => x.model === 'analyst' && x.turn === 0);
-    assert.match(JSON.stringify(an.last), /按日期排序[\s\S]*SQLite/);
-    // 意见写在 handoff 里，没有可写范围
-    const adv = all.find((x) => x.model === 'advocate-user' && x.turn === 0);
-    assert.ok(!adv.tools.includes('write'), JSON.stringify(adv.tools));
+    const reqs = all.filter((x) => x.model === 'grill');
+    // 讨论中：注入逐轮追问与写需求说明的技能，唯一允许的下一步是讨论并 flow_requirements；能读代码（grep），不能写
+    const sys = JSON.stringify(reqs[0].system);
+    assert.match(sys, /逐轮追问[\s\S]*写需求说明/);
+    assert.match(sys, /唯一允许的下一步.*需求讨论.*flow_requirements/);
+    assert.ok(reqs[0].tools.includes('grep') && reqs[0].tools.includes('flow_requirements') && !reqs[0].tools.includes('write'), JSON.stringify(reqs[0].tools));
+    assert.ok(!store.readEvents().some((e) => e.type === 'violation'), '读代码不算越权');
   } finally {
     rmSync(dir, { recursive: true, force: true });
     rmSync(`${dir}.worktrees`, { recursive: true, force: true });

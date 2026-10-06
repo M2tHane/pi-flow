@@ -10,6 +10,7 @@ import { snapshot } from '../core/worktree.ts';
 import { isProtected } from '../core/paths.ts';
 import { EXECUTION_STAGE, PROPOSAL_STAGES } from '../modes/plan.ts';
 import { recordAcceptance } from '../core/acceptance.ts';
+import { findingLine, recordReview } from '../core/final-review.ts';
 import { FlowToolError, checkRunOf, type ToolContext, type ToolResult } from './tool-common.ts';
 
 const actor = (ctx: ToolContext) => `run:${ctx.env.run}`;
@@ -22,7 +23,7 @@ export const ModuleDef = Type.Object({
   writes: Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: 40, description: '模块的可写范围（目录 glob），前端、后端、测试都包括，例如 backend/app/kb/**、frontend/src/pages/kb/**、backend/tests/kb/**' }),
   shared: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { maxItems: 20, description: '要登记的公共文件（路由注册、菜单、迁移目录、文案等）：可以写，不算进模块之间的互斥' })),
   acceptance: Type.Array(Type.String({ minLength: 1, maxLength: 500 }), { minItems: 1, maxItems: 30, description: '验收标准：每条都能实际运行验证（接口、页面、测试），独立验收者会逐条确认' }),
-  inputs: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { maxItems: 30, description: '要先读的文件（需求说明、原型页面、接口文档等）' })),
+  inputs: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { maxItems: 30, description: '要先读的文件（需求说明、原型页面、接口文档等；docs/modules.md、docs/glossary.md、AGENTS.md 会自动加上）' })),
   depends_on: Type.Optional(Type.Array(Type.Object({
     module: Type.String({ pattern: '^M-[0-9]+$' }),
     reason: Type.String({ minLength: 1, maxLength: 300, description: '为什么必须等它验收通过才能开工' }),
@@ -49,7 +50,7 @@ export function modulesToTasks(ctx: ToolContext, p: Static<typeof ProposeModules
     return {
       id: ids.get(m.id)!, stage: EXECUTION_STAGE, kind: 'impl', title: m.title, role: 'implementer', scopes: ['code'],
       depends_on: (m.depends_on ?? []).filter((d) => ids.has(d.module)).map((d) => ({ task: ids.get(d.module)!, type: 'hard' as const, reason: d.reason })),
-      inputs: [...new Set([...(m.inputs ?? []), 'docs/modules.md', 'AGENTS.md'])], writes: [...m.writes], acceptance: [...m.acceptance], verify,
+      inputs: [...new Set([...(m.inputs ?? []), 'docs/modules.md', 'docs/glossary.md', 'AGENTS.md'])], writes: [...m.writes], acceptance: [...m.acceptance], verify,
       ...(m.shared?.length ? { shared: [...m.shared] } : {}), needs_acceptance: true,
     };
   });
@@ -146,6 +147,35 @@ async function submitAccept(ctx: ToolContext, p: Static<typeof AcceptParams>, ki
   await ctx.store.updateRun(ctx.env.run, { outcome: 'submitted' }, actor(ctx), kind === 'check' ? '提交验收结论' : '提交复查结论');
   const failed = p.results.filter((r) => !r.passed).length;
   return { text: `已提交（${p.results.length - failed} 条通过，${failed} 条未通过）。你的工作已完成，请直接结束。` };
+}
+
+// —— flow_review_report（最终代码审查，可选） ——
+
+export const ReviewReportParams = Type.Object({
+  summary: Type.String({ minLength: 1, maxLength: 1000, description: '一段话总结代码质量与主要问题' }),
+  findings: Type.Array(Type.Object({
+    id: Type.String({ pattern: '^R-[0-9]+$', description: '编号 R-1、R-2……' }),
+    level: Type.Union([Type.Literal('must'), Type.Literal('suggest')], { description: 'must：必须改（违反成文规范或明确的缺陷，会自动交给负责的模块修复）；suggest：建议（由用户挑选要不要修）' }),
+    basis: Type.String({ minLength: 1, maxLength: 500, description: '依据：规范出处（文件 + 哪一条）或坏味道名称' }),
+    files: Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: 20, description: '涉及的文件（仓库内相对路径，必须是这次改动里的文件）' }),
+    location: Type.String({ maxLength: 500, description: '位置：函数名或行号范围' }),
+    problem: Type.String({ minLength: 1, maxLength: 2000, description: '问题' }),
+    expected: Type.String({ minLength: 1, maxLength: 2000, description: '期望怎么改' }),
+  }, { additionalProperties: false }), { maxItems: 60, description: '全部问题；没有问题提交空列表' }),
+}, { additionalProperties: false });
+
+export async function flowReviewReport(ctx: ToolContext, p: Static<typeof ReviewReportParams>): Promise<ToolResult> {
+  const t = checkRunOf(ctx);
+  if (!t.final_review || t.status !== 'in_progress') throw new FlowToolError('flow_review_report 只能在最终代码审查任务中使用。');
+  const errs = await recordReview(ctx.env.root, ctx.store, ctx.env.flow, t, p.findings, p.summary, actor(ctx));
+  if (errs.length) throw new FlowToolError(`结论未保存：\n${errs.map((e) => `- ${e}`).join('\n')}`);
+  await ctx.store.appendHandoff(ctx.env.flow, t.id, `审查结论：${p.summary}\n${p.findings.map((f) => `- ${findingLine(f)}`).join('\n')}`, actor(ctx));
+  try {
+    await ctx.store.transitionTask(ctx.env.flow, t.id, { to: 'done', trigger: 'report', actor: actor(ctx), facts: { token: ctx.env.token, diff_files: [] } });
+  } catch (e) { throw new FlowToolError((e as Error).message); }
+  await ctx.store.updateRun(ctx.env.run, { outcome: 'submitted' }, actor(ctx), '提交审查结论');
+  const must = p.findings.filter((f) => f.level === 'must').length;
+  return { text: `已提交（${p.findings.length} 条问题，必须改 ${must} 条）。你的工作已完成，请直接结束。` };
 }
 
 export const flowAccept = (ctx: ToolContext, p: Static<typeof AcceptParams>) => submitAccept(ctx, p, 'check');

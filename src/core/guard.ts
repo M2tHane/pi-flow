@@ -161,7 +161,8 @@ class Evaluator {
     const allowed = this.role.readPaths;
     if (!allowed) return ok;
     const a = this.classify(this.resolveToolPath(rawPath ?? '.'));
-    if (a.area !== 'workspace' || !matchesAny(a.rel, allowed)) {
+    // 工作区根目录（grep、find、ls 不给路径时）：只有 read_paths 含 ** 时允许
+    if (a.area !== 'workspace' || !matchesAny(a.rel === '.' ? '' : a.rel, allowed)) {
       return deny('read_paths', `${this.role.name} 只能读取 ${allowed.join('、')}，${a.rel} 不在其中。${this.hint()}`);
     }
     return ok;

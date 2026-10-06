@@ -71,8 +71,8 @@ declare module '@earendil-works/pi-coding-agent' {
     /** 设置本会话模型（不改默认配置）；该 provider 没有配置凭据时返回 false */
     setModel(model: PiModel): Promise<boolean>;
     getThinkingLevel(): ThinkingLevel;
-    /** 以用户身份发送消息，总会触发一轮 */
-    sendUserMessage(content: string): void;
+    /** 以用户身份发送消息，总会触发一轮；agent 正在输出时用 deliverAs 指定排队方式（Pi 1.0.0 types.d.ts） */
+    sendUserMessage(content: string, options?: { deliverAs?: 'steer' | 'followUp' }): void;
     /** 设置本会话思考级别（按模型能力收窄） */
     setThinkingLevel(level: ThinkingLevel): void;
     on(event: 'session_start' | 'session_shutdown' | 'agent_end', handler: (event: unknown, ctx: ExtensionContext) => unknown): () => void;

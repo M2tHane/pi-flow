@@ -14,8 +14,7 @@ import { NOTES_DESCRIPTION, NotesError, NotesParams, applyNoteOps, renderNotes }
 import { HISTORY_DESCRIPTION, HistoryParams, formatSearch, loadHistory, readHistoryEntry, searchHistory } from '../core/history.ts';
 import { listSessionFiles, sessionDirOf } from '../core/session-log.ts';
 import { taskNotesRel } from '../core/state-store.ts';
-import { PROTOTYPE_STAGE } from '../modes/plan.ts';
-import { AcceptConfirmParams, AcceptParams, ProposeModulesParams, SyncParams, flowAccept, flowAcceptConfirm, flowProposeModules, flowSync } from './module-tools.ts';
+import { AcceptConfirmParams, AcceptParams, ProposeModulesParams, ReviewReportParams, SyncParams, flowAccept, flowAcceptConfirm, flowProposeModules, flowReviewReport, flowSync } from './module-tools.ts';
 
 export const NOTE_LIMIT = 8000;
 
@@ -26,7 +25,6 @@ export const ClaimParams = Type.Object({});
 export const NoteParams = Type.Object({ text: Type.String({ minLength: 1, maxLength: NOTE_LIMIT, description: 'handoff 笔记：做到哪、下一步、踩过的坑、未决问题；需求讨论的意见也写在这里' }) });
 export const SubmitParams = Type.Object({
   summary: Type.String({ minLength: 1, maxLength: 500, description: '一句话总结本次改动（只读任务：一句话结论）' }),
-  prototype: Type.Optional(Type.Boolean({ description: '（仅需求阶段的汇总者）是否需要原型阶段：没有界面或只改后端时为 false' })),
 });
 export const LearnParams = Type.Object({
   category: Type.Union(KNOWLEDGE_CATEGORIES.map((c) => Type.Literal(c)), { description: 'convention 约定、pitfall 坑、decision 决策、environment 环境、dependency 外部依赖' }),
@@ -81,12 +79,6 @@ export async function flowSubmit(ctx: ToolContext, p: Static<typeof SubmitParams
     rethrow(e, `只修改可写范围内的文件（登记的公共文件可以改；别的模块已有的测试可以改来适配，但不能新增或删除可写范围外的文件）。还原越界改动：新增的文件用 git rm <文件>，修改过或删除的文件用 git checkout ${t.base_sha} -- <文件>。先 flow_note 写 handoff，然后再次 flow_submit。`);
   }
   await ctx.store.appendHandoff(ctx.env.flow, t.id, `提交说明：${p.summary}`, actor(ctx));
-  // 需求阶段的汇总者判断要不要原型阶段（用户批准时可以用 --prototype / --no-prototype 改）
-  if (t.stage === 'D0' && p.prototype !== undefined) {
-    const f = ctx.store.readFlow(ctx.env.flow);
-    const skip = (f.skip_stages ?? []).filter((x) => x !== PROTOTYPE_STAGE);
-    if (f.stages.includes(PROTOTYPE_STAGE)) await ctx.store.setSkipStages(ctx.env.flow, p.prototype ? skip : [...skip, PROTOTYPE_STAGE], actor(ctx), p.prototype ? '需要原型阶段' : '不需要原型阶段（没有界面）');
-  }
   if (adjusted.length) await ctx.store.appendHandoff(ctx.env.flow, t.id, `修改了可写范围外的已有测试（适配接口变化）：${adjusted.join('、')}`, 'flow-submit');
   await ctx.store.updateRun(ctx.env.run, { outcome: 'submitted' }, actor(ctx), '提交');
   return { text: `已提交合并（改动 ${diff.length} 个文件${stray.length ? `；已清理可写范围外、未被跟踪的文件 ${stray.length} 个：${stray.slice(0, 5).join('、')}` : ''}）。合并时程序会跑全量测试。你的工作已完成，请直接结束，不要再调用工具。`, details: { files: diff, cleaned: stray } };
@@ -100,15 +92,9 @@ function interfaceRewrites(worktree: string, base: string): string[] {
 
 async function submitAnalysis(ctx: ToolContext, t: TaskFile, p: Static<typeof SubmitParams>): Promise<ToolResult> {
   if (t.accept_of) throw new FlowToolError(t.accept_kind === 'confirm' ? '复查用 flow_accept_confirm 提交。' : '验收用 flow_accept 提交。');
+  if (t.final_review) throw new FlowToolError('审查结论用 flow_review_report 提交。');
   if (t.replan) return submitReplan(ctx, t, p);
-  // 需求讨论（D0）：意见已写进 handoff；程序写的部分（用户的描述）不算，必须有本次运行用 flow_note 写的意见
-  if (!/^## \S+ run:/m.test(ctx.store.readHandoff(ctx.env.flow, t.id))) throw new FlowToolError('还没有写意见：先用 flow_note 写下你的完整意见，再 flow_submit。');
-  await ctx.store.appendHandoff(ctx.env.flow, t.id, `总结：${p.summary}`, actor(ctx));
-  try {
-    await ctx.store.transitionTask(ctx.env.flow, t.id, { to: 'done', trigger: 'report', actor: actor(ctx), facts: { token: ctx.env.token, diff_files: [] } });
-  } catch (e) { rethrow(e, '先 flow_note 写下意见再提交。'); }
-  await ctx.store.updateRun(ctx.env.run, { outcome: 'submitted' }, actor(ctx), '提交意见');
-  return { text: '意见已提交。你的工作已完成，请直接结束。' };
+  throw new FlowToolError('这个任务没有可用 flow_submit 提交的结论。');
 }
 
 /** 计划修订任务提交：必须已用 flow_revise_plan 保存本任务的修订提案 */
@@ -221,6 +207,7 @@ export const SUBAGENT_TOOLS = {
   flow_sync: { params: SyncParams, description: '把集成分支的最新代码（其他模块已合入的改动）合进你的工作区：没有冲突直接完成；有冲突时冲突标记留在文件里，解决后再调用一次完成同步。依赖的模块刚合入、或想提前发现冲突时使用。', run: (c: ToolContext) => flowSync(c) },
   flow_accept: { params: AcceptParams, description: '（仅验收任务）逐条提交验收结论：每条验收标准给出 passed 与证据。', run: (c: ToolContext, p: Static<typeof AcceptParams>) => flowAccept(c, p) },
   flow_accept_confirm: { params: AcceptConfirmParams, description: '（仅复查任务）只对待复查的条目提交 passed 与证据，不能新增条目。', run: (c: ToolContext, p: Static<typeof AcceptConfirmParams>) => flowAcceptConfirm(c, p) },
+  flow_review_report: { params: ReviewReportParams, description: '（仅最终代码审查任务）一次提交全部问题：每条写级别（must 必须改 / suggest 建议）、依据、文件、位置、问题、期望。', run: (c: ToolContext, p: Static<typeof ReviewReportParams>) => flowReviewReport(c, p) },
   notes: { params: NotesParams, description: NOTES_DESCRIPTION, run: (c: ToolContext, p: Static<typeof NotesParams>) => flowNotes(c, p) },
   history: { params: HistoryParams, description: HISTORY_DESCRIPTION, run: (c: ToolContext, p: Static<typeof HistoryParams>) => flowHistory(c, p) },
 } as const;

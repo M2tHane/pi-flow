@@ -9,6 +9,7 @@ import { git, gitOk } from './git.ts';
 import { worktreesRoot, removeWorktree } from './worktree.ts';
 import { evidenceText, runShell } from './verify-runner.ts';
 import { PROPOSAL_STAGES } from '../modes/plan.ts';
+import { REQUIREMENTS_STAGE, requirementsMissing } from './requirements.ts';
 
 /** failed：失败的闸门命令与输出（实施阶段据此按日志生成修复任务，见 acceptance.gateFailed） */
 export interface GateOutcome { stage: string; passed: boolean; needsHuman: boolean; reasons: string[]; failed?: { command: string; output: string } }
@@ -31,6 +32,10 @@ export async function runStageGate(root: string, store: StateStore, config: Flow
 
   const open = store.listTasks(flowId).filter((t) => t.stage === flow.stage && !isSettled(t));
   if (open.length) reasons.push(`本阶段还有未完成的任务：${open.map((t) => `${t.id}（${t.status}）`).join('、')}`);
+  if (flow.stage === REQUIREMENTS_STAGE) {
+    const missing = requirementsMissing(root, flow.integration_branch, flow.requirements?.path);
+    if (missing) reasons.push(missing);
+  }
   if (PROPOSAL_STAGES.has(flow.stage) && !store.readProposal(flowId)) reasons.push('规划阶段必须经 flow_propose_modules 提交模块清单');
   // 新项目的规划阶段必须写出项目专属规则（批准时应用到 rules/project.md）
   if (PROPOSAL_STAGES.has(flow.stage) && flow.mode === 'build' && !gitOk(root, ['cat-file', '-e', `${flow.integration_branch}:docs/rules-draft/project.md`])) {

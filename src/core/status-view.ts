@@ -23,14 +23,14 @@ const DEFAULT_PHASE: Record<string, Phase> = {
 
 const GOALS: Record<'build' | 'feature' | 'fix', Record<PhaseOrDone, string>> = {
   build: {
-    requirements: '用户视角、开发视角各写一版意见，汇总成需求说明（含验收标准与界面风格），你确认',
+    requirements: '主 agent 和你逐轮讨论需求，写成需求说明（含验收标准、术语与界面风格），你确认',
     prototype: '按定下的风格生成可点击的原型，你点一遍确认',
     planning: '划分模块、排好顺序、写模块之间的接口与项目规则，你确认',
     execution: '一个模块交给一个模型实现（前后端与测试），合并时跑全量测试，再由独立的验收者对照验收标准确认',
     done: '已合入主分支',
   },
   feature: {
-    requirements: '讨论这次要加的功能，汇总成需求说明，你确认',
+    requirements: '主 agent 和你逐轮讨论这次要加的功能，写成需求说明，你确认',
     prototype: '按定下的风格生成新界面的原型，你确认',
     planning: '确定涉及哪些模块、各改什么、验收标准，你确认',
     execution: '按模块实现，合并时跑全量测试，再由独立的验收者确认',
@@ -86,8 +86,7 @@ export function lastFailureKind(store: StateStore, flowId: string, taskId: strin
 }
 
 export function taskActivity(t: TaskFile, failureKind: string | null): string {
-  const working = t.accept_of ? (t.accept_kind === 'confirm' ? '复查中' : '验收中') : t.advocate ? '写意见中'
-    : t.replan ? '起草计划修订' : t.kind === 'review-fix' ? '修复中' : t.kind === 'merge-fix' ? '解决合并冲突' : t.kind === 'doc' ? '撰写中' : '实现中';
+  const working = t.accept_of ? (t.accept_kind === 'confirm' ? '复查中' : '验收中') : t.final_review ? '代码审查中' : t.replan ? '起草计划修订' : t.kind === 'review-fix' ? '修复中' : t.kind === 'merge-fix' ? '解决合并冲突' : t.kind === 'doc' ? '撰写中' : '实现中';
   const base = t.status === 'in_progress' ? (t.lease ? working : '等待重新派发')
         : t.status === 'queued_merge' || t.status === 'merging' ? '合入中'
           : t.status === 'ready' ? '待派发'
@@ -128,9 +127,16 @@ export function actionsNeeded(store: StateStore, config: FlowConfig): Action[] {
         out.push({ key: `${flow.id}:accept:${a.task}:${a.version}`, text: `模块 ${a.task}「${short(t?.title ?? '', 40)}」验收${short(a.reason ?? '未通过', 200)}，依赖它的模块在等待`,
           command: `/flow accept ${a.task} 人工放行；或 /flow-add "<怎么改>" --task <修复任务>、/flow replan "<怎么改>" 交给 architect` });
       }
-      if (gate?.to === 'active' && gate.data?.['stage'] === flow.stage && (DESIGN_STAGES.has(flow.stage) || rounds >= MAX_GATE_ROUNDS || !tasks.some((t) => t.stage === flow.stage && !['done', 'cancelled'].includes(t.status)))) {
+      if (flow.stage === 'D0' && !flow.requirements?.submitted) {
+        out.push({ key: `${flow.id}:discuss:${flow.requirements?.rounds ?? 0}`, text: '需求讨论中：回答主 agent 的问题，确认共识后它会提交需求说明给你审批', command: '直接在对话里回答' });
+      } else if (gate?.to === 'active' && gate.data?.['stage'] === flow.stage && (DESIGN_STAGES.has(flow.stage) || rounds >= MAX_GATE_ROUNDS || !tasks.some((t) => t.stage === flow.stage && !['done', 'cancelled'].includes(t.status)))) {
         out.push({ key: `${flow.id}:gatefail:${gate.seq}`, text: `阶段检查未通过${rounds >= MAX_GATE_ROUNDS ? `（已自动修复 ${rounds} 轮）` : ''}：${short(gate.reason ?? '')}`, command: '用 /flow replan "<怎么修>" 交给 architect，或处理后执行 /flow gate 重跑' });
       }
+    }
+    const review = flow.mode !== 'fix' ? store.readFinalReview(flow.id) : null;
+    if (review?.status === 'awaiting_user') {
+      const left = review.findings.filter((f) => !review.fixed.includes(f.id));
+      out.push({ key: `${flow.id}:review:${review.version}`, text: `最终代码审查还有 ${left.length} 条没修（${left.map((f) => f.id).join('、')}），等你挑选（/flow review 查看）`, command: '/flow review fix <R-编号>... 交给模块修复；/flow review done 都不修' });
     }
     const budget = budgetState(store, config, flow);
     if (budget?.warn) {
@@ -192,7 +198,9 @@ export function renderFlow(store: StateStore, config: FlowConfig, flow: FlowFile
   const inPhase = flow.mode === 'fix' || cur === 'done' ? tasks
     : tasks.filter((t) => phaseOfStage(config, flow.mode as 'build' | 'feature', t.stage) === cur);
   const counted = inPhase.filter((t) => t.status !== 'cancelled');
-  lines.push(counted.length ? `进度：${counted.filter((t) => t.status === 'done').length} / ${counted.length} 个任务完成` : '进度：本阶段的任务尚未生成');
+  const discussing = flow.stage === 'D0' && flow.mode !== 'fix';
+  lines.push(counted.length ? `进度：${counted.filter((t) => t.status === 'done').length} / ${counted.length} 个任务完成`
+    : discussing ? (flow.requirements?.submitted ? '进度：需求说明已提交' : `进度：和主 agent 讨论中${flow.requirements?.rounds ? `（第 ${flow.requirements.rounds + 1} 版）` : ''}`) : '进度：本阶段的任务尚未生成');
   const active = tasks.filter((t) => INFLIGHT.has(t.status));
   lines.push('');
   lines.push(active.length

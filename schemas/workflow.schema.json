@@ -363,6 +363,15 @@
       },
       "additionalProperties": false
     },
+    "review": {
+      "type": "object",
+      "properties": {
+        "final": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
     "context": {
       "type": "object",
       "properties": {

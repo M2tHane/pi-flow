@@ -11,7 +11,7 @@ export const FLOW5_YAML = REAL_TEMPLATE_YAML
   .replace(/commands:[\s\S]*?\nlimits:/, 'commands:\n  install: "true"\n  typecheck: "true"\n  lint: "true"\n  test: "test ! -e BROKEN"\nlimits:')
   .replace(/^  auto_dispatch: true .*$/m, '  auto_dispatch: false');
 export const SETTINGS5: RoleSettingsFile = { version: 1, roles: Object.fromEntries(
-  ['orchestrator', 'user-advocate', 'dev-advocate', 'analyst', 'designer', 'architect', 'implementer', 'acceptor', 'researcher'].map((r) => [r, { model: 'fake/m' }])) };
+  ['orchestrator', 'designer', 'architect', 'implementer', 'acceptor', 'reviewer', 'researcher'].map((r) => [r, { model: 'fake/m' }])) };
 
 export function cmdEnv(p: Project, engine: ReturnType<typeof makeEngine>['engine']): CommandEnv {
   return {

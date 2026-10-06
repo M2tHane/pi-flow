@@ -21,7 +21,8 @@ import { dirtyFiles, newDrift, nextStep, turnContext } from '../core/context-inj
 import { parseAgentFile } from '../core/agents.ts';
 import { runFlowConfig, type ModelOption } from '../commands/flow-config.ts';
 import { runFlowCommand, runFlowBuild, runFlowFix, FLOW_USAGE, type CommandEnv, type EngineHandle } from '../commands/flow.ts';
-import { DispatchParams, ReplanParams, WaitParams, activeFlowId, flowDispatch, flowReplan, flowWait, statusText } from '../tools/orchestrator-tools.ts';
+import { DispatchParams, ReplanParams, RequirementsParams, WaitParams, activeFlowId, flowDispatch, flowReplan, flowRequirements, flowWait, statusText } from '../tools/orchestrator-tools.ts';
+import { discussionSkills } from '../core/requirements.ts';
 import { PiLauncher } from './launcher.ts';
 import { lastFailureKind, notices, snapshotOf, statusLine, visibleFlows } from '../core/status-view.ts';
 import { packageRoots, pluginExtensionsFor } from './plugins.ts';
@@ -34,7 +35,7 @@ import { MAIN_NOTES_REL } from '../core/state-store.ts';
 export const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const TEMPLATE_WORKFLOW = path.join(PACKAGE_ROOT, 'templates', 'workflow.yaml');
 const SUBAGENT_EXTENSION = path.join(PACKAGE_ROOT, 'src', 'pi-adapter', 'subagent.ts');
-const ORCHESTRATOR_TOOLS = ['flow_status', 'flow_dispatch', 'flow_wait', 'flow_replan'];
+const ORCHESTRATOR_TOOLS = ['flow_status', 'flow_dispatch', 'flow_wait', 'flow_replan', 'flow_requirements'];
 
 /** 用户级设置文件：~/.pi/agent/pi-flow.json（与 Pi 官方 preset 示例的全局配置位置一致） */
 export function roleSettingsPath(): string {
@@ -230,6 +231,7 @@ export default function piFlow(pi: ExtensionAPI): void {
         const config = engineFor(root).config;
         enterManagedMode(ctx, s);
         s.orchestrator = true;
+        registerFlowTools();
         const registered = new Set(pi.getAllTools().map((t) => t.name));
         pi.setActiveTools(config.activeTools('orchestrator').filter((t) => registered.has(t)));
         await applyOrchestratorModel(ctx, config);
@@ -241,12 +243,17 @@ export default function piFlow(pi: ExtensionAPI): void {
       },
       deactivateOrchestrator: () => (s.deactivate ? s.deactivate() : '当前不在调度模式。'),
       waitForIdle: !ctx.hasUI,
+      // 需求讨论开始时让主 agent 先提问（只在终端界面；Pi 1.0.0 sendUserMessage 总会触发一轮，忙时作为 followUp 排队）
+      ...(ctx.hasUI ? { startConversation: (text: string) => pi.sendUserMessage(text, { deliverAs: 'followUp' }) } : {}),
       dependencies: () => ({ piVersion: VERSION, packageRoots: packageRoots(root, getAgentDir()) }),
     };
   };
 
-  // orchestrator 工具只在已初始化 pi-flow 的项目中注册，避免影响普通 pi 会话
-  if (initialized(process.cwd())) {
+  // orchestrator 工具只在已初始化 pi-flow 的项目中注册，避免影响普通 pi 会话；在空仓库里 /flow-build 初始化后进入调度模式时再注册
+  let flowToolsRegistered = false;
+  const registerFlowTools = () => {
+    if (flowToolsRegistered) return;
+    flowToolsRegistered = true;
     pi.registerTool({
       name: 'flow_status', label: 'flow_status', description: '只读：当前流程、阶段、任务计数、可派发与失败任务摘要、等待用户处理的事项。',
       parameters: Type.Object({}),
@@ -274,6 +281,15 @@ export default function piFlow(pi: ExtensionAPI): void {
       },
     });
     pi.registerTool({
+      name: 'flow_requirements', label: 'flow_requirements', description: '需求讨论阶段：和用户逐轮讨论、用户确认共识后，提交完整的需求说明（程序写入需求文件并交给用户审批），同时说明是否需要原型阶段。',
+      parameters: RequirementsParams,
+      async execute(_id, p, _s, _u, ctx) {
+        const h = engineFor(ctx.cwd);
+        const r = await flowRequirements(ctx.cwd, h.store, h.engine, checked(RequirementsParams, p, 'flow_requirements'));
+        return toolResult(r.text, r.details);
+      },
+    });
+    pi.registerTool({
       name: 'flow_wait', label: 'flow_wait', description: '等待任务状态变化或超时，返回精简摘要（不含 subagent 的对话）。',
       parameters: WaitParams,
       async execute(_id, p, _s, _u, ctx) {
@@ -282,11 +298,8 @@ export default function piFlow(pi: ExtensionAPI): void {
         return toolResult(r.text, r.details);
       },
     });
-  }
 
-  // 主 agent 的结构化笔记与历史检索（第五轮）：只在已初始化 pi-flow 的项目中注册；笔记跨流程保留在 .flow/notes/main.json
-  if (initialized(process.cwd())) {
-    const mainStore = (cwd: string) => sessions.get(cwd)?.handle?.store ?? new StateStore(cwd);
+    // 主 agent 的结构化笔记与历史检索（第五轮）：笔记跨流程保留在 .flow/notes/main.json
     pi.registerTool({
       name: 'notes', label: 'notes', description: `${NOTES_DESCRIPTION} 主会话的笔记跨流程保留：记录用户的偏好、讨论的结论、进行中的事项。`,
       parameters: NotesParams,
@@ -312,12 +325,15 @@ export default function piFlow(pi: ExtensionAPI): void {
         return toolResult(historyTool(file ? [file] : [], checked(HistoryParams, p, 'history')).text);
       },
     });
-    installMemory(pi, {
-      active: (ctx) => initialized(ctx.cwd),
-      notesMessage: (ctx, near) => notesContextMessage(mainStore(ctx.cwd).readNotes(MAIN_NOTES_REL), { title: '主会话笔记', nearCompaction: near }),
-      compactAt: (ctx) => { try { return loadProjectConfig(ctx.cwd).config.compactAt; } catch { return 0.7; } },
-    });
-  }
+  };
+  const mainStore = (cwd: string) => sessions.get(cwd)?.handle?.store ?? new StateStore(cwd);
+  if (initialized(process.cwd())) registerFlowTools();
+  // 笔记放回上下文与压缩：每次按当前目录是否已初始化决定
+  installMemory(pi, {
+    active: (ctx) => initialized(ctx.cwd),
+    notesMessage: (ctx, near) => notesContextMessage(mainStore(ctx.cwd).readNotes(MAIN_NOTES_REL), { title: '主会话笔记', nearCompaction: near }),
+    compactAt: (ctx) => { try { return loadProjectConfig(ctx.cwd).config.compactAt; } catch { return 0.7; } },
+  });
 
   pi.on('session_start', (_e, ctx) => {
     if (!initialized(ctx.cwd)) return;
@@ -335,7 +351,8 @@ export default function piFlow(pi: ExtensionAPI): void {
     if (!s?.orchestrator || !s.handle) return;
     const { store, engine, config } = s.handle;
     s.driftBefore = dirtyFiles(ctx.cwd);
-    const injected = `${agentPrompt(ctx.cwd, 'orchestrator')}\n\n${turnContext(store, config.limits.max_parallel, engine.activeRuns().length, config, (f, t) => engine.pausedFor(f, t))}`;
+    const skills = discussionSkills(store, path.join(PACKAGE_ROOT, 'skills'));
+    const injected = `${agentPrompt(ctx.cwd, 'orchestrator')}${skills ? `\n\n${skills}` : ''}\n\n${turnContext(store, config.limits.max_parallel, engine.activeRuns().length, config, (f, t) => engine.pausedFor(f, t))}`;
     event.systemPromptOptions.appendSystemPrompt = `${event.systemPromptOptions.appendSystemPrompt ?? ''}\n\n${injected}`.trim();
   });
 
@@ -358,7 +375,7 @@ export default function piFlow(pi: ExtensionAPI): void {
     report(ctx, `pi-flow：本轮期间主工作区出现了未经派发的改动（${drift.slice(0, 5).join('、')}${drift.length > 5 ? ' 等' : ''}），已记录为越权。如果是你本人修改的，可以忽略。`, 'warning');
   });
 
-  // 调度模式下的 guard：orchestrator 只能读 docs/、.flow/，只能用 flow_status、flow_dispatch、flow_wait
+  // 调度模式下的 guard：orchestrator 只能读（read_paths 内），只能用 flow_* 调度工具，不能写
   pi.on('tool_call', async (event, ctx) => {
     const s = sessions.get(ctx.cwd);
     if (!s?.handle || !s.orchestrator) return;
@@ -382,7 +399,7 @@ export default function piFlow(pi: ExtensionAPI): void {
 
   pi.registerCommand('flow', {
     description: 'pi-flow 管理：status、next、resume、approve、reject、unblock、gate、doctor、init',
-    getArgumentCompletions: (prefix) => ['status', 'next', 'resume', 'answer', 'accept', 'add', 'rules', 'knowledge', 'run', 'sync', 'replan', 'budget', 'models', 'off', 'approve', 'reject', 'unblock', 'gate', 'abort', 'doctor', 'init', 'help']
+    getArgumentCompletions: (prefix) => ['status', 'next', 'resume', 'answer', 'accept', 'review', 'add', 'rules', 'knowledge', 'run', 'sync', 'replan', 'budget', 'models', 'off', 'approve', 'reject', 'unblock', 'gate', 'abort', 'doctor', 'init', 'help']
       .filter((x) => x.startsWith(prefix.trim())).map((x) => ({ value: x, label: x })),
     handler: async (args, ctx) => {
       try {

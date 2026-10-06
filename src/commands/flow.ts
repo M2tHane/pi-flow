@@ -10,7 +10,8 @@ import { formatPreflight } from '../core/preflight.ts';
 import { activeFlowId, statusText } from '../tools/orchestrator-tools.ts';
 import { splitArgs } from './args.ts';
 import { approveStage, rejectStage, unblockTask, startFlow } from '../core/stages.ts';
-import { PROTOTYPE_STAGE } from '../modes/plan.ts';
+import { submitRequirements } from '../core/requirements.ts';
+import { FINAL_REVIEW_DOC, FinalReviewError, describeReview, finishReview, fixFindings } from '../core/final-review.ts';
 import { addRequirement } from '../core/additions.ts';
 import { acceptManually } from '../core/acceptance.ts';
 import { readFileSync } from 'node:fs';
@@ -53,6 +54,8 @@ export interface CommandEnv {
   deactivateOrchestrator?(): Promise<string> | string;
   /** 非交互模式：命令结束后进程退出，需要等待引擎跑完 */
   waitForIdle: boolean;
+  /** 以用户身份给主会话发一条消息、开始一轮（需求讨论开始时让主 agent 先提问）；非交互模式不提供 */
+  startConversation?(text: string): void;
   /** 当前 Pi 版本与 Pi 包的安装位置（用于依赖检查）；测试环境可不提供 */
   dependencies?(): { piVersion: string; packageRoots: string[] };
 }
@@ -67,10 +70,11 @@ export const FLOW_USAGE = [
   '  /flow doctor [--fix]    状态完整性与前置条件检查；--fix 清理残留 worktree 与提示文件',
   '  /flow init              初始化项目骨架（可重复执行，不覆盖）',
   '  /flow-approve [--yes]   批准当前阶段（仅用户）；实施阶段批准时把集成分支合入主分支',
-  '                          需求阶段可加 --prototype / --no-prototype 决定要不要原型；规划阶段批准时应用项目专属规则（--rules none 不应用）',
-  '  /flow-reject "<意见>"   打回需求、原型或规划阶段，写作者接着原会话修改',
+  '                          规划阶段批准时应用项目专属规则（--rules none 不应用）',
+  '  /flow-reject "<意见>"   打回需求、原型或规划阶段：需求由主 agent 带着意见继续和你讨论，原型与规划由写作者接着原会话修改',
   '  /flow-add "<需求>" [--task <任务>]   中途追加需求：送到正在做的模块；有多个模块时交给 architect 安排',
   '  /flow accept <任务>     验收"需要你处理"时人工放行这个模块',
+  '  /flow review [fix <R-编号>... | done]   最终代码审查（review.final 开启时）：查看结论；挑选要修的建议；其余不修、结束审查',
   '  /flow answer [<任务>]   回答阻塞任务提出的问题（弹出输入框），回答后任务继续',
   '  /flow unblock <任务> ["<回答>"] [--attempts N]   解除阻塞（无界面时用它回答）',
   '  /flow gate              闸门失败并修复后，重跑当前阶段闸门',
@@ -215,11 +219,6 @@ export async function runFlowCommand(args: string, env: CommandEnv): Promise<str
         if (ok !== '确认合入并结束流程') return '已取消。';
       }
       const stageBefore = h.store.readFlow(flowId).stage;
-      // 需求阶段批准时可以指定要不要原型阶段（默认按汇总者的判断）
-      if (stageBefore === 'D0' && (argv.includes('--prototype') || argv.includes('--no-prototype'))) {
-        const skip = (h.store.readFlow(flowId).skip_stages ?? []).filter((x) => x !== PROTOTYPE_STAGE);
-        await h.store.setSkipStages(flowId, argv.includes('--no-prototype') ? [...skip, PROTOTYPE_STAGE] : skip, 'human', argv.includes('--no-prototype') ? '用户选择跳过原型阶段' : '用户选择保留原型阶段');
-      }
       let text = await approveStage({ root: env.root, store: h.store, config: h.config }, flowId, option(argv, '--note'));
       // 规划阶段批准时应用项目专属规则与命令（没有界面时默认全部应用）
       if (stageBefore === 'D2') text += `\n${await offerDrafts(env, h, flowId, option(argv, '--rules') ?? (env.ui ? undefined : 'all'))}`;
@@ -337,6 +336,31 @@ export async function runFlowCommand(args: string, env: CommandEnv): Promise<str
       if (env.waitForIdle) await h.engine.idle();
       return r;
     }
+    case 'review': {
+      const h = env.engine();
+      const flowId = currentFlowId(h.store);
+      const sub = positional(argv)[1];
+      if (!sub) {
+        const r = h.store.readFinalReview(flowId);
+        return r ? `${describeReview(r)}\n（完整内容见集成分支上的 ${FINAL_REVIEW_DOC}）` : h.config.raw.review?.final ? '最终代码审查还没开始（所有模块验收通过后开始）。' : '最终代码审查没有开启（在 workflow.yaml 中设置 review.final: true 开启）。';
+      }
+      let text: string;
+      try {
+        if (sub === 'fix') {
+          const ids = positional(argv).slice(2);
+          if (!ids.length) throw new FinalReviewError('用法：/flow review fix R-3 R-5（/flow review 查看条目）');
+          text = await fixFindings(h.store, flowId, ids);
+        } else if (sub === 'done') text = await finishReview(h.store, flowId);
+        else throw new FinalReviewError('用法：/flow review、/flow review fix <R-编号>...、/flow review done');
+      } catch (e) {
+        if (e instanceof FinalReviewError) throw new Error(e.message);
+        throw e;
+      }
+      await h.engine.pump(flowId);
+      await h.engine.next(flowId);
+      if (env.waitForIdle) await h.engine.idle();
+      return text;
+    }
     case 'replan': {
       const h = env.engine();
       const flowId = activeFlowId(h.store);
@@ -390,9 +414,9 @@ export async function runFlowCommand(args: string, env: CommandEnv): Promise<str
 
 export const BUILD_USAGE = [
   '用法：',
-  '  /flow-build "<想法>"                    从零建新项目：先讨论需求（用户视角、开发视角各一版，汇总给你审），再原型、规划、按模块实施',
+  '  /flow-build "<想法>"                    从零建新项目：主 agent 先和你逐轮讨论需求、写成需求说明给你审，再原型、规划、按模块实施',
   '  /flow-build --feature "<功能描述>"      在已有项目上加功能，流程相同',
-  '  /flow-build --from <文件>               用写好的需求文档开始（加 --feature 为功能）',
+  '  /flow-build --from <文件>               用写好的需求文档作为需求说明，跳过讨论直接给你审（加 --feature 为功能；--no-prototype 不做原型）',
   '小改动（单文件、几十行以内）直接用 pi 更划算；缺陷修复用 /flow-fix。',
 ].join('\n');
 
@@ -438,9 +462,9 @@ export async function runFlowBuild(args: string, env: CommandEnv): Promise<strin
   const fromFile = readFromFile(env, argv);
   const description = argv.filter((a, i) => !a.startsWith('--') && argv[i - 1] !== '--from').join(' ').trim();
   assertNoActiveFlow(h);
-  if (fromFile) return startBuildFlow(env, mode, fromFile.split('\n')[0]!.replace(/^#+\s*/, '').slice(0, 120) || '新项目', fromFile, lines);
+  if (fromFile) return startBuildFlow(env, mode, fromFile.split('\n')[0]!.replace(/^#+\s*/, '').slice(0, 120) || '新项目', lines, { requirements: fromFile, prototype: !argv.includes('--no-prototype') });
   if (!description) throw new Error(`请写下你的想法（几句话就够，需求阶段会展开讨论）。\n${BUILD_USAGE}`);
-  return startBuildFlow(env, mode, description, '', lines);
+  return startBuildFlow(env, mode, description, lines);
 }
 
 /** 开流程前检查依赖：Pi 版本过低直接拒绝；插件缺失或版本未经验证只提醒 */
@@ -454,18 +478,23 @@ function dependencyGate(env: CommandEnv, config: FlowConfig, lines: string[]): v
   if (warns.length) lines.push(`依赖提醒（不影响开始，相关工具可能不可用；/flow doctor 查看）：\n${warns.map((i) => `! ${i.item}：${i.detail}`).join('\n')}`, '');
 }
 
-async function startBuildFlow(env: CommandEnv, mode: 'build' | 'feature', title: string, brief: string, lines: string[]): Promise<string> {
+/** from：用写好的需求文档直接作为需求说明提交（跳过讨论，等用户审批） */
+async function startBuildFlow(env: CommandEnv, mode: 'build' | 'feature', title: string, lines: string[], from?: { requirements: string; prototype: boolean }): Promise<string> {
   const h = env.engine();
   dependencyGate(env, h.config, lines);
   const flow = await startFlow({ root: env.root, store: h.store, config: h.config }, mode, title);
-  if (brief) await h.store.saveFlowBrief(flow.id, brief);
   await env.activateOrchestrator();
+  if (from) {
+    const r = await submitRequirements(env.root, h.store, flow.id, from.requirements, from.prototype, 'human');
+    lines.push(`已把需求文档写入 ${r.path}${from.prototype ? '' : '（不做原型）'}。`);
+  }
   await h.engine.pump(flow.id);
   const d = await h.engine.next(flow.id);
   lines.push(`已创建流程 ${flow.id}（${flow.mode}），阶段：${flow.stages.join(' → ')}；集成分支 ${flow.integration_branch}。`);
   if (d.length) lines.push(`已派发 ${d.map((x) => `${x.task} → ${x.role}（${x.model}）`).join('；')}。`);
   if (env.waitForIdle) await h.engine.idle();
   lines.push('', renderStatus(h.store, h.config));
+  if (!from) env.startConversation?.(`开始需求讨论：${title}`);
   return lines.join('\n');
 }
 

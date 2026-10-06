@@ -200,8 +200,8 @@
 
 修订第 101–105、108、109、113–115、117 条：函数级契约、逐任务审查、阶段审查、先行验收测试、需求访谈、按层拆角色全部删除，相关条目只作历史记录。
 
-119. 新流程 D0 需求 → D1 原型 → D2 规划 → E 实施（build 与 feature 同一套阶段）。D0：user-advocate 与 dev-advocate 并行（只读，意见写在 handoff），程序再派 analyst 读两份意见（上游 handoff 放进提示，上限放宽到 8000/16000 字）写 `docs/requirements.md`，含风格与是否需要原型；用户界面阶段为"需求 → 原型 → 规划 → 实施 → 完成"。
-120. 原型由 designer 角色写 `prototype/*.html`（用户可用 `/flow-config set designer <模型>` 换成审美更好的模型）；analyst 判定不需要或用户 `/flow-approve --no-prototype` 时 D1 加入 `skip_stages`，状态栏显示"原型（跳过）"。
+119. 新流程 D0 需求 → D1 原型 → D2 规划 → E 实施（build 与 feature 同一套阶段）。D0（已被第 134 条修订）：user-advocate 与 dev-advocate 并行（只读，意见写在 handoff），程序再派 analyst 读两份意见（上游 handoff 放进提示，上限放宽到 8000/16000 字）写 `docs/requirements.md`，含风格与是否需要原型；用户界面阶段为"需求 → 原型 → 规划 → 实施 → 完成"。
+120. （是否做原型改由主会话提交需求时决定，见第 134 条）原型由 designer 角色写 `prototype/*.html`（用户可用 `/flow-config set designer <模型>` 换成审美更好的模型）；analyst 判定不需要或用户 `/flow-approve --no-prototype` 时 D1 加入 `skip_stages`，状态栏显示"原型（跳过）"。
 121. D2 由 architect 写 `docs/modules.md`、`docs/interfaces/`、`docs/rules-draft/project.md`（必写）、命令草案与 AGENTS.md，用 `flow_propose_modules`（architect 专用）提交模块任务：每个模块一个 implementer 任务（kind impl，带 writes、负责的验收条目、依赖、登记的公共文件 `shared`、`needs_acceptance`）。批准 D2 时提供应用草案（无界面时默认全部应用），生成 `rules/project.md`。
 122. 模块实施：implementer 在 worktree 中分步本地提交（guard 放行 `git commit`），`flow_sync` 把集成分支合进任务分支（冲突留标记、再调一次完成）；`flow_submit` 直接 `in_progress → queued_merge`（trigger submit），不再有 review、verifying 状态与 `flow_approve`。
 123. 合并验证：verify 非空的任务一律跑全量 typecheck、lint、test 加可选的 `commands.merge_check`（项目自定，例如 Alembic 单 head；程序不写死框架）；删除 `test_affected` 与受影响测试（`MergeHooks.affectedFiles` 改为只供测试用的 `beforeVerify`）。批量合并（第 116 条）保留。
@@ -215,6 +215,14 @@
 131. 知识候选只来自合并后验证失败（`source.kind = merge`，审查来源已删除，schema 保留 review 枚举以兼容旧数据）。
 132. 测试夹具：运行时机制测试仍用旧的按层角色，放在 `test/fixtures/agents/` 与 `test/fixtures/workflow-legacy.yaml`（`AGENTS` 为包内与夹具目录的 `path.delimiter` 列表）；包内 `agents/` 只有新角色。`.flow/` 格式变化，旧流程不能续跑。
 133. 未做（HANDOFF-5 第 3.1 节、第 4 节）：`/flow-status --detail` 还没有按模块显示 notes 的 current 与 todo；`shared_files` 只能由 D2 按模块登记（`shared`），workflow.yaml 里没有全局列表。
+
+以下吸收 mattpocock/skills（MIT，改编的技能文件里注明出处）。
+
+134. 需求讨论（D0）改为主会话直接和用户逐轮讨论（修订第 119、120 条，删除 user-advocate、dev-advocate、analyst 与任务的 `advocate` 字段）：D0 不生成任务；讨论中每轮向主会话系统提示注入技能 grilling 与 write-requirements；用户确认后 orchestrator 用 `flow_requirements(content, prototype)` 提交，程序用独立索引直接提交到集成分支（`requirements.ts`，不经过工作区），记 `flow.requirements`（submitted、rounds、path、feedback）并按 prototype 设置 `skip_stages`，随后照常执行闸门（检查需求文件在集成分支上）。`/flow-reject` 与 D0 闸门失败都回到讨论（submitted=false，意见放进下一步指引）。`/flow-build --from <文件>` 直接提交文件为需求说明（`--no-prototype`）；删除 `/flow-approve --prototype/--no-prototype` 与 flow_submit 的 prototype 参数。
+135. orchestrator 为了讨论时查事实，模板改为 `read_paths: ["**"]`、可用 read、grep、find、ls（敏感文件仍拦；`ORCHESTRATOR_ALLOWED` 加这三个与 flow_requirements，flow_requirements 隐式拥有、orchestrator 专用）。guard 的 read_paths 把工作区根目录（`.`）按空路径匹配，只有 `**` 能匹配。终端界面下 `/flow-build` 开始讨论时用 `pi.sendUserMessage(..., { deliverAs: 'followUp' })` 让主 agent 先提问（Pi 1.0.0 types.d.ts 已核实）。
+136. 修正：在空仓库里 `/flow-build`（自动 init）后，orchestrator 工具与主会话 notes/history 因"加载时未初始化"而没注册；改为进入调度模式时再注册（Pi 支持加载后 registerTool，见 examples/extensions/dynamic-tools.ts），installMemory 无条件安装、按目录判断是否生效。
+137. 规划：plan-modules 重写（吸收 to-tickets：纵向切片、铺垫性重构与大范围机械改动单独成模块排在前面、每个模块写测试接口、自检清单）；architect 加技能 domain-modeling，写 `docs/glossary.md`（D2 可写范围、模块任务的 inputs 加上它）；implementer 加技能 tdd（红 → 绿、测试只放在约定的接口上）。
+138. 可选的最终代码审查（`review.final`，默认关；`final-review.ts`，记录 `flows/<id>/final-review.json`）：实施阶段所有模块验收通过、闸门之前，派一个只读 reviewer（技能 code-review，只保留"规范"维度，"需求"维度由独立验收负责）审查整个流程的改动，用 `flow_review_report` 逐条提交（级别 must/suggest、依据、files、位置、问题、期望；files 必须在改动里）；结论写到集成分支 `docs/review/final.md`。must 按文件归属模块生成 review-fix（fork 实现者会话，一轮，不复审）；还有没修的条目时等用户 `/flow review fix R-…` 或 `/flow review done`，之后执行闸门。偏离讨论稿"E 起点"：范围用 `merge-base(主分支, 集成分支)..集成分支`（含需求与规划文档，不含 prototype/），省去记录 E 起点。
 
 ## 真实模型实验
 
@@ -246,6 +254,7 @@
 
 修改 `agents/`、`rules/`、`skills/` 会改变子进程系统提示的稳定前缀，提供商的提示缓存失效一次；`rules/` 的改动只影响之后 `/flow init` 的新项目。改动时在此追加一行。
 
+- 10-06（第 134–138 条）：orchestrator（主 agent 直接讨论需求、可读代码）、architect（术语表、切分规则）、implementer（tdd）、acceptor（读术语表）角色提示；新增 reviewer 角色；删除 user-advocate、dev-advocate、analyst。技能新增 grilling、domain-modeling、tdd、code-review，重写 plan-modules、write-requirements（改给主会话用）。工具声明多了 flow_requirements（主会话）、flow_review_report；flow_submit 去掉 prototype 参数。
 - 10-04（第五轮，第 119–129 条）：`agents/`、`skills/`、`rules/` 全部重写。新角色 user-advocate、dev-advocate、analyst、designer、architect（重写）、implementer、acceptor；researcher、orchestrator 修改（含代词中性化）；删除 backend、frontend、db、infra、test-engineer、ui-designer、reviewer、scout、interviewer。技能新增 write-requirements、write-prototype、plan-modules，重写 revise-plan、write-rules，删除 decompose-dag、design-contract、write-prd、write-feature-spec。`rules/` 只剩 global.md（项目规则由规划阶段生成 project.md）。工具声明多了 notes、history、flow_sync、flow_propose_modules、flow_accept、flow_accept_confirm。
 - 10-04（第 118 条）：backend、db、frontend、infra、test-engineer 角色提示（可以适配别的角色已有的测试）；reviewer（核对适配没有削弱测试）；`decompose-dag`（不必为兼容旧测试单独拆任务）。
 - 10-03（第 112–114 条）：architect 角色提示；`decompose-dag`（粒度）；`design-contract`、`write-prd`、`write-feature-spec` 技能；工具参数多了 assumptions。

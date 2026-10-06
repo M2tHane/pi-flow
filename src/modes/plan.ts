@@ -1,5 +1,5 @@
 // 各模式的阶段计划（第五轮）：需求 D0 → 原型 D1 → 规划 D2 → 实施 E。
-// D0–D2 的任务由程序生成；E 的模块任务来自 architect 在 D2 提交、经用户批准的模块清单。
+// D0 由主会话直接和用户讨论（src/core/requirements.ts），没有任务；D1、D2 的任务由程序生成；E 的模块任务来自 architect 在 D2 提交、经用户批准的模块清单。
 import type { TaskInput } from '../core/state-store.ts';
 import type { TaskFile } from '../core/schemas.ts';
 
@@ -15,10 +15,9 @@ export const EXECUTION_STAGE = 'E';
 
 /** 各阶段注入的技能（子进程以 --no-skills 运行，由 prompt-assembler 注入）；按角色区分 */
 export const STAGE_SKILLS: Record<string, Record<string, string[]>> = {
-  D0: { analyst: ['write-requirements'] },
   D1: { designer: ['write-prototype'] },
-  D2: { architect: ['plan-modules', 'write-rules'] },
-  E: { implementer: ['write-handoff'] },
+  D2: { architect: ['plan-modules', 'domain-modeling', 'write-rules'] },
+  E: { implementer: ['tdd', 'write-handoff'], reviewer: ['code-review'] },
 };
 
 export function skillsFor(stage: string, role: string): string[] {
@@ -39,35 +38,10 @@ export function requirementsFile(mode: FlowMode, description: string): string {
 export type PlannedTask = Omit<TaskInput, 'id' | 'depends_on'> & { after?: number[] };
 
 /** 写作者（各阶段产出文档的角色）：打回时只让它接着原会话修改 */
-export const STAGE_WRITER: Record<string, string> = { D0: 'analyst', D1: 'designer', D2: 'architect' };
+export const STAGE_WRITER: Record<string, string> = { D1: 'designer', D2: 'architect' };
 
 export function designTasks(mode: FlowMode, stage: string, description: string, opts: { requirements?: string } = {}): PlannedTask[] {
   const req = opts.requirements ?? requirementsFile(mode, description);
-  const what = mode === 'build' ? '这个新项目' : '这次要加的功能';
-  if (stage === 'D0') {
-    const advocate = (who: 'user' | 'dev'): PlannedTask => ({
-      stage, kind: 'analysis', advocate: who, role: who === 'user' ? 'user-advocate' : 'dev-advocate', scopes: [], inputs: [], writes: [], verify: [],
-      title: who === 'user' ? '需求讨论：用户视角' : '需求讨论：开发视角',
-      acceptance: who === 'user'
-        ? [`从用户与产品的角度写出对${what}的意见：谁用、核心场景、必须有和可以以后做的、用户能验证的验收标准、边界情况`,
-          '用户描述没说清的地方，给出你建议的默认做法和理由，不要停下来提问',
-          '意见写进 flow_note（可以分几次写），最后 flow_submit 一句话总结']
-        : [`从开发与工程的角度写出对${what}的意见：可行性、复杂度和成本最高的地方、风险、依赖、更省的做法${mode === 'feature' ? '、对现有代码的影响' : ''}`,
-          mode === 'feature' ? '先读现有代码（codegraph、serena）了解相关模块，再给意见' : '建议合适的技术栈（说明理由）',
-          '意见写进 flow_note（可以分几次写），最后 flow_submit 一句话总结'],
-    });
-    return [advocate('user'), advocate('dev'), {
-      stage, kind: 'doc', role: 'analyst', scopes: ['requirements'], inputs: [req], writes: [req], verify: [], after: [0, 1],
-      title: `汇总需求说明：${description}`.slice(0, 120),
-      acceptance: [
-        `${req} 包含：需求清单与优先级（MVP / 以后 / 不做）、每条需求的 done-when 验收标准（能被测试或实际操作验证）、关键决策与取舍、两方仍有的分歧及你的建议`,
-        `${req} 写明打算用的界面风格和理由（没有界面写"无界面"）`,
-        '上游的用户视角、开发视角意见都要考虑；分歧不替用户拍板，列出来由用户决定',
-        `内容覆盖用户的描述：${description}`,
-        'flow_submit 时用 prototype 说明是否需要原型阶段（没有界面或只改后端时为 false）',
-      ],
-    }];
-  }
   if (stage === 'D1') {
     return [{
       stage, kind: 'doc', role: 'designer', scopes: ['prototype'], inputs: [req], writes: ['prototype/**'], verify: [],
@@ -83,18 +57,19 @@ export function designTasks(mode: FlowMode, stage: string, description: string, 
   if (stage === 'D2') {
     return [{
       stage, kind: 'doc', role: 'architect', scopes: ['planning'], inputs: [req, 'prototype/'], verify: [],
-      writes: ['docs/modules.md', 'docs/interfaces/**', 'docs/adr/**', 'docs/rules-draft/**', 'AGENTS.md'],
+      writes: ['docs/modules.md', 'docs/glossary.md', 'docs/interfaces/**', 'docs/adr/**', 'docs/rules-draft/**', 'AGENTS.md'],
       title: mode === 'build' ? '模块规划与项目规则' : '本功能涉及的模块与验收标准',
       acceptance: [
         mode === 'build'
-          ? 'docs/modules.md 写明技术栈、目录结构、模块清单（每个模块负责的需求、验收标准、可写范围、登记的公共文件）和模块之间的依赖（阶段顺序）'
-          : '先读现有代码确定这次涉及哪些模块；docs/modules.md 追加本功能：涉及的模块、各自改什么、验收标准、可写范围',
+          ? 'docs/modules.md 写明技术栈、目录结构、模块清单（每个模块负责的需求、验收标准、可写范围、登记的公共文件、测试接口）和模块之间的依赖（阶段顺序）'
+          : '先读现有代码确定这次涉及哪些模块；docs/modules.md 追加本功能：涉及的模块、各自改什么、验收标准、可写范围、测试接口',
+        mode === 'build' ? 'docs/glossary.md 写项目术语表（见技能 domain-modeling）；ADR 只在难以撤销、没有上下文会让人意外、确实有取舍三条同时满足时写' : '项目引入新概念时补充 docs/glossary.md（沿用已有叫法）；ADR 只在三条门槛同时满足时写',
         'docs/interfaces/<模块>.md 只写模块之间的调用（A 要调用 B 的哪些 API 或服务）；模块内部怎么做不写',
         mode === 'build'
           ? 'docs/rules-draft/project.md 写项目专属规则（技术栈的用法、目录与命名约定、测试怎么写和怎么跑、错误处理）；docs/rules-draft/commands.yaml 按技术栈写 install、typecheck、lint、test 等命令'
           : 'docs/rules-draft/project.md 补充本功能引入的新约定（没有就保持现状）；命令需要变化时写 docs/rules-draft/commands.yaml',
         'AGENTS.md 写开发说明（结构、命令、约定），给之后所有在这个仓库里工作的 agent 看',
-        '用 flow_propose_modules 提交模块清单：每个模块一个模型负责前端、后端与测试；互不依赖的模块能并行，依赖写 reason',
+        '用 flow_propose_modules 提交模块清单：每个模块是能单独验收的纵向切片，一个模型负责前端、后端与测试；铺垫性重构与大范围机械改动单独成模块排在前面；互不依赖的模块能并行，依赖写 reason',
       ],
     }];
   }

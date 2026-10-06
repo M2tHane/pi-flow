@@ -112,16 +112,17 @@ pi                          # 正常启动 pi，pi-flow 随之加载
 
 | 阶段 | 内容 | 闸门 |
 |---|---|---|
-| D0 需求 | 两个只读的 advocate 并行各写一份意见（user-advocate 从使用者角度、dev-advocate 从实现与已有代码角度），程序再派 analyst 读两份意见写 `docs/requirements.md`：功能、验收标准（A-1、A-2……）、非目标、界面风格与理由、要不要原型 | **你批准**；`/flow-reject "<意见>"` 让 analyst 接着原会话改，可以来回多次。批准时可加 `--prototype` / `--no-prototype` 改变是否做原型 |
+| D0 需求 | 主 agent 直接和你逐轮讨论：每轮把能问的问题一次问完，每个问题给出推荐答案；需要的事实（已有代码、技术栈）它自己读代码查，决定交给你。谈清楚后它把需求说明（需求清单与优先级、done-when 验收标准、术语、关键决策、界面风格、范围外）用 `flow_requirements` 提交，程序写入集成分支上的 `docs/requirements.md`，同时记下要不要原型。已经写好需求文档时用 `/flow-build --from <文件>` 跳过讨论（`--no-prototype` 不做原型） | **你批准**；`/flow-reject "<意见>"` 后主 agent 带着意见继续和你讨论、重新提交，可以来回多次 |
 | D1 原型 | designer 按需求里定下的风格写 `prototype/*.html` 与导航页（无框架、无构建，浏览器直接打开）。没有界面或你选择不要时跳过，状态栏显示"原型（跳过）" | **你批准**（或打回修改） |
-| D2 规划 | architect 写 `docs/modules.md`（模块划分）、`docs/interfaces/<模块>.md`（只写模块之间的调用）、项目专属规则草案 `docs/rules-draft/project.md`、命令草案与 `AGENTS.md`，然后用 `flow_propose_modules` 提交模块：每个模块一个任务，带可写范围、负责的验收标准、依赖、登记的公共文件（路由注册、菜单等多个模块都要追加的文件）。模块大小跟实现者的模型走：强模型一个模块可以是一块完整的业务功能 | **你批准**；批准时程序把规则草案写成 `rules/project.md`、应用命令草案（`--rules none` 不应用） |
-| E 实施 | 每个模块交给一个 implementer，在自己的 worktree 里写前端、后端和测试；互不依赖的模块并行。模块完成后合并、独立验收（见下） | 全部模块验收通过 + 全量测试 + **你批准**，随后集成分支合入主分支 |
+| D2 规划 | architect 写 `docs/modules.md`（模块划分：每个模块是能单独验收的纵向切片，铺垫性重构单独成模块排在前面，每个模块写明测试接口）、`docs/glossary.md`（术语表）、`docs/interfaces/<模块>.md`（只写模块之间的调用）、项目专属规则草案 `docs/rules-draft/project.md`、命令草案与 `AGENTS.md`，然后用 `flow_propose_modules` 提交模块：每个模块一个任务，带可写范围、负责的验收标准、依赖、登记的公共文件（路由注册、菜单等多个模块都要追加的文件）。模块大小跟实现者的模型走：强模型一个模块可以是一块完整的业务功能 | **你批准**；批准时程序把规则草案写成 `rules/project.md`、应用命令草案（`--rules none` 不应用） |
+| E 实施 | 每个模块交给一个 implementer（先写测试再实现，见技能 tdd），在自己的 worktree 里写前端、后端和测试；互不依赖的模块并行。模块完成后合并、独立验收（见下）；开启 `review.final` 时最后再做一次代码审查 | 全部模块验收通过（+ 可选的最终代码审查）+ 全量测试 + **你批准**，随后集成分支合入主分支 |
 
 **模块的生命周期**：
 1. **分步开发**：implementer 每完成一部分就在 worktree 里本地 `git commit`，并更新 notes。进程被杀后 `/flow-resume`，工作区和本地提交都在，接着原会话继续。需要依赖的模块刚合入的代码、或想提前发现冲突时，调用 `flow_sync` 把集成分支最新代码合进来，有冲突就在工作区里解决后再调用一次。
 2. **合并**：整个模块完成后 `flow_submit`，进入合并队列（串行）：squash、rebase 到集成分支最新、跑**全量** typecheck、lint、test 和可选的 `commands.merge_check`（例如迁移只能有一个 head），通过后快进集成分支。队列里同时有几个模块时最多 3 个一起叠加、只跑一次全量测试（`limits.merge_batch`），失败再逐个合并。失败就带着日志退回同一会话修。别的模块已有的测试因为接口变化而失败时，implementer 可以直接修改那些已有测试来适配（`testing.adjust_tests`，默认开；只能改不能增删，改过哪些记在任务上）。
 3. **独立验收**：合并后程序派一个 acceptor，在集成分支最新代码上构建、启动、实际调用，按模块负责的验收标准逐条给出"通过 / 未通过 + 证据"（`flow_accept`）。没通过的条目交回 implementer 的会话修复，合并后 acceptor 只复查没通过的条目（`flow_accept_confirm`，不能提新问题）。两轮修复仍不过就列进"需要你处理"：你可以 `/flow replan` 调整，或者确认可以接受后 `/flow accept <任务>` 放行。依赖这个模块的模块等它验收通过才开工。
-4. **阶段闸门**：全部模块验收通过后跑全量测试；失败时程序从日志里找出出错的文件，交给负责的模块修，最多两轮，仍失败就转"需要你处理"（处理后 `/flow gate` 重跑）。
+4. **最终代码审查（可选，`review.final: true` 开启，默认关闭）**：全部模块验收通过后，程序派一个只读的 reviewer 审查整个流程的改动（`git diff <分叉点>..<集成分支>`，不含原型，不拆分），对照 `rules/`、`AGENTS.md` 与常见坏味道（技能 code-review）逐条给出级别（必须改 / 建议）、依据、文件、位置、问题、期望（`flow_review_report`），写到集成分支的 `docs/review/final.md`。"必须改"自动交给负责的模块修一轮（接着 implementer 的会话，不再复审）；其余的由你挑：`/flow review fix R-3 R-5` 交给模块修，`/flow review done` 都不修。功能是否做到由验收负责，审查只看代码写得好不好。
+5. **阶段闸门**：全部模块验收通过后跑全量测试；失败时程序从日志里找出出错的文件，交给负责的模块修，最多两轮，仍失败就转"需要你处理"（处理后 `/flow gate` 重跑）。
 
 **跨模块接口**：`docs/interfaces/` 在实施中只能**追加**（程序拒绝修改或删除已有内容）；要改已有接口走计划修订。
 
@@ -129,7 +130,7 @@ pi                          # 正常启动 pi，pi-flow 随之加载
 
 ### 2. 加功能：`/flow-build --feature ["<功能描述>"]`
 
-流程相同。dev-advocate 会先读已有代码再发表意见；D1 视情况跳过；D2 只规划这次涉及哪几个模块、各改什么、各负责哪些验收标准。
+流程相同。主 agent 讨论前会先读相关的已有代码；需求说明写到 `docs/requirements/<功能>.md`；D1 视情况跳过；D2 只规划这次涉及哪几个模块、各改什么、各负责哪些验收标准。
 
 ### 3. 修复：`/flow-fix ["<问题描述>"]`
 
@@ -158,9 +159,10 @@ pi                          # 正常启动 pi，pi-flow 随之加载
 | `/flow-status --cost` | 按流程、阶段、角色、模型、任务汇总 token 与耗时；返工最多的任务；修复日志 |
 | `/flow next` | 由程序选择 ready 任务并派发 |
 | `/flow-approve [--yes]` | 批准当前阶段闸门（仅你可以）；有待批准的计划修订时先批准修订。实施阶段批准时把集成分支合入主分支 |
-| `/flow-reject "<意见>"` | 打回需求、原型或规划阶段，写作者接着原会话修改 |
+| `/flow-reject "<意见>"` | 打回需求、原型或规划阶段：需求由主 agent 带着意见继续和你讨论；原型、规划由写作者接着原会话修改 |
 | `/flow-add "<需求>" [--task <任务>]` | 中途追加需求 |
 | `/flow accept <任务> [--note "<说明>"]` | 验收两轮不过、转"需要你处理"时人工放行这个模块 |
+| `/flow review [fix <R-编号>... \| done]` | 最终代码审查（`review.final` 开启时）：查看结论；挑选要修的建议交给负责的模块；其余不修、结束审查 |
 | `/flow answer [<任务>]` | 回答阻塞任务提出的问题：弹出输入框由你作答，回答交给该任务后它继续 |
 | `/flow unblock <任务> ["<回答>"] [--attempts N]` | 解除阻塞，任务回到 ready（没有交互界面时用它回答） |
 | `/flow gate` | 闸门失败并修复后重跑闸门 |
@@ -223,7 +225,7 @@ architect 默认启用 Pi 的 codemode：模型可以写一段脚本并行调用
 
 调度模式下，终端底部的状态栏实时显示流程、当前阶段、本阶段进度、正在进行的任务和需要你处理的事项数，例如 `pi-flow B-001 实施 · 1/3 · 进行中：T-002 实现中，T-001 验收中`。
 
-开始流程或执行 `/flow-resume` 后，当前会话进入**调度模式**：会话切换到你在 `/flow-config` 中为 orchestrator 设置的模型，只能查看状态、派发任务和等待结果，不能自己改代码；每轮开头会看到"当前状态与唯一允许的下一步"。ready 的任务默认由程序自动派发（`limits.auto_dispatch`），主 agent 只在任务完成或阻塞、需要你处理、阶段变化时醒来向你汇报；主会话的 token 用量记在 `/flow-status --cost` 的 orchestrator 一行。流程结束、中止或执行 `/flow off` 后恢复原来的模型与工具。普通的 pi 会话不受影响。
+开始流程或执行 `/flow-resume` 后，当前会话进入**调度模式**：会话切换到你在 `/flow-config` 中为 orchestrator 设置的模型，只能读文件、查看状态、派发任务和等待结果，不能自己改代码（需求说明经 `flow_requirements` 由程序写入）；每轮开头会看到"当前状态与唯一允许的下一步"。ready 的任务默认由程序自动派发（`limits.auto_dispatch`），主 agent 只在任务完成或阻塞、需要你处理、阶段变化时醒来向你汇报；主会话的 token 用量记在 `/flow-status --cost` 的 orchestrator 一行。流程结束、中止或执行 `/flow off` 后恢复原来的模型与工具。普通的 pi 会话不受影响。
 
 ---
 
@@ -236,7 +238,7 @@ architect 默认启用 Pi 的 codemode：模型可以写一段脚本并行调用
 | `pi-flow.json` | `~/.pi/agent/` | `/flow-config` | **各角色用哪个模型、思考级别、失败后升级用的模型**。全局，所有项目共用，优先于项目里的模型档位 |
 | `workflow.yaml` | 项目根目录 | `/flow init` 生成，**你修改** | 项目的流程配置，见下表 |
 | `rules/*.md` | 项目根目录 | 你（或批准 architect 起草的草案） | `global.md` 加上规划阶段生成的项目专属 `project.md`，注入给实现者与验收者 |
-| `docs/`、`AGENTS.md` | 项目根目录 | 流程中的各角色 | 需求（`requirements.md`）、模块划分（`modules.md`）、模块之间的接口（`interfaces/`，实施中只能追加）；`prototype/` 原型 |
+| `docs/`、`AGENTS.md` | 项目根目录 | 流程中的各角色 | 需求（`requirements.md`，主 agent 和你讨论后由程序写入）、术语表（`glossary.md`）、模块划分（`modules.md`）、模块之间的接口（`interfaces/`，实施中只能追加）、最终审查（`review/final.md`）；`prototype/` 原型 |
 | `.flow/` | 项目根目录 | **只有程序** | 流程状态、任务、运行记录、事件日志；不要手改（会被完整性校验发现） |
 | `<项目>.worktrees/` | 项目目录旁边 | 只有程序 | 每个任务的 worktree、子进程会话留档、临时目录 |
 
@@ -251,6 +253,7 @@ architect 默认启用 Pi 的 codemode：模型可以写一段脚本并行调用
 | `models` | 档位（strong、medium、cheap）对应的具体模型；`/flow-config` 设置过的角色以它为准 |
 | `context` | 触发压缩的上下文占比 `compact_at`（默认 0.7） |
 | `testing` | 适配已有测试 `adjust_tests`（默认开） |
+| `review` | 最终代码审查 `final`（默认关；开启后实施阶段末多一次审查，必须改的自动修，建议由你挑选） |
 | `escalation` | 失败几次后升级模型 `after_failures`、关键底座第一次就升级 `critical_fanout` |
 | `budget` | 每个流程的 token 或金额预算（可选） |
 | `modes` | build、feature 的阶段（D0 需求、D1 原型、D2 规划、E 实施）与闸门 |
