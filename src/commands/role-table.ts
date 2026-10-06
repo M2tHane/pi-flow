@@ -19,14 +19,12 @@ export type Column = 'model' | 'escalate' | 'thinking';
 const COLUMNS: Column[] = ['model', 'escalate', 'thinking'];
 const HEADERS = ['角色', '职责', '模型', '备用模型', '思考强度'];
 
-export type KeyName = 'up' | 'down' | 'left' | 'right' | 'tab' | 'shift-tab' | 'enter' | 'escape' | 'delete';
+export type KeyName = 'up' | 'down' | 'left' | 'right' | 'enter' | 'escape' | 'delete';
 
 /** 终端按键序列 → 名称；同时认传统序列与 Kitty 键盘协议（CSI u / 带修饰符的方向键） */
 export function keyName(data: string): KeyName | undefined {
   const arrow = /^\x1b(?:\[|O)(?:1;\d+(?::\d+)?)?([ABCD])$/.exec(data);
   if (arrow) return ({ A: 'up', B: 'down', C: 'right', D: 'left' } as const)[arrow[1] as 'A' | 'B' | 'C' | 'D'];
-  if (data === '\t' || /^\x1b\[9(?:;1)?(?::\d+)?u$/.test(data)) return 'tab';
-  if (data === '\x1b[Z' || /^\x1b\[9;2(?::\d+)?u$/.test(data)) return 'shift-tab';
   if (data === '\r' || data === '\n' || /^\x1b\[13(?:;\d+)?u$/.test(data)) return 'enter';
   if (data === '\x1b' || /^\x1b\[27(?:;\d+)?u$/.test(data)) return 'escape';
   if (data === '\x7f' || data === '\b' || data === '\x1b[3~' || /^\x1b\[127(?:;\d+)?u$/.test(data)) return 'delete';
@@ -137,8 +135,8 @@ export class RoleTable {
     switch (key) {
       case 'up': this.row = (this.row - 1 + this.rows.length) % this.rows.length; break;
       case 'down': this.row = (this.row + 1) % this.rows.length; break;
-      case 'tab': this.col = COLUMNS[(COLUMNS.indexOf(this.col) + 1) % COLUMNS.length]!; break;
-      case 'shift-tab': this.col = COLUMNS[(COLUMNS.indexOf(this.col) + COLUMNS.length - 1) % COLUMNS.length]!; break;
+      case 'left': this.col = COLUMNS[Math.max(0, COLUMNS.indexOf(this.col) - 1)]!; break;
+      case 'right': this.col = COLUMNS[Math.min(COLUMNS.length - 1, COLUMNS.indexOf(this.col) + 1)]!; break;
       case 'enter': this.openPicker(); break;
       case 'delete': this.set(this.rows[this.row]!, this.col, undefined); break;
       case 'escape': return 'save';
@@ -205,7 +203,7 @@ export class RoleTable {
       if (start + VISIBLE < p.options.length) lines.push(`${DIM}  ↓ 还有 ${p.options.length - start - VISIBLE} 项${RESET}`);
       lines.push('');
     }
-    const hint = p ? '↑↓ 选择  Enter 确认  Esc 返回' : '↑↓ 选择角色  Tab 切换列  Enter 修改当前格  Backspace 恢复默认  Esc 保存并退出';
+    const hint = p ? '↑↓ 选择  Enter 确认  Esc 返回' : '↑↓←→ 移动  Enter 修改当前格  Backspace 恢复默认  Esc 保存并退出';
     lines.push(`${DIM}${fit(hint, width).trimEnd()}${RESET}`);
     return lines;
   }

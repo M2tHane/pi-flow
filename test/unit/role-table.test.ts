@@ -23,14 +23,13 @@ test('按键名：传统序列与 Kitty 序列', () => {
   assert.equal(keyName('\x1b[A'), 'up');
   assert.equal(keyName('\x1bOB'), 'down');
   assert.equal(keyName('\x1b[1;1C'), 'right');
-  assert.equal(keyName('\t'), 'tab');
-  assert.equal(keyName('\x1b[9u'), 'tab');
-  assert.equal(keyName('\x1b[Z'), 'shift-tab');
   assert.equal(keyName('\r'), 'enter');
   assert.equal(keyName('\x1b'), 'escape');
   assert.equal(keyName('x'), undefined);
 });
 
+const RIGHT = '\x1b[C';
+const LEFT = '\x1b[D';
 const ENTER = '\r';
 const ESC = '\x1b';
 const UP = '\x1b[A';
@@ -52,11 +51,11 @@ test('Enter 打开选择列表，上下选择，Enter 确认，Esc 返回不改'
   assert.equal(t.rows[0]!.model, undefined);
 });
 
-test('Tab 切列、选行；备用模型与思考强度；Backspace 恢复默认；Esc 保存退出', () => {
+test('左右键切列、选行；备用模型与思考强度；Backspace 恢复默认；Esc 保存退出', () => {
   const t = new RoleTable(rows(), models);
-  t.handleInput('\t'); t.handleInput(ENTER); t.handleInput(DOWN); t.handleInput(ENTER);
+  t.handleInput(RIGHT); t.handleInput(ENTER); t.handleInput(DOWN); t.handleInput(ENTER);
   assert.equal(t.rows[0]!.escalate, 'a/big');
-  t.handleInput('\t'); t.handleInput(ENTER);          // 思考强度：默认模型 a/big 的 off/low/high
+  t.handleInput(RIGHT); t.handleInput(ENTER);          // 思考强度：默认模型 a/big 的 off/low/high
   assert.deepEqual(t.picker!.options, [undefined, 'off', 'low', 'high']);
   t.handleInput(DOWN); t.handleInput(DOWN); t.handleInput(ENTER);
   assert.equal(t.rows[0]!.thinking, 'low');
@@ -70,10 +69,10 @@ test('Tab 切列、选行；备用模型与思考强度；Backspace 恢复默认
 
 test('换到不支持当前思考强度的模型时，思考强度回到默认', () => {
   const t = new RoleTable(rows(), models);
-  t.handleInput('\t'); t.handleInput('\t');
+  t.handleInput(RIGHT); t.handleInput(RIGHT);
   t.handleInput(ENTER); t.handleInput(DOWN); t.handleInput(DOWN); t.handleInput(DOWN); t.handleInput(ENTER);
   assert.equal(t.rows[0]!.thinking, 'high');
-  t.handleInput('\t');                                 // 回到模型列
+  t.handleInput(LEFT); t.handleInput(LEFT);                 // 回到模型列
   t.handleInput(ENTER); t.handleInput(DOWN); t.handleInput(DOWN); t.handleInput(ENTER);   // b/small 只支持 off
   assert.equal(t.rows[0]!.model, 'b/small');
   assert.equal(t.rows[0]!.thinking, undefined);
@@ -81,7 +80,7 @@ test('换到不支持当前思考强度的模型时，思考强度回到默认',
 
 test('列表打开时底部提示换成列表的按键，且不超宽', () => {
   const t = new RoleTable(rows(), models);
-  assert.match(t.render(120).at(-1)!, /Enter 修改当前格.*Esc 保存并退出/);
+  assert.match(t.render(120).at(-1)!, /移动.*Enter 修改当前格.*Esc 保存并退出/);
   t.handleInput(ENTER);
   const lines = t.render(60);
   assert.match(lines.at(-1)!, /Enter 确认.*Esc 返回/);
