@@ -13,7 +13,7 @@ const store = new StateStore(dir!, { limits: config.limits });
 const engine = new Engine({
   root: dir!, store, config, launcher: new PiLauncher(),
   roleSettings: () => JSON.parse(settingsJson!),
-  packageAgentsDir: path.join(ROOT, 'agents'),
+  packageAgentsDir: [path.join(ROOT, 'agents'), path.join(ROOT, 'test/fixtures/agents')].join(path.delimiter),
   subagentExtension: path.join(ROOT, 'src/pi-adapter/subagent.ts'),
   extraExtensions: () => [path.join(ROOT, 'test/fixtures/fake-llm/provider.ts')],
   onError: (e) => process.stderr.write(`engine error: ${String(e)}\n`),

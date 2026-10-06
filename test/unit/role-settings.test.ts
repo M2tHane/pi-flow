@@ -40,11 +40,11 @@ test('损坏或不合法的文件给出中文错误', () => {
 
 test('解析优先级：/flow-config 设置 > workflow.yaml 档位', () => {
   const config = parseConfig(TEST_YAML.replace('medium: "<provider/model>"', 'medium: "workbuddy/glm-5.3-flash"'));
-  const settings = { version: 1 as const, roles: { architect: { model: 'openai/gpt-x', thinking: 'high' as const }, scout: { thinking: 'low' as const } } };
+  const settings = { version: 1 as const, roles: { architect: { model: 'openai/gpt-x', thinking: 'high' as const }, researcher: { thinking: 'low' as const } } };
   assert.deepEqual(resolveRoleModel(config, settings, 'architect'), { model: 'openai/gpt-x', thinking: 'high', modelSource: 'flow-config', thinkingSource: 'flow-config' });
   assert.deepEqual(resolveRoleModel(config, settings, 'backend-engineer'), { model: 'workbuddy/glm-5.3-flash', thinking: null, modelSource: 'workflow', thinkingSource: 'default' });
   // 档位为占位符时没有模型
-  assert.deepEqual(resolveRoleModel(config, settings, 'scout'), { model: null, thinking: 'low', modelSource: 'unset', thinkingSource: 'flow-config' });
+  assert.deepEqual(resolveRoleModel(config, settings, 'researcher'), { model: null, thinking: 'low', modelSource: 'unset', thinkingSource: 'flow-config' });
   assert.throws(() => resolveRoleModel(config, settings, 'nobody'), /nobody/);
 });
 

@@ -39,7 +39,7 @@ async function setup() {
 test('对抗：实施 agent 修改 .flow/、改写历史、审批闸门全部失败且留下 violation 事件', async () => {
   const { store, flow, wt, dir, cleanup } = await setup();
   try {
-    const ctx: GuardContext = { config, role: 'backend-engineer', cwd: wt, workspaceRoot: wt, mainRoot: dir, contractsLocked: true, writes: ['src/server/**'] };
+    const ctx: GuardContext = { config, role: 'backend-engineer', cwd: wt, workspaceRoot: wt, mainRoot: dir, writes: ['src/server/**'] };
     const run = { flow: flow.id, task: 'T-001', run: 'r-1' };
     const attempts = [
       { toolName: 'write', input: { path: '.flow/state.json', content: '{}' } },
@@ -73,7 +73,7 @@ test('对抗：实施 agent 修改 .flow/、改写历史、审批闸门全部失
 test('对抗：orchestrator 自己写代码被阻断并记录', async () => {
   const { store, flow, dir, cleanup } = await setup();
   try {
-    const ctx: GuardContext = { config, role: 'orchestrator', cwd: dir, workspaceRoot: dir, mainRoot: dir, contractsLocked: true, readyTaskId: 'T-002' };
+    const ctx: GuardContext = { config, role: 'orchestrator', cwd: dir, workspaceRoot: dir, mainRoot: dir, readyTaskId: 'T-002' };
     const r = await enforceToolCall({ toolName: 'write', input: { path: 'src/server/a.ts', content: 'x' } }, ctx, store,
       { flow: flow.id, task: null, run: 'orchestrator' });
     assert.equal(r.allow, false);
@@ -87,7 +87,7 @@ test('对抗：orchestrator 自己写代码被阻断并记录', async () => {
 test('违规达到上限：终止 run，任务转 blocked', async () => {
   const { store, flow, wt, dir, cleanup } = await setup();
   try {
-    const ctx: GuardContext = { config: strict, role: 'backend-engineer', cwd: wt, workspaceRoot: wt, mainRoot: dir, contractsLocked: true };
+    const ctx: GuardContext = { config: strict, role: 'backend-engineer', cwd: wt, workspaceRoot: wt, mainRoot: dir };
     const run = { flow: flow.id, task: 'T-001', run: 'r-1' };
     const bad = { toolName: 'bash', input: { command: 'rm -rf src' } };
     const r1 = await enforceToolCall(bad, ctx, store, run);

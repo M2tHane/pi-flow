@@ -39,11 +39,8 @@
     },
     "kind": {
       "enum": [
-        "test",
         "impl",
         "doc",
-        "infra",
-        "integration",
         "review-fix",
         "merge-fix",
         "analysis"
@@ -124,8 +121,6 @@
         "pending",
         "ready",
         "in_progress",
-        "review",
-        "verifying",
         "queued_merge",
         "merging",
         "done",
@@ -240,20 +235,6 @@
         }
       ]
     },
-    "blocked_from": {
-      "enum": [
-        "pending",
-        "ready",
-        "in_progress",
-        "review",
-        "verifying",
-        "queued_merge",
-        "merging",
-        "done",
-        "blocked",
-        "cancelled"
-      ]
-    },
     "last_failure": {
       "anyOf": [
         {
@@ -268,45 +249,6 @@
       "type": "string",
       "minLength": 1
     },
-    "contract_change": {
-      "type": "boolean"
-    },
-    "findings": {
-      "type": "object",
-      "required": [
-        "location",
-        "root_cause",
-        "impact_files",
-        "suggested_role",
-        "contract_change",
-        "estimated_files"
-      ],
-      "properties": {
-        "location": {
-          "type": "string"
-        },
-        "root_cause": {
-          "type": "string"
-        },
-        "impact_files": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "suggested_role": {
-          "type": "string"
-        },
-        "contract_change": {
-          "type": "boolean"
-        },
-        "estimated_files": {
-          "type": "integer",
-          "minimum": 0
-        }
-      },
-      "additionalProperties": false
-    },
     "merge_fix_for": {
       "type": "string",
       "pattern": "^T-[0-9]{3,}$"
@@ -320,25 +262,6 @@
     "sync_main": {
       "type": "string",
       "minLength": 1
-    },
-    "stage_review": {
-      "anyOf": [
-        {
-          "type": "string",
-          "const": "review"
-        },
-        {
-          "type": "string",
-          "const": "confirm"
-        }
-      ]
-    },
-    "review_issues": {
-      "type": "array",
-      "items": {
-        "type": "string",
-        "pattern": "^R-[0-9]+$"
-      }
     },
     "fork_from_task": {
       "type": "string",

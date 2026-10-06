@@ -1,19 +1,15 @@
-// subagent 使用的 flow_* 工具：flow_claim、flow_note、flow_submit、flow_approve、flow_block。
-// 纯业务实现，不依赖 Pi；由 pi-adapter 注册为 Pi 工具，测试中由 fake-subagent 直接调用。
-// run token 只来自环境变量，模型看不到也不需要传。
+// subagent 使用的 flow_* 工具：flow_claim、flow_note、flow_submit、flow_block、flow_learn、flow_revise_plan、notes、history，
+// 以及 module-tools.ts 中的 flow_propose_modules、flow_sync、flow_accept、flow_accept_confirm。
+// 纯业务实现，不依赖 Pi；由 pi-adapter 注册为 Pi 工具，测试中由 fake-subagent 直接调用。run token 只来自环境变量，模型看不到也不需要传。
 import { Type, type Static } from 'typebox';
-import type { FlowConfig } from '../core/config.ts';
-import { StateError, type StateStore } from '../core/state-store.ts';
-import { hashToken } from '../core/state-machine.ts';
-import { KNOWLEDGE_CATEGORIES, ProposedTask, RevisionDependency, RevisionTask, type TaskFile } from '../core/schemas.ts';
+import type { StateStore } from '../core/state-store.ts';
+import { KNOWLEDGE_CATEGORIES, RevisionDependency, RevisionTask, type TaskFile } from '../core/schemas.ts';
 import { checkRevision } from '../core/revision.ts';
-import { KnowledgeError, learn, proposeCandidate, KNOWLEDGE_CONTENT_MAX, KNOWLEDGE_PER_RUN } from '../core/knowledge.ts';
-import { validateDag, dagReport, formatDagReport, leadingTestErrors, normalizeLeadingTests } from '../core/dag.ts';
+import { KnowledgeError, learn, KNOWLEDGE_CONTENT_MAX, KNOWLEDGE_PER_RUN } from '../core/knowledge.ts';
 import { changedFiles, cleanStrayUntracked, snapshot } from '../core/worktree.ts';
 import { git } from '../core/git.ts';
-import { perTaskReview } from '../core/cost-control.ts';
+import { canAppendInterfaces } from '../core/state-machine.ts';
 import { testAdjustEnabled, testAdjustments } from '../core/test-adjust.ts';
-import { MAX_STAGE_ISSUES, formatIssues, issueFileErrors } from '../core/stage-review.ts';
 import { NOTES_DESCRIPTION, NotesError, NotesParams, applyNoteOps, renderNotes } from '../core/notes.ts';
 import { HISTORY_DESCRIPTION, HistoryParams, formatSearch, loadHistory, readHistoryEntry, searchHistory } from '../core/history.ts';
 import { listSessionFiles, sessionDirOf } from '../core/session-log.ts';
@@ -24,32 +20,13 @@ import { AcceptConfirmParams, AcceptParams, ProposeModulesParams, SyncParams, fl
 export const NOTE_LIMIT = 8000;
 
 export { RUN_ENV_KEYS, runEnvFrom, FlowToolError, checkRunOf, type RunEnv, type ToolContext, type ToolResult } from './tool-common.ts';
-import { RUN_ENV_KEYS, runEnvFrom, FlowToolError, actor, checkRun, rethrow, type RunEnv, type ToolContext, type ToolResult } from './tool-common.ts';
+import { FlowToolError, actor, checkRun, rethrow, type ToolContext, type ToolResult } from './tool-common.ts';
 
 export const ClaimParams = Type.Object({});
-export const NoteParams = Type.Object({ text: Type.String({ minLength: 1, maxLength: NOTE_LIMIT, description: 'handoff 笔记：做到哪、下一步、踩过的坑、未决问题' }) });
-export const Findings = Type.Object({
-  location: Type.String({ minLength: 1, description: '问题位置，例如 src/server/orders/service.ts:42' }),
-  root_cause: Type.String({ minLength: 1, description: '根因假设' }),
-  impact_files: Type.Array(Type.String({ minLength: 1 }), { minItems: 1, description: '修复需要改动的文件（相对仓库根，具体路径）' }),
-  suggested_role: Type.String({ minLength: 1, description: '建议的实施角色，例如 backend-engineer' }),
-  contract_change: Type.Boolean({ description: '修复是否需要改契约' }),
-  estimated_files: Type.Integer({ minimum: 0, description: '预计改动的文件数' }),
-}, { additionalProperties: false });
+export const NoteParams = Type.Object({ text: Type.String({ minLength: 1, maxLength: NOTE_LIMIT, description: 'handoff 笔记：做到哪、下一步、踩过的坑、未决问题；需求讨论的意见也写在这里' }) });
 export const SubmitParams = Type.Object({
-  summary: Type.String({ minLength: 1, maxLength: 500, description: '一句话总结本次改动（只读探查任务：一句话结论）' }),
-  findings: Type.Optional(Findings),
+  summary: Type.String({ minLength: 1, maxLength: 500, description: '一句话总结本次改动（只读任务：一句话结论）' }),
   prototype: Type.Optional(Type.Boolean({ description: '（仅需求阶段的汇总者）是否需要原型阶段：没有界面或只改后端时为 false' })),
-});
-export const Issue = Type.Object({
-  location: Type.String({ minLength: 1, description: '位置，例如 src/server/a.ts:42' }),
-  problem: Type.String({ minLength: 1, description: '问题' }),
-  expected: Type.String({ minLength: 1, description: '期望的修改' }),
-});
-export const ApproveParams = Type.Object({
-  decision: Type.Union([Type.Literal('pass'), Type.Literal('reject')]),
-  notes: Type.Optional(Type.String({ maxLength: 2000, description: 'pass 时一句话说明依据' })),
-  issues: Type.Optional(Type.Array(Issue, { description: 'reject 时必填：每条写明位置、问题、期望的修改' })),
 });
 export const LearnParams = Type.Object({
   category: Type.Union(KNOWLEDGE_CATEGORIES.map((c) => Type.Literal(c)), { description: 'convention 约定、pitfall 坑、decision 决策、environment 环境、dependency 外部依赖' }),
@@ -86,25 +63,22 @@ export async function flowSubmit(ctx: ToolContext, p: Static<typeof SubmitParams
   if (t.kind === 'analysis') return submitAnalysis(ctx, t, p);
   if (t.status !== 'in_progress') throw new FlowToolError(`任务当前是 ${t.status}，不能提交。`);
   if (!t.worktree || !t.base_sha) throw new FlowToolError('任务没有 worktree 或 base_sha，无法提交，请调用 flow_block 报告。');
-  const stray = cleanStrayUntracked(t.worktree, t.conflict_files ?? [...t.writes, ...(t.shared ?? [])]);
+  const stray = cleanStrayUntracked(t.worktree, t.conflict_files ?? [...t.writes, ...(t.shared ?? []), ...(canAppendInterfaces(t) ? ['docs/interfaces/**'] : [])]);
   if (stray.length) {
     await ctx.store.appendHandoff(ctx.env.flow, t.id, `提交前程序清理了可写范围外、未被 git 跟踪的文件：${stray.slice(0, 20).join('、')}${stray.length > 20 ? ` 等 ${stray.length} 个` : ''}（多为测试或运行产生的数据；测试应把数据写到临时目录）`, 'flow-submit');
   }
   snapshot(t.worktree, `[${ctx.env.flow}/${t.id}] ${p.summary.split('\n')[0]}`);
   const diff = changedFiles(t.worktree, t.base_sha);
-  // 阶段审查的修复任务只能在契约中新增内容：有删除行（含修改）的契约文件由状态机拒绝
-  const rewrites = t.kind === 'review-fix' ? contractRewrites(t.worktree, t.base_sha) : [];
-  // 适配已有测试：writes 之外只修改过的已有测试文件不算越界，记在任务上供审查核对
+  // 模块之间的接口文档只能追加：有删除行（含修改）的接口文档由状态机拒绝（自己可写范围内的除外）
+  const rewrites = canAppendInterfaces(t) ? interfaceRewrites(t.worktree, t.base_sha).filter((f) => !t.writes.some((w) => f.startsWith(w.replace(/\*\*$/, '')))) : [];
+  // 适配已有测试：writes 之外只修改过的已有测试文件不算越界，记在任务上（验收时一并检查）
   const adjusted = testAdjustEnabled(ctx.config, t) ? testAdjustments(t.worktree, t.base_sha, t.writes) : [];
-  // 关闭逐任务审查时直接进入合并队列（合并时跑全量测试）
-  const direct = !perTaskReview(ctx.config, ctx.store.readFlow(ctx.env.flow).mode, t, ctx.store.listTasks(ctx.env.flow));
   try {
-    await ctx.store.transitionTask(ctx.env.flow, t.id, direct
-      ? { to: 'queued_merge', trigger: 'submit_direct', actor: actor(ctx), facts: { token: ctx.env.token, diff_files: diff, direct_merge: true, contract_rewrites: rewrites, test_adjustments: adjusted } }
-      : { to: 'review', trigger: 'submit', actor: actor(ctx), facts: { token: ctx.env.token, diff_files: diff, contract_rewrites: rewrites, test_adjustments: adjusted } });
+    await ctx.store.transitionTask(ctx.env.flow, t.id, { to: 'queued_merge', trigger: 'submit', actor: actor(ctx),
+      facts: { token: ctx.env.token, diff_files: diff, interface_rewrites: rewrites, test_adjustments: adjusted } });
   } catch (e) {
-    if (rewrites.length) rethrow(e, `契约只能新增条目或说明。还原对已有内容的修改：git checkout ${t.base_sha} -- ${rewrites.join(' ')}，再只追加需要的内容；确需修改已有接口时调用 flow_block 说明，由用户决定是否修订计划。`);
-    rethrow(e, `只修改 writes 内的文件${testAdjustEnabled(ctx.config, t) ? '（别的角色已有的测试可以修改来适配接口变化，但不能新增或删除 writes 之外的文件）' : ''}。还原越界改动：新增的文件用 git rm <文件>，修改过或删除的文件用 git checkout ${t.base_sha} -- <文件>。先 flow_note 写 handoff，然后再次 flow_submit。`);
+    if (rewrites.length) rethrow(e, `接口文档只能追加。还原对已有内容的修改：git checkout ${t.base_sha} -- ${rewrites.join(' ')}，再只追加需要的调用；确需改已有接口时调用 flow_block 说明，由用户决定是否修订计划。`);
+    rethrow(e, `只修改可写范围内的文件（登记的公共文件可以改；别的模块已有的测试可以改来适配，但不能新增或删除可写范围外的文件）。还原越界改动：新增的文件用 git rm <文件>，修改过或删除的文件用 git checkout ${t.base_sha} -- <文件>。先 flow_note 写 handoff，然后再次 flow_submit。`);
   }
   await ctx.store.appendHandoff(ctx.env.flow, t.id, `提交说明：${p.summary}`, actor(ctx));
   // 需求阶段的汇总者判断要不要原型阶段（用户批准时可以用 --prototype / --no-prototype 改）
@@ -113,41 +87,28 @@ export async function flowSubmit(ctx: ToolContext, p: Static<typeof SubmitParams
     const skip = (f.skip_stages ?? []).filter((x) => x !== PROTOTYPE_STAGE);
     if (f.stages.includes(PROTOTYPE_STAGE)) await ctx.store.setSkipStages(ctx.env.flow, p.prototype ? skip : [...skip, PROTOTYPE_STAGE], actor(ctx), p.prototype ? '需要原型阶段' : '不需要原型阶段（没有界面）');
   }
-  if (adjusted.length) await ctx.store.appendHandoff(ctx.env.flow, t.id, `修改了可写范围外的已有测试（适配接口变化，审查时核对没有削弱）：${adjusted.join('、')}`, 'flow-submit');
+  if (adjusted.length) await ctx.store.appendHandoff(ctx.env.flow, t.id, `修改了可写范围外的已有测试（适配接口变化）：${adjusted.join('、')}`, 'flow-submit');
   await ctx.store.updateRun(ctx.env.run, { outcome: 'submitted' }, actor(ctx), '提交');
-  return { text: `${direct ? '已提交合并' : '已提交审查'}（改动 ${diff.length} 个文件${stray.length ? `；已清理可写范围外、未被跟踪的文件 ${stray.length} 个：${stray.slice(0, 5).join('、')}` : ''}）。你的工作已完成，请直接结束，不要再调用工具。`, details: { files: diff, cleaned: stray } };
+  return { text: `已提交合并（改动 ${diff.length} 个文件${stray.length ? `；已清理可写范围外、未被跟踪的文件 ${stray.length} 个：${stray.slice(0, 5).join('、')}` : ''}）。合并时程序会跑全量测试。你的工作已完成，请直接结束，不要再调用工具。`, details: { files: diff, cleaned: stray } };
 }
 
-/** 相对基线删除或修改过已有行的契约文件 */
-function contractRewrites(worktree: string, base: string): string[] {
-  return git(worktree, ['diff', '--numstat', '--no-renames', base, 'HEAD', '--', 'docs/contracts']).split('\n').filter(Boolean)
+/** 相对基线删除或修改过已有行的接口文档 */
+function interfaceRewrites(worktree: string, base: string): string[] {
+  return git(worktree, ['diff', '--numstat', '--no-renames', base, 'HEAD', '--', 'docs/interfaces']).split('\n').filter(Boolean)
     .map((l) => l.split('\t')).filter(([, del]) => del !== '0').map(([, , p]) => p!);
 }
 
 async function submitAnalysis(ctx: ToolContext, t: TaskFile, p: Static<typeof SubmitParams>): Promise<ToolResult> {
   if (t.accept_of) throw new FlowToolError(t.accept_kind === 'confirm' ? '复查用 flow_accept_confirm 提交。' : '验收用 flow_accept 提交。');
-  // 需求讨论（第五轮 D0）：意见已写进 handoff，提交即完成
-  if (t.advocate) {
-    // handoff 里程序写的部分（用户的描述）不算：必须有本次运行用 flow_note 写的意见
-    if (!/^## \S+ run:/m.test(ctx.store.readHandoff(ctx.env.flow, t.id))) throw new FlowToolError('还没有写意见：先用 flow_note 写下你的完整意见，再 flow_submit。');
-    await ctx.store.appendHandoff(ctx.env.flow, t.id, `总结：${p.summary}`, actor(ctx));
-    try {
-      await ctx.store.transitionTask(ctx.env.flow, t.id, { to: 'done', trigger: 'report', actor: actor(ctx), facts: { token: ctx.env.token, diff_files: [] } });
-    } catch (e) { rethrow(e, '先 flow_note 写下意见再提交。'); }
-    await ctx.store.updateRun(ctx.env.run, { outcome: 'submitted' }, actor(ctx), '提交意见');
-    return { text: '意见已提交。你的工作已完成，请直接结束。' };
-  }
-  if (t.stage_review) throw new FlowToolError(t.stage_review === 'review' ? '阶段审查用 flow_review_report 提交问题清单。' : '确认修复用 flow_review_confirm 提交。');
   if (t.replan) return submitReplan(ctx, t, p);
-  if (!p.findings) throw new FlowToolError('只读探查任务必须附 findings：location、root_cause、impact_files、suggested_role、contract_change、estimated_files。');
-  const diff = t.worktree && t.base_sha ? (snapshot(t.worktree, 'scout'), changedFiles(t.worktree, t.base_sha)) : [];
-  await ctx.store.setFindings(ctx.env.flow, t.id, p.findings, actor(ctx));
-  await ctx.store.appendHandoff(ctx.env.flow, t.id, `结论：${p.summary}\n位置：${p.findings.location}\n根因：${p.findings.root_cause}\n影响文件：${p.findings.impact_files.join('、')}\n建议角色：${p.findings.suggested_role}`, actor(ctx));
+  // 需求讨论（D0）：意见已写进 handoff；程序写的部分（用户的描述）不算，必须有本次运行用 flow_note 写的意见
+  if (!/^## \S+ run:/m.test(ctx.store.readHandoff(ctx.env.flow, t.id))) throw new FlowToolError('还没有写意见：先用 flow_note 写下你的完整意见，再 flow_submit。');
+  await ctx.store.appendHandoff(ctx.env.flow, t.id, `总结：${p.summary}`, actor(ctx));
   try {
-    await ctx.store.transitionTask(ctx.env.flow, t.id, { to: 'done', trigger: 'report', actor: actor(ctx), facts: { token: ctx.env.token, diff_files: diff } });
-  } catch (e) { rethrow(e, '只读任务不能改动文件；先 flow_note 再提交。'); }
-  await ctx.store.updateRun(ctx.env.run, { outcome: 'submitted' }, actor(ctx), '提交结论');
-  return { text: '结论已提交。你的工作已完成，请直接结束。' };
+    await ctx.store.transitionTask(ctx.env.flow, t.id, { to: 'done', trigger: 'report', actor: actor(ctx), facts: { token: ctx.env.token, diff_files: [] } });
+  } catch (e) { rethrow(e, '先 flow_note 写下意见再提交。'); }
+  await ctx.store.updateRun(ctx.env.run, { outcome: 'submitted' }, actor(ctx), '提交意见');
+  return { text: '意见已提交。你的工作已完成，请直接结束。' };
 }
 
 /** 计划修订任务提交：必须已用 flow_revise_plan 保存本任务的修订提案 */
@@ -190,40 +151,6 @@ export async function flowRevisePlan(ctx: ToolContext, p: Static<typeof RevisePa
   return { text: `修订已保存（用户批准后生效，批准前可重新提交覆盖）：\n${c.summary}${c.notes.length ? `\n程序调整：\n${c.notes.map((n) => `- ${n}`).join('\n')}` : ''}\n接下来 flow_note 写明理由，然后 flow_submit。` };
 }
 
-function headOf(worktree: string): string | null {
-  try { return git(worktree, ['rev-parse', 'HEAD']).trim(); } catch { return null; }
-}
-
-export async function flowApprove(ctx: ToolContext, p: Static<typeof ApproveParams>): Promise<ToolResult> {
-  const t = checkRun(ctx);
-  if (t.status !== 'review') throw new FlowToolError(`任务当前是 ${t.status}，不在审查阶段。`);
-  if (p.decision === 'reject') {
-    const issues = p.issues ?? [];
-    const incomplete = issues.filter((i) => !i.location.trim() || !i.problem.trim() || !i.expected.trim());
-    if (!issues.length || incomplete.length) {
-      throw new FlowToolError('reject 必须附至少一条意见，且每条都写明 location（位置）、problem（问题）、expected（期望的修改）。');
-    }
-    const reason = issues.map((i, n) => `${n + 1}. ${i.location}：${i.problem}；期望：${i.expected}`).join('\n');
-    try {
-      // 记下被审查的提交：下一轮审查据此只看之后的改动（第三轮 B）
-      const head = t.worktree ? headOf(t.worktree) : null;
-      await ctx.store.transitionTask(ctx.env.flow, t.id, { to: 'in_progress', trigger: 'review_reject', actor: actor(ctx), facts: { token: ctx.env.token, reason },
-        ...(head ? { data: { reviewed_head: head } } : {}) });
-    } catch (e) { rethrow(e, '检查 issues 是否完整后重试。'); }
-    await ctx.store.appendHandoff(ctx.env.flow, t.id, `审查打回：\n${reason}`, actor(ctx));
-    // 程序提炼为知识候选，用户确认后才生效
-    await proposeCandidate(ctx.store, ctx.config, t, ctx.env.flow, 'review', reason, ctx.env.run);
-    await ctx.store.updateRun(ctx.env.run, { outcome: 'rejected' }, actor(ctx), '审查打回');
-    return { text: '已打回，实施角色会按你的意见修改。请直接结束。' };
-  }
-  try {
-    await ctx.store.transitionTask(ctx.env.flow, t.id, { to: 'verifying', trigger: 'review_pass', actor: actor(ctx), facts: { token: ctx.env.token } });
-  } catch (e) { rethrow(e, '如无法通过，请改为 reject 并写明意见。'); }
-  if (p.notes?.trim()) await ctx.store.appendHandoff(ctx.env.flow, t.id, `审查通过：${p.notes.trim()}`, actor(ctx));
-  await ctx.store.updateRun(ctx.env.run, { outcome: 'approved' }, actor(ctx), '审查通过');
-  return { text: '已通过审查，程序将运行 verify。请直接结束。' };
-}
-
 export async function flowLearn(ctx: ToolContext, p: Static<typeof LearnParams>): Promise<ToolResult> {
   const t = checkRun(ctx);
   try {
@@ -245,114 +172,6 @@ export async function flowBlock(ctx: ToolContext, p: Static<typeof BlockParams>)
   } catch (e) { rethrow(e, '请写明原因后重试。'); }
   await ctx.store.updateRun(ctx.env.run, { outcome: 'blocked' }, actor(ctx), '阻塞');
   return { text: '已标记为阻塞，等待用户处理。请直接结束。' };
-}
-
-export const DESIGN_STAGES = ['S1', 'F1'];
-export const ProposeParams = Type.Object({
-  tasks: Type.Array(ProposedTask, { minItems: 1, maxItems: 200, description: '任务列表（DAG）。id 用 T-001 起的临时编号，批准后由程序重新编号' }),
-  extras: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { maxItems: 30, description: '文档（契约、架构、规则草案）里超出需求的设计，逐条写明是什么、为什么需要；用户批准时决定是否保留。没有就不填' })),
-  assumptions: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { maxItems: 30, description: '需求没说清、你按默认方案处理的地方：每条写明问题与采用的方案（例如"移除成员时：自动清空其指派"）。有合理默认值时不要 flow_block 提问，写在这里，用户批准时确认' })),
-});
-
-export async function flowProposeTasks(ctx: ToolContext, p: Static<typeof ProposeParams>): Promise<ToolResult> {
-  const t = checkRun(ctx);
-  if (!DESIGN_STAGES.includes(t.stage)) throw new FlowToolError(`flow_propose_tasks 只能在 S1（架构）或 F1（影响面与 DAG）阶段使用，当前任务属于 ${t.stage}。`);
-  const flow = ctx.store.readFlow(ctx.env.flow);
-  const later = flow.stages.slice(flow.stages.indexOf(t.stage) + 1);
-  const errors: string[] = [];
-  for (const x of p.tasks) {
-    if (!later.includes(x.stage)) errors.push(`${x.id}：stage ${x.stage} 不合法，只能是 ${later.join('、')}`);
-    if (x.kind === 'merge-fix' || x.kind === 'review-fix') errors.push(`${x.id}：kind ${x.kind} 由程序生成，不能提交`);
-    if (x.role === 'orchestrator' || x.role === 'reviewer') errors.push(`${x.id}：角色 ${x.role} 不能承担任务`);
-  }
-  // 先行验收测试默认关闭：实施者边写边测；开启时一个测试由一个承载者带入集成分支，其余依赖方改为依赖承载者
-  if (ctx.config.raw.testing?.leading_tests !== true) errors.push(...leadingTestErrors(p.tasks));
-  const lead = normalizeLeadingTests(p.tasks);
-  errors.push(...lead.errors);
-  const v = validateDag(lead.tasks, ctx.config.dagCatalog());
-  errors.push(...v.errors);
-  if (errors.length) throw new FlowToolError(`任务列表校验失败，未保存：\n${errors.map((e) => `- ${e}`).join('\n')}\n建议：逐条修正后重新调用 flow_propose_tasks。`);
-  const report = dagReport(lead.tasks, v.warnings);
-  await ctx.store.saveProposal(ctx.env.flow, { stage: t.stage, run: ctx.env.run, created_at: (ctx.now?.() ?? new Date()).toISOString(), tasks: lead.tasks, report, ...(p.extras?.length ? { extras: p.extras } : {}), ...(p.assumptions?.length ? { assumptions: p.assumptions } : {}) }, actor(ctx));
-  const adjusted = lead.notes.length ? `\n程序已按"先行验收测试由一个实现任务承载"调整依赖：\n${lead.notes.map((n) => `- ${n}`).join('\n')}` : '';
-  return { text: `任务列表已保存（用户批准本阶段闸门后生效，可在批准前重新提交覆盖）。\n${formatDagReport(report)}${adjusted}`, details: { ...report } };
-}
-
-// —— 阶段末审查（第四轮）：审查者提交问题清单；确认时只能对已有编号回答"已解决 / 未解决" ——
-
-export const StageIssueParams = Type.Object({
-  module: Type.String({ minLength: 1, maxLength: 60, description: '模块名，例如 accounts、records；同一模块的问题会分给同一个修复任务' }),
-  location: Type.String({ minLength: 1, maxLength: 200, description: '位置，例如 src/server/accounts/service.ts:42' }),
-  problem: Type.String({ minLength: 1, maxLength: 1000, description: '问题：违反了哪条契约、规则或验收标准，或明确的缺陷是什么' }),
-  expected: Type.String({ minLength: 1, maxLength: 1000, description: '期望的修改' }),
-  files: Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: 20, description: '修复要改的文件（相对仓库根的具体路径，只涉及一个模块）；修复者只能改这些文件' }),
-}, { additionalProperties: false });
-export const ReviewReportParams = Type.Object({
-  summary: Type.String({ minLength: 1, maxLength: 1000, description: '一段话总结本阶段代码的整体情况（契约本身的问题也写在这里）' }),
-  issues: Type.Array(StageIssueParams, { maxItems: MAX_STAGE_ISSUES, description: '问题清单（编号由程序分配）。只提违反契约、规则、验收标准的问题与明确缺陷；没有问题就传空数组' }),
-}, { additionalProperties: false });
-export const ReviewConfirmParams = Type.Object({
-  results: Type.Array(Type.Object({
-    id: Type.String({ pattern: '^R-[0-9]+$', description: '清单中已有的问题编号' }),
-    resolved: Type.Boolean({ description: '是否已按"期望"解决' }),
-    note: Type.Optional(Type.String({ maxLength: 500, description: '未解决时写原因' })),
-  }, { additionalProperties: false }), { minItems: 1, description: '对清单中每个编号的确认结果；只能是已有编号，不能新增问题' }),
-}, { additionalProperties: false });
-
-/** 只读的阶段审查任务提交结论：worktree 不得有改动；写 handoff 后转 done */
-async function finishStageReviewTask(ctx: ToolContext, t: TaskFile, handoff: string, what: string): Promise<void> {
-  const diff = t.worktree && t.base_sha ? (snapshot(t.worktree, 'stage-review'), changedFiles(t.worktree, t.base_sha)) : [];
-  await ctx.store.appendHandoff(ctx.env.flow, t.id, handoff, actor(ctx));
-  try {
-    await ctx.store.transitionTask(ctx.env.flow, t.id, { to: 'done', trigger: 'report', actor: actor(ctx), facts: { token: ctx.env.token, diff_files: diff } });
-  } catch (e) { rethrow(e, '阶段审查是只读的，不能改动文件。'); }
-  await ctx.store.updateRun(ctx.env.run, { outcome: 'submitted' }, actor(ctx), what);
-}
-
-export async function flowReviewReport(ctx: ToolContext, p: Static<typeof ReviewReportParams>): Promise<ToolResult> {
-  const t = checkRun(ctx);
-  if (t.stage_review !== 'review' || t.status !== 'in_progress') throw new FlowToolError('flow_review_report 只能在阶段审查任务中使用。');
-  const sr = ctx.store.readStageReview(ctx.env.flow, t.stage);
-  const batch = sr?.batches.find((b) => b.review_task === t.id);
-  if (!sr || !batch || batch.status !== 'reviewing') throw new FlowToolError('本阶段的审查记录不在等待清单的状态，本次运行无效，请停止工作。');
-  const tasks = ctx.store.listTasks(ctx.env.flow);
-  const errors = p.issues.flatMap((x, n) => issueFileErrors(ctx.config, tasks, `第 ${n + 1} 条（${x.location}）`, x.files));
-  if (errors.length) throw new FlowToolError(`问题清单未保存：\n${errors.map((e) => `- ${e}`).join('\n')}\n建议：逐条修正后重新调用 flow_review_report。`);
-  // 编号接着本阶段其他批次的问题往下排
-  const first = Math.max(0, ...sr.batches.filter((b) => b.id !== batch.id).flatMap((b) => b.issues.map((i) => Number(i.id.slice(2))))) + 1;
-  const issues = p.issues.map((x, n) => ({ id: `R-${first + n}`, module: x.module.trim(), location: x.location.trim(), problem: x.problem.trim(), expected: x.expected.trim(), files: [...new Set(x.files)] }));
-  await ctx.store.updateStageReview(ctx.env.flow, { ...sr, batches: sr.batches.map((b) => (b.id === batch.id ? { ...b, reported: true, issues } : b)) }, { actor: actor(ctx), reason: `阶段 ${t.stage} 审查清单：${issues.length} 个问题` });
-  await finishStageReviewTask(ctx, t, `阶段审查结论：${p.summary}\n${issues.length ? formatIssues(issues) : '没有发现问题。'}`, '提交阶段审查清单');
-  const modules = [...new Set(issues.map((i) => i.module))];
-  return { text: issues.length
-    ? `已记录 ${issues.length} 个问题（${issues.map((i) => i.id).join('、')}），涉及模块 ${modules.join('、')}；程序会按模块分给负责的角色并行修复，修好后请你确认。你的工作已完成，请直接结束。`
-    : '已记录：本阶段没有发现问题。你的工作已完成，请直接结束。', details: { issues: issues.map((i) => i.id) } };
-}
-
-export async function flowReviewConfirm(ctx: ToolContext, p: Static<typeof ReviewConfirmParams>): Promise<ToolResult> {
-  const t = checkRun(ctx);
-  if (t.stage_review !== 'confirm' || t.status !== 'in_progress') throw new FlowToolError('flow_review_confirm 只能在确认修复的任务中使用。');
-  const sr = ctx.store.readStageReview(ctx.env.flow, t.stage);
-  const batch = sr?.batches.find((b) => b.confirm_task === t.id);
-  if (!sr || !batch || batch.status !== 'confirming') throw new FlowToolError('本阶段的审查记录不在等待确认的状态，本次运行无效，请停止工作。');
-  const known = new Set(batch.issues.map((i) => i.id));
-  const seen = new Set<string>();
-  const errors: string[] = [];
-  for (const r of p.results) {
-    if (!known.has(r.id)) errors.push(`${r.id} 不在清单中：确认只能回答已有的编号（${[...known].join('、')}），不能提出新问题`);
-    else if (seen.has(r.id)) errors.push(`${r.id} 重复回答`);
-    seen.add(r.id);
-  }
-  const missing = [...known].filter((id) => !seen.has(id));
-  if (missing.length) errors.push(`还没有回答：${missing.join('、')}（每个编号都要回答）`);
-  if (errors.length) throw new FlowToolError(`确认未保存：\n${errors.map((e) => `- ${e}`).join('\n')}`);
-  const confirm = p.results.map((r) => ({ id: r.id, resolved: r.resolved, ...(r.note?.trim() ? { note: r.note.trim() } : {}) }));
-  await ctx.store.updateStageReview(ctx.env.flow, { ...sr, batches: sr.batches.map((b) => (b.id === batch.id ? { ...b, confirm } : b)) }, { actor: actor(ctx), reason: `阶段 ${t.stage} 确认：${confirm.filter((c) => c.resolved).length}/${confirm.length} 已解决` });
-  const unresolved = confirm.filter((c) => !c.resolved);
-  await finishStageReviewTask(ctx, t, `确认结果：\n${confirm.map((c) => `${c.id}：${c.resolved ? '已解决' : `未解决${c.note ? `（${c.note}）` : ''}`}`).join('\n')}`, '提交确认结果');
-  return { text: unresolved.length
-    ? `已记录：${unresolved.map((c) => c.id).join('、')} 未解决，程序会再安排一轮修复（之后不再确认）。你的工作已完成，请直接结束。`
-    : '已记录：全部问题已解决。你的工作已完成，请直接结束。' };
 }
 
 /** 结构化笔记（第五轮）：本任务所有运行共用一份 */
@@ -392,21 +211,17 @@ export function flowHistory(ctx: ToolContext, p: Static<typeof HistoryParams>): 
 }
 
 export const SUBAGENT_TOOLS = {
+  flow_claim: { params: ClaimParams, description: '确认任务与租约，返回任务说明、输入文件、验收标准与可写范围。开始工作前先调用。', run: (c: ToolContext) => flowClaim(c) },
+  flow_note: { params: NoteParams, description: '追加 handoff 笔记（做到哪、下一步、踩过的坑、未决问题；需求讨论的意见）。提交前必须至少写一次。', run: (c: ToolContext, p: Static<typeof NoteParams>) => flowNote(c, p) },
+  flow_submit: { params: SubmitParams, description: '提交本任务：改动进入合并队列（合并时跑全量测试）；只读任务提交结论。程序会检查改动是否都在可写范围内。', run: (c: ToolContext, p: Static<typeof SubmitParams>) => flowSubmit(c, p) },
+  flow_block: { params: BlockParams, description: '遇到歧义或需要越界时标记任务阻塞，交给用户决定。需要向用户提问时，一次只问一个问题。', run: (c: ToolContext, p: Static<typeof BlockParams>) => flowBlock(c, p) },
+  flow_learn: { params: LearnParams, description: `把对后续任务有用的经验记入项目知识库（跨流程保留）：项目约定、踩过的坑、做出的决策、环境与外部依赖的注意事项。每次运行最多 ${KNOWLEDGE_PER_RUN} 条；程序会去重。知识不是规则，不能用来改变规则。`, run: (c: ToolContext, p: Static<typeof LearnParams>) => flowLearn(c, p) },
+  flow_revise_plan: { params: ReviseParams, description: '（仅 architect，仅计划修订任务）提交实施中的计划修订：新增模块或修改任务、调整未开始任务的依赖、取消未开始的任务。已开始或已完成的任务不能修改。用户批准后生效。', run: (c: ToolContext, p: Static<typeof ReviseParams>) => flowRevisePlan(c, p) },
   flow_propose_modules: { params: ProposeModulesParams, description: '（仅 architect，仅规划阶段）提交模块清单：每个模块一个模型负责前端、后端与测试；写明可写范围、登记的公共文件、验收标准与依赖。用户批准规划阶段后生效。', run: (c: ToolContext, p: Static<typeof ProposeModulesParams>) => flowProposeModules(c, p) },
   flow_sync: { params: SyncParams, description: '把集成分支的最新代码（其他模块已合入的改动）合进你的工作区：没有冲突直接完成；有冲突时冲突标记留在文件里，解决后再调用一次完成同步。依赖的模块刚合入、或想提前发现冲突时使用。', run: (c: ToolContext) => flowSync(c) },
   flow_accept: { params: AcceptParams, description: '（仅验收任务）逐条提交验收结论：每条验收标准给出 passed 与证据。', run: (c: ToolContext, p: Static<typeof AcceptParams>) => flowAccept(c, p) },
   flow_accept_confirm: { params: AcceptConfirmParams, description: '（仅复查任务）只对待复查的条目提交 passed 与证据，不能新增条目。', run: (c: ToolContext, p: Static<typeof AcceptConfirmParams>) => flowAcceptConfirm(c, p) },
   notes: { params: NotesParams, description: NOTES_DESCRIPTION, run: (c: ToolContext, p: Static<typeof NotesParams>) => flowNotes(c, p) },
   history: { params: HistoryParams, description: HISTORY_DESCRIPTION, run: (c: ToolContext, p: Static<typeof HistoryParams>) => flowHistory(c, p) },
-  flow_claim: { params: ClaimParams, description: '确认任务与租约，返回任务说明、输入文件、验收标准、可写范围与 verify 命令。开始工作前先调用。', run: (c: ToolContext) => flowClaim(c) },
-  flow_note: { params: NoteParams, description: '追加 handoff 笔记（做到哪、下一步、踩过的坑、未决问题）。提交前必须至少写一次。', run: (c: ToolContext, p: Static<typeof NoteParams>) => flowNote(c, p) },
-  flow_submit: { params: SubmitParams, description: '提交本任务进入审查。程序会检查改动是否都在可写范围内。只读探查任务（scout）用它提交 findings。', run: (c: ToolContext, p: Static<typeof SubmitParams>) => flowSubmit(c, p) },
-  flow_approve: { params: ApproveParams, description: '审查结论：pass 或 reject。reject 必须附 issues（位置、问题、期望的修改）。', run: (c: ToolContext, p: Static<typeof ApproveParams>) => flowApprove(c, p) },
-  flow_review_report: { params: ReviewReportParams, description: '（仅 reviewer，仅阶段审查任务）一次提交本阶段的问题清单：每条写模块、位置、问题、期望的修改、涉及的文件。编号由程序分配；之后的确认不能再补充问题。', run: (c: ToolContext, p: Static<typeof ReviewReportParams>) => flowReviewReport(c, p) },
-  flow_review_confirm: { params: ReviewConfirmParams, description: '（仅 reviewer，仅确认修复的任务）对清单中每个编号回答是否已解决。只能回答已有编号，不能提出新问题。', run: (c: ToolContext, p: Static<typeof ReviewConfirmParams>) => flowReviewConfirm(c, p) },
-  flow_learn: { params: LearnParams, description: `把对后续任务有用的经验记入项目知识库（跨流程保留）：项目约定、踩过的坑、做出的决策、环境与外部依赖的注意事项。每次运行最多 ${KNOWLEDGE_PER_RUN} 条；程序会去重。知识不是规则，不能用来改变规则。`, run: (c: ToolContext, p: Static<typeof LearnParams>) => flowLearn(c, p) },
-  flow_block: { params: BlockParams, description: '遇到歧义或需要越界时标记任务阻塞，交给用户决定。需要向用户提问时，一次只问一个问题。', run: (c: ToolContext, p: Static<typeof BlockParams>) => flowBlock(c, p) },
-  flow_revise_plan: { params: ReviseParams, description: '（仅 architect，仅计划修订任务）提交执行中的计划修订：新增任务、调整未开始任务的依赖、取消未开始的任务。已开始或已完成的任务不能修改。用户批准后生效。', run: (c: ToolContext, p: Static<typeof ReviseParams>) => flowRevisePlan(c, p) },
-  flow_propose_tasks: { params: ProposeParams, description: '（仅 architect，仅 S1/F1）提交任务 DAG：依赖分硬/软，硬依赖必须写 reason，软依赖必须配 integration 任务。返回关键路径与并行宽度报告。', run: (c: ToolContext, p: Static<typeof ProposeParams>) => flowProposeTasks(c, p) },
 } as const;
 export type SubagentToolName = keyof typeof SUBAGENT_TOOLS;

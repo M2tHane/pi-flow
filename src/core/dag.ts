@@ -58,99 +58,7 @@ export function validateDag(tasks: readonly DagTask[], catalog: DagCatalog): Dag
   const cycle = findCycle(tasks);
   if (cycle) errors.push(`依赖存在环：${cycle.join(' -> ')}`);
 
-  // 每条软依赖都必须有一个 integration 任务对两端都是硬依赖
-  for (const t of tasks) {
-    for (const d of t.depends_on) {
-      if (d.type !== 'soft') continue;
-      const covered = tasks.some((i) => i.kind === 'integration' &&
-        hasHard(i, t.id) && hasHard(i, d.task));
-      if (!covered) errors.push(`${t.id} 对 ${d.task} 的软依赖缺少 integration 任务（需对两端都是硬依赖）`);
-    }
-  }
-
   return { errors, warnings };
-}
-
-const hasHard = (t: Pick<TaskFile, 'depends_on'>, dep: string) => t.depends_on.some((d) => d.task === dep && d.type === 'hard');
-const byIdOrder = (a: { id: string }, b: { id: string }) => a.id.localeCompare(b.id, undefined, { numeric: true });
-
-type LeadTask = Pick<TaskFile, 'id' | 'kind' | 'depends_on'>;
-
-/**
- * 实现类任务：它们硬依赖的测试是"先行验收测试"（实现尚不存在，测试必须先失败）。
- * integration、doc 等任务依赖测试只表示先后顺序（例如对已完成功能的回归测试），不算。
- */
-const IMPLEMENTING_KINDS: ReadonlySet<string> = new Set(['impl', 'infra']);
-
-/**
- * 先行验收测试：kind=test，且有实现类任务（impl、infra）硬依赖它（测试先于实现写好）。
- * 它审查通过后必须先失败，确认后不单独合入，由"承载者"从它的分支末端开工并一并合入。
- */
-/**
- * 关闭先行验收测试（默认）时的校验：测试任务不能被同阶段的实现任务硬依赖。
- * 实施者为自己的功能边写边测；跨模块的联调、端到端测试放在后面的阶段，对着已实现的功能写。
- */
-export function leadingTestErrors(tasks: readonly LeadTask[]): string[] {
-  return tasks.filter((t) => isLeadingTest(t, tasks)).map((t) => {
-    const users = tasks.filter((x) => IMPLEMENTING_KINDS.has(x.kind) && hasHard(x, t.id)).map((x) => x.id);
-    return `${t.id}：本项目不用"先行验收测试"（${users.join('、')} 硬依赖这个测试任务）。请把测试并入实现任务：由实施者为自己的功能写测试并跑通（writes 加上该模块的测试目录，验收标准写明要测什么）；跨模块的联调、端到端测试放到后面的阶段交给 test-engineer。确需先行验收测试时，用户可在 workflow.yaml 设 testing.leading_tests: true`;
-  });
-}
-
-export function isLeadingTest(t: LeadTask, tasks: readonly LeadTask[]): boolean {
-  return t.kind === 'test' && tasks.some((x) => IMPLEMENTING_KINDS.has(x.kind) && hasHard(x, t.id));
-}
-
-/** 先行测试的承载者：非 test 硬依赖方中，不（传递）依赖其他依赖方的、编号最小的那个 */
-export function carrierOf(test: LeadTask, tasks: readonly LeadTask[]): string | null {
-  const deps = tasks.filter((x) => IMPLEMENTING_KINDS.has(x.kind) && hasHard(x, test.id)).sort(byIdOrder);
-  const ids = new Set(deps.map((x) => x.id));
-  const byId = new Map(tasks.map((x) => [x.id, x]));
-  const reaches = (from: string, seen = new Set<string>()): boolean => {
-    for (const d of byId.get(from)?.depends_on ?? []) {
-      if (ids.has(d.task)) return true;
-      if (!seen.has(d.task)) { seen.add(d.task); if (reaches(d.task, seen)) return true; }
-    }
-    return false;
-  };
-  return deps.find((x) => !reaches(x.id))?.id ?? deps[0]?.id ?? null;
-}
-
-/** 任务承载的先行测试（它的 worktree 从该测试的分支末端建立） */
-export function carriedTestOf<T extends LeadTask>(t: LeadTask, tasks: readonly T[]): T | undefined {
-  if (t.kind === 'test') return undefined;
-  return tasks.find((x) => x.kind === 'test' && hasHard(t, x.id) && carrierOf(x, tasks) === t.id);
-}
-
-/**
- * 规范化先行验收测试（flow_propose_tasks 提交时执行）：
- * - 每个先行测试只由一个承载者硬依赖，其余硬依赖它的任务改为硬依赖承载者（测试随承载者合入后才可见）；
- * - 一个任务最多承载一个先行测试；先行测试必须有 verify 命令（程序要运行它确认先失败）。
- */
-export function normalizeLeadingTests<T extends DagTask>(input: readonly T[]): { tasks: T[]; notes: string[]; errors: string[] } {
-  const tasks = input.map((t) => ({ ...t, depends_on: t.depends_on.map((d) => ({ ...d })) }));
-  const notes: string[] = [];
-  const errors: string[] = [];
-  const carried = new Map<string, string[]>();
-  for (const test of [...tasks].sort(byIdOrder)) {
-    if (!isLeadingTest(test, tasks)) continue;
-    if (!test.verify.length) errors.push(`${test.id}：先行验收测试必须有 verify 命令（例如 test），程序要运行它确认测试在实现前失败`);
-    const carrier = carrierOf(test, tasks)!;
-    carried.set(carrier, [...(carried.get(carrier) ?? []), test.id]);
-    for (const x of tasks) {
-      if (x.id === carrier || !hasHard(x, test.id)) continue;
-      x.depends_on = x.depends_on.filter((d) => d.task !== test.id);
-      const toCarrier = x.depends_on.find((d) => d.task === carrier);
-      const reason = `验收测试 ${test.id} 随 ${carrier} 一并合入`;
-      if (toCarrier) Object.assign(toCarrier, { type: 'hard', reason: toCarrier.reason?.trim() ? toCarrier.reason : reason });
-      else x.depends_on.push({ task: carrier, type: 'hard', reason });
-      notes.push(`${x.id} 对 ${test.id} 的硬依赖改为硬依赖 ${carrier}（${reason}）`);
-    }
-  }
-  for (const [carrier, tests] of carried) {
-    if (tests.length > 1) errors.push(`${carrier} 同时承载多个先行验收测试（${tests.join('、')}）：一个验收测试任务对应一个实现任务，请合并这些测试任务或拆分实现任务`);
-  }
-  return { tasks, notes, errors };
 }
 
 /** 返回环上的任务 id 序列（首尾相同），无环返回 null。所有依赖类型都参与环检测。 */
@@ -337,10 +245,10 @@ export function dagReport(tasks: readonly (StatTask & { stage?: string })[], war
   const s = dagStats(tasks);
   const w = [...warnings];
   if (s.taskCount >= 4 && s.criticalPathLength / s.taskCount > CRITICAL_PATH_RATIO) {
-    w.push(`关键路径 ${s.criticalPathLength} / 任务数 ${s.taskCount}：硬依赖可能用多了。能对着契约或 mock 先做的，改为软依赖并配 integration 任务。`);
+    w.push(`关键路径 ${s.criticalPathLength} / 任务数 ${s.taskCount}：硬依赖可能用多了。只在真的需要对方的代码时才加依赖，让互不依赖的模块并行。`);
   }
   for (const h of serialHeads(tasks)) {
-    w.push(`${h.stage ? `阶段 ${h.stage} ` : ''}开头 ${h.chain.length} 层只能串行（${h.chain.join(' → ')}），这段时间只有一个任务在跑：把底座任务合并成一个，或让后续切片对着契约开发（软依赖 + integration），尽早并行。`);
+    w.push(`${h.stage ? `阶段 ${h.stage} ` : ''}开头 ${h.chain.length} 层只能串行（${h.chain.join(' → ')}），这段时间只有一个任务在跑：把底座合并成一个模块，让其他模块尽早并行。`);
   }
   return {
     task_count: s.taskCount, critical_path: s.criticalPath, critical_path_length: s.criticalPathLength,

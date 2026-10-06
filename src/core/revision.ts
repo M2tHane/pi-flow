@@ -4,11 +4,10 @@
 import type { FlowConfig } from './config.ts';
 import type { StateStore, TaskInput } from './state-store.ts';
 import type { Dependency, RevisionFile, RevisionTask, TaskFile } from './schemas.ts';
-import { leadingTestErrors, normalizeLeadingTests, validateDag } from './dag.ts';
+import { validateDag } from './dag.ts';
 import { isSettled } from './state-machine.ts';
 import { DESIGN_STAGES, EXECUTION_STAGE } from '../modes/plan.ts';
 import { removeWorktree } from './worktree.ts';
-import { CONTRACTS_PATH } from './paths.ts';
 
 export interface RevisionDeps { root: string; store: StateStore; config: FlowConfig }
 
@@ -111,14 +110,7 @@ export function checkRevision(config: FlowConfig, flowStages: readonly string[],
     const at = flowStages.indexOf(t.stage);
     if (at < 0 || at < cur || DESIGN_STAGES.has(t.stage)) errors.push(`${t.id}：stage ${t.stage} 不合法，只能是 ${flowStages.slice(cur).filter((s) => !DESIGN_STAGES.has(s)).join('、')}`);
     if (['merge-fix', 'review-fix', 'analysis'].includes(t.kind)) errors.push(`${t.id}：kind ${t.kind} 不能用于新增任务`);
-    if (t.role === 'orchestrator' || t.role === 'reviewer') errors.push(`${t.id}：角色 ${t.role} 不能承担任务`);
-    // 改 API 文档：契约锁定后只有标了 contract_change 的文档任务能写 docs/contracts/
-    const writesContracts = t.writes.some((w) => w === CONTRACTS_PATH || w.startsWith('docs/contracts'));
-    if (writesContracts && !t.contract_change) errors.push(`${t.id}：要写 docs/contracts/，请标 contract_change: true（改 API 文档的任务）`);
-    if (t.contract_change) {
-      if (t.kind !== 'doc') errors.push(`${t.id}：改 API 文档的任务 kind 必须是 doc`);
-      if (!t.writes.every((w) => w.startsWith('docs/'))) errors.push(`${t.id}：改 API 文档的任务只能写 docs/ 下的文件（实现的修改另建任务，硬依赖它）`);
-    }
+    if (t.role === 'orchestrator' || t.role === 'acceptor') errors.push(`${t.id}：角色 ${t.role} 不能承担任务`);
     for (const d of t.depends_on) if (!byId.has(d.task) && !input.add.some((x) => x.id === d.task)) errors.push(`${t.id}：依赖的任务 ${d.task} 不存在`);
   }
   const touched = new Map<string, string>();
@@ -145,38 +137,16 @@ export function checkRevision(config: FlowConfig, flowStages: readonly string[],
   for (const t of merged) {
     for (const d of t.depends_on) if (cancelled.has(d.task)) errors.push(`${t.id} 依赖被取消的 ${d.task}：请一并调整它的依赖或取消它`);
   }
-  if (config.raw.testing?.leading_tests !== true) {
-    const before = new Set(leadingTestErrors(tasks.filter((t) => t.status !== 'cancelled' && !t.replan)));
-    errors.push(...leadingTestErrors(merged).filter((e) => !before.has(e)));
-  }
-  const lead = normalizeLeadingTests(merged);
-  errors.push(...lead.errors.filter((e) => !normalizeLeadingTests(tasks.filter((t) => t.status !== 'cancelled' && !t.replan)).errors.includes(e)));
   const notes: string[] = [];
-  const finalRewire = new Map(rewired);
   const back = Object.fromEntries(Object.entries(mapping).map(([n, t]) => [t, n]));
-  const finalAdd = input.add.map((t) => ({ ...t }));
-  for (const t of lead.tasks) {
-    const before = merged.find((x) => x.id === t.id)!;
-    if (JSON.stringify(before.depends_on) === JSON.stringify(t.depends_on)) continue;
-    if (back[t.id]) {
-      const inv = Object.fromEntries(Object.entries(mapping).map(([n, real]) => [real, n]));
-      finalAdd.find((x) => x.id === back[t.id])!.depends_on = t.depends_on.map((d) => ({ ...d, task: inv[d.task] ?? d.task }));
-    } else if (NOT_STARTED.has(byId.get(t.id)!.status)) {
-      finalRewire.set(t.id, t.depends_on);
-    } else {
-      errors.push(`${t.id} 已开始，不能按先行验收测试规则调整它的依赖`);
-      continue;
-    }
-    notes.push(`${back[t.id] ?? t.id} 的依赖按"先行验收测试由一个实现任务承载"调整为：${t.depends_on.map((d) => `${back[d.task] ?? d.task}${d.type === 'soft' ? '~' : ''}`).join(',')}`);
-  }
   const baseline = validateDag(tasks.filter((t) => t.status !== 'cancelled' && !t.replan), config.dagCatalog()).errors;
-  const v = validateDag(lead.tasks, config.dagCatalog());
+  const v = validateDag(merged, config.dagCatalog());
   errors.push(...v.errors.filter((e) => !baseline.includes(e)).map((e) => e.replace(/T-\d{3,}/g, (id) => back[id] ? `${back[id]}` : id)));
 
   // 保存时依赖仍用临时编号（N-xxx），批准时按当时的任务重新编号
   const revision: RevisionInput = {
-    add: finalAdd,
-    rewire: [...finalRewire].map(([task, depends_on]) => ({ task, depends_on: depends_on.map((d) => ({ ...d, task: back[d.task] ?? d.task })) })),
+    add: input.add.map((t) => ({ ...t })),
+    rewire: [...rewired].map(([task, depends_on]) => ({ task, depends_on: depends_on.map((d) => ({ ...d, task: back[d.task] ?? d.task })) })),
     cancel: input.cancel,
   };
   const summary = [
@@ -192,7 +162,7 @@ export function formatRevision(rev: RevisionFile): string {
   return [
     `计划修订（由 ${rev.task} 提出，原因：${rev.reason}）：`,
     ...(rev.impact ? [`影响分析：${rev.impact}`] : []),
-    ...rev.add.map((t) => `+ ${t.id} [${t.stage}/${t.kind}]${t.contract_change ? '【改 API 文档】' : ''} ${t.title}（${t.role}）writes: ${t.writes.join(', ')}${t.depends_on.length ? `；依赖 ${t.depends_on.map((d) => `${d.task}${d.type === 'soft' ? '~' : ''}`).join(',')}` : ''}`),
+    ...rev.add.map((t) => `+ ${t.id} [${t.stage}/${t.kind}] ${t.title}（${t.role}）writes: ${t.writes.join(', ')}${t.depends_on.length ? `；依赖 ${t.depends_on.map((d) => `${d.task}${d.type === 'soft' ? '~' : ''}`).join(',')}` : ''}`),
     ...rev.rewire.map((r) => `~ ${r.task} 依赖改为 ${r.depends_on.map((d) => `${d.task}${d.type === 'soft' ? '~' : ''}`).join(',') || '无'}`),
     ...rev.cancel.map((c) => `- 取消 ${c.task}：${c.reason}`),
   ].join('\n');

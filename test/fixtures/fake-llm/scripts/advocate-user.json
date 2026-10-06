@@ -1,0 +1,6 @@
+{ "steps": [
+  { "tool_calls": [ { "name": "flow_claim", "arguments": {} } ] },
+  { "tool_calls": [ { "name": "flow_note", "arguments": { "text": "用户视角：待办要能按日期排序，删除前要确认" } } ] },
+  { "tool_calls": [ { "name": "flow_submit", "arguments": { "summary": "用户视角的意见" } } ] },
+  { "text": "完成" }
+] }

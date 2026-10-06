@@ -43,17 +43,17 @@ function startDriver(p: Project, settings: object): ChildProcess {
 function recoveryEngine(p: Project, store: StateStore, settings: object) {
   return new Engine({
     root: p.dir, store, config: p.config, launcher: new PiLauncher(), roleSettings: () => settings as never,
-    packageAgentsDir: path.join(ROOT, 'agents'), subagentExtension: path.join(ROOT, 'src/pi-adapter/subagent.ts'),
+    packageAgentsDir: [path.join(ROOT, 'agents'), path.join(ROOT, 'test/fixtures/agents')].join(path.delimiter), subagentExtension: path.join(ROOT, 'src/pi-adapter/subagent.ts'),
     extraExtensions: () => [path.join(ROOT, 'test/fixtures/fake-llm/provider.ts')],
   });
 }
 
-const GOOD = { version: 1, roles: { 'backend-engineer': { model: 'fakellm/impl-happy' }, reviewer: { model: 'fakellm/review-pass' } } };
+const GOOD = { version: 1, roles: { 'backend-engineer': { model: 'fakellm/impl-happy' } } };
 
 test('任务进行中强杀引擎：残留 pi 子进程被清理，任务在原 worktree 上重新派发并完成', { skip: !piAvailable && 'pi 不可用', timeout: 300_000 }, async () => {
   const p = await setupProject({ tasks: [mkTask('T-001', { verify: ['test'] })] });
   try {
-    const driver = startDriver(p, { version: 1, roles: { 'backend-engineer': { model: 'fakellm/impl-slow' }, reviewer: { model: 'fakellm/review-pass' } } });
+    const driver = startDriver(p, { version: 1, roles: { 'backend-engineer': { model: 'fakellm/impl-slow' } } });
     drivers.push(driver);
     let pid = 0;
     await until(() => {
@@ -119,10 +119,12 @@ test('合并进行中强杀引擎：合并回滚到队首，重启后完成合�
 });
 
 test('引擎所在的 pi 收到 SIGTERM：结束它拉起的 subagent，不留孤儿进程；/flow resume 照常恢复', { skip: !piAvailable && 'pi 不可用', timeout: 240_000 }, async () => {
-  const p = await setupProject({ tasks: [mkTask('T-001', { verify: ['test'] })] });
+  // 旧角色只在测试夹具里：放进项目的 .pi/agents 覆盖目录（主会话扩展只读包内 agents/）
+  const p = await setupProject({ tasks: [mkTask('T-001', { verify: ['test'] })],
+    files: { '.pi/agents/backend-engineer.md': readFileSync(path.join(ROOT, 'test/fixtures/agents/backend-engineer.md'), 'utf8') } });
   const agentDir = mkdtempSync(path.join(tmpdir(), 'pi-flow-agentdir-'));
   try {
-    writeFileSync(path.join(agentDir, 'pi-flow.json'), JSON.stringify({ version: 1, roles: { 'backend-engineer': { model: 'fakellm/impl-slow' }, reviewer: { model: 'fakellm/review-pass' } } }));
+    writeFileSync(path.join(agentDir, 'pi-flow.json'), JSON.stringify({ version: 1, roles: { 'backend-engineer': { model: 'fakellm/impl-slow' } } }));
     const provider = path.join(ROOT, 'test/fixtures/fake-llm/provider.ts');
     const main = spawn('pi', ['-p', '--no-session', '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-context-files',
       '-e', provider, '-e', path.join(ROOT, 'src/pi-adapter/extension.ts'), '/flow next'], {

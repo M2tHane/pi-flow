@@ -3,7 +3,7 @@
 把"个人开发一个中型项目"的工作流固化成 [Pi](https://pi.dev) 插件。
 
 - **程序负责调度、守卫、验收和合并**：选哪个任务、派给哪个角色、并行几个、何时合并，都由代码决定；状态只由程序写入 `.flow/`，每次转移都追加带哈希链的事件并提交 git。
-- **LLM 只负责与你沟通和完成各自的任务**：每个角色（架构、后端、前端、测试、审查等）在独立的 pi 子进程和独立的 git worktree 中工作，只能使用本角色的工具、只能写本任务允许的文件。
+- **LLM 只负责与你沟通和完成各自的任务**：每个角色（需求讨论、原型、规划、模块实现、独立验收）在独立的 pi 子进程和独立的 git worktree 中工作，只能使用本角色的工具、只能写本任务允许的文件。
 - **人工闸门只有你能批准**：任何 agent 都没有批准阶段闸门的工具。
 - **会话可以随时中断**：恢复只依赖 `.flow/` 与 git，不依赖对话历史。
 
@@ -85,7 +85,7 @@ pi                          # 正常启动 pi，pi-flow 随之加载
 
 - 开始流程后，当前会话进入**调度模式**：切换到 orchestrator 的模型，你只和主 agent 对话，它向你汇报进度、转达你的修改要求；写代码的是后台的各个角色。`/flow-status` 随时看进度，`/flow off` 退出调度模式（流程不受影响）。
 - 关掉 pi 后流程不会丢：重新打开 pi，执行 `/flow-resume` 接着做。
-- **已有项目请先改 `workflow.yaml` 的 `commands`**：模板写的是 pnpm 命令（`pnpm test` 等），换成你项目真实的安装、类型检查、lint、测试命令。新项目可以不改：S1 阶段 architect 会按选定的技术栈起草命令和规则，你批准时一并应用。
+- **已有项目请先确认 `workflow.yaml` 的 `commands`**：模板写的是 pnpm 命令，规划阶段 architect 会按项目的技术栈起草命令（`docs/rules-draft/commands.yaml`），你批准规划时一并应用；也可以自己先改。
 - 只是小改动（单文件、几十行）时不必走流程，直接用 pi 即可：pi-flow 只在你执行它的命令后才接管会话。
 
 ### 为各角色选择模型：`/flow-config`
@@ -97,75 +97,55 @@ pi                          # 正常启动 pi，pi-flow 随之加载
 ```
 /flow-config show                                       查看各角色的模型与来源
 /flow-config models                                     列出可用模型及支持的思考级别
-/flow-config set reviewer Workbuddy/glm-5.3-flash high
-/flow-config set scout default low                      模型用 workflow.yaml 默认，只改思考级别
-/flow-config unset reviewer | all
+/flow-config set designer google/gemini-3-pro high      例如原型交给前端审美好的模型
+/flow-config set acceptor default low                   模型用 workflow.yaml 默认，只改思考级别
+/flow-config unset designer | all
 ```
 
 ---
 
-## 三种工作模式
+## 流程
 
-### 开始之前：需求访谈
+### 1. 新项目：`/flow-build ["<想法>"]`
 
-三个入口命令（`/flow-build`、`/flow-build --feature`、`/flow-fix`）默认先和你**访谈**：当前会话一次问一个问题并给出建议答案，把谈定的内容记成需求摘要（新项目问目标、用户与场景、功能范围、非目标、验收标准、约束；功能问目标、非目标、验收标准、影响模块、是否改契约；修复问现象、复现步骤、期望与实际行为、出现范围）。清单问完后，由你执行 `--confirm` 才开工，摘要交给后续的角色作为输入。
-
-- `--direct "<描述>"`：跳过访谈直接开始。
-- `--from <文件>`：用写好的需求文档直接开始。
-- `--cancel`：放弃当前访谈。
-
-访谈期间会话只能读 `docs/` 下的文档和记录需求，不能写文件或执行命令。
-
-### 1. 新项目：`/flow-build ["<项目描述>"]`
-
-在一个 git 仓库中执行（空仓库也可以，会自动 `/flow init`）。访谈确认后，流程按阶段推进，每个阶段内的任务由程序按 DAG 调度：
+在一个 git 仓库中执行（空仓库也可以，会自动 `/flow init`）。不给描述时由主 agent 先问你想做什么。流程分四个阶段，用户界面显示为 **需求 → 原型 → 规划 → 实施 → 完成**：
 
 | 阶段 | 内容 | 闸门 |
 |---|---|---|
-| S0 需求 | architect 依据访谈摘要写 `docs/PRD.md`。仍有疑问时任务转为阻塞并提一个问题，你用 `/flow answer` 回答 | **你批准**（或 `/flow-reject "<意见>"` 打回修订） |
-| S1 架构 | architect 写 ARCHITECTURE、ADR、契约（只写模块之间的边界，前端组件之间的装配不写；每个模块一个文件，写到函数级：对外函数的名字、参数、返回值、可能的错误；REST 接口写路径、请求响应与错误码；任务的输入列出依赖的契约条目），提交任务 DAG（需求没说清、有合理默认方案的地方不再停下来问你，而是作为"按默认方案处理的地方"在批准时列出，不同意就 /flow-reject；显示任务数、关键路径、并行宽度、硬依赖占比；开头几层只能串行或关键路径过长时提醒 architect 调整，让任务尽早并行），并针对选定的技术栈写规则与命令草案 | **你批准** + typecheck。批准后契约变为只读，任务正式创建；草案由你选择是否应用到 `rules/` 与 `workflow.yaml` |
-| S2 基础设施 | 脚手架、依赖、迁移框架 | install、typecheck、lint |
-| S3 切片 | 实现任务，实施者边写边测；粒度跟实施模型走：强模型按模块或按层拆大任务，小项目每个角色一个任务，弱模型按功能切片拆小任务；任务之间对着契约并行（软依赖） | 全部任务完成 + test |
-| S4 集成 | 端到端测试 | e2e |
-| S5 发布 | — | **你批准**，随后集成分支合入主分支 |
+| D0 需求 | 两个只读的 advocate 并行各写一份意见（user-advocate 从使用者角度、dev-advocate 从实现与已有代码角度），程序再派 analyst 读两份意见写 `docs/requirements.md`：功能、验收标准（A-1、A-2……）、非目标、界面风格与理由、要不要原型 | **你批准**；`/flow-reject "<意见>"` 让 analyst 接着原会话改，可以来回多次。批准时可加 `--prototype` / `--no-prototype` 改变是否做原型 |
+| D1 原型 | designer 按需求里定下的风格写 `prototype/*.html` 与导航页（无框架、无构建，浏览器直接打开）。没有界面或你选择不要时跳过，状态栏显示"原型（跳过）" | **你批准**（或打回修改） |
+| D2 规划 | architect 写 `docs/modules.md`（模块划分）、`docs/interfaces/<模块>.md`（只写模块之间的调用）、项目专属规则草案 `docs/rules-draft/project.md`、命令草案与 `AGENTS.md`，然后用 `flow_propose_modules` 提交模块：每个模块一个任务，带可写范围、负责的验收标准、依赖、登记的公共文件（路由注册、菜单等多个模块都要追加的文件）。模块大小跟实现者的模型走：强模型一个模块可以是一块完整的业务功能 | **你批准**；批准时程序把规则草案写成 `rules/project.md`、应用命令草案（`--rules none` 不应用） |
+| E 实施 | 每个模块交给一个 implementer，在自己的 worktree 里写前端、后端和测试；互不依赖的模块并行。模块完成后合并、独立验收（见下） | 全部模块验收通过 + 全量测试 + **你批准**，随后集成分支合入主分支 |
 
-每个任务的生命周期（默认）：派发 → 实施（独立 worktree，边写边测）→ 提交（程序检查改动是否越界）→ 合并队列（串行：squash、rebase 到集成分支最新、跑**全量** typecheck、lint、test、快进集成分支）。队列里同时有几个任务时最多 3 个一起叠加、只跑一次全量测试（`limits.merge_batch`），失败再逐个合并找出是哪个的问题。全量测试不过就带着失败日志退回实施者，接着上一次的对话修。任务按契约改了接口、让别的角色已有的测试失败时，实施者可以直接修改那些已有测试来适配（`testing.adjust_tests`，默认开；只能改不能增删，改过哪些记在任务上，审查时核对没有削弱）。不逐个审查任务。
+**模块的生命周期**：
+1. **分步开发**：implementer 每完成一部分就在 worktree 里本地 `git commit`，并更新 notes。进程被杀后 `/flow-resume`，工作区和本地提交都在，接着原会话继续。需要依赖的模块刚合入的代码、或想提前发现冲突时，调用 `flow_sync` 把集成分支最新代码合进来，有冲突就在工作区里解决后再调用一次。
+2. **合并**：整个模块完成后 `flow_submit`，进入合并队列（串行）：squash、rebase 到集成分支最新、跑**全量** typecheck、lint、test 和可选的 `commands.merge_check`（例如迁移只能有一个 head），通过后快进集成分支。队列里同时有几个模块时最多 3 个一起叠加、只跑一次全量测试（`limits.merge_batch`），失败再逐个合并。失败就带着日志退回同一会话修。别的模块已有的测试因为接口变化而失败时，implementer 可以直接修改那些已有测试来适配（`testing.adjust_tests`，默认开；只能改不能增删，改过哪些记在任务上）。
+3. **独立验收**：合并后程序派一个 acceptor，在集成分支最新代码上构建、启动、实际调用，按模块负责的验收标准逐条给出"通过 / 未通过 + 证据"（`flow_accept`）。没通过的条目交回 implementer 的会话修复，合并后 acceptor 只复查没通过的条目（`flow_accept_confirm`，不能提新问题）。两轮修复仍不过就列进"需要你处理"：你可以 `/flow replan` 调整，或者确认可以接受后 `/flow accept <任务>` 放行。依赖这个模块的模块等它验收通过才开工。
+4. **阶段闸门**：全部模块验收通过后跑全量测试；失败时程序从日志里找出出错的文件，交给负责的模块修，最多两轮，仍失败就转"需要你处理"（处理后 `/flow gate` 重跑）。
 
-**阶段末审查一次**（`review.stage_end`，默认开启）：实施阶段（S2、S3 等；只含联调、测试任务的阶段默认跳过，`review.test_stages` 可改为 light 或 strong）的任务全部合入后，程序按下面的顺序收尾，全部由程序推进：
-1. **审查**（按角色分批，不必等整个阶段：某个角色在本阶段的任务全部合入就开一批，和其他角色还在做的任务并行）：派一个强模型 reviewer 读这批任务的全部代码，对照契约、规则和各任务的验收标准，用 `flow_review_report` 一次提交带编号的问题清单（R-1、R-2……，每条写模块、位置、问题、期望的修改、涉及的文件）。只提违反契约、规则、验收标准的问题和明确的缺陷，不提风格偏好；涉及契约、受保护文件或没有角色能写的文件会被工具拒绝。
-2. **按模块并行修复**：程序按模块和负责的角色把清单拆成修复任务（`review-fix`），并行派发；每个修复任务只拿到自己那几条，只能改相关文件，合并时照样跑全量测试。修复时发现契约漏了需要的条目、补上又不改变需求，可以直接在契约里**新增**（程序拒绝修改或删除已有内容），确认时审查者会核对这些补充；要改已有接口才走计划修订。
-3. **确认**：修复全部合入后，reviewer 用 `flow_review_confirm` 对每个编号回答"已解决 / 未解决"。这个工具只接受清单里已有的编号，参数里没有提新问题的位置（多写字段会被参数校验拒绝）。未解决的只再修**一轮**，不再确认。
-4. **全量测试**：跑阶段闸门的命令。失败时程序从失败日志里找出出错的文件，交给负责的模块修，最多两轮；还失败就在"需要你处理"里列出（可以用 `/flow replan` 交给 architect 安排修复，或处理后 `/flow gate` 重跑）。
+**跨模块接口**：`docs/interfaces/` 在实施中只能**追加**（程序拒绝修改或删除已有内容）；要改已有接口走计划修订。
 
-`/flow-status` 会显示"阶段审查：发现 3 个问题，按模块分成 2 个修复任务并行修复中"之类的进展；`--detail` 列出每条问题和确认结果。
-
-设计阶段（S0、S1、F0、F1）的文档与 fix 流程照旧逐任务审查。想恢复以前每个任务都审查的做法，在 `workflow.yaml` 设 `review.per_task: true`：提交 → verify（失败直接退回，不派审查）→ 审查（只读 reviewer）→ 合并队列（合并后只跑任务 verify 里的命令，测试优先跑受影响的）。
-
-**集成分支跟上主分支**：每个阶段开始时，程序把主分支（你在流程期间的提交、fix 合入的修复）合并进集成分支，与合并队列互斥，只有状态提交（`.flow/`）时不合并。有冲突时：
-- 冲突文件都在某个角色的可写范围内：程序保留含冲突标记的合并结果，生成 merge-fix 任务解决，审查、验证后合入，集成分支保留与主分支的合并关系；
-- 涉及契约或受保护路径，或没有角色能写：暂停派发新任务，在"需要你处理"中提示。你在集成分支上合并主分支并解决冲突后，执行 `/flow sync` 恢复。
-
-这样冲突在流程中途就被处理，最终合入主分支时不再爆发。
-
-**测试：实施者边写边测，合并后跑全量**：每个功能是一个实现任务，实施者实现功能的同时为它写测试（放在自己可写范围内的测试目录，覆盖任务的每条验收标准），写一部分跑一部分，提交前跑通。合并进集成分支前，程序在 rebase 后的代码上跑全量测试；每个阶段结束时，闸门再跑一次。跨模块的联调与端到端测试放在最后的阶段，由 test-engineer 对着已经实现的功能写。审查者检查实施任务是否带了覆盖验收标准的测试。
-
-> 以前的做法是"先由 test-engineer 写验收测试（必须先失败），再由实施者实现"。真实冒烟中，这些先于实现写的测试跑不出对错，写错了只能靠审查读出来，是返工的最大来源，所以默认关闭。确实需要时，在 `workflow.yaml` 设 `testing.leading_tests: true`：测试任务会被要求先失败，然后由硬依赖它的实现任务一并带入集成分支。
+**集成分支跟上主分支**：每个阶段开始时，程序把主分支（你在流程期间的提交、fix 合入的修复）合并进集成分支，与合并队列互斥。冲突文件都在某个模块的可写范围内时，生成 merge-fix 任务解决；涉及受保护路径或没有模块能写时，暂停派发并在"需要你处理"中提示，你解决后 `/flow sync` 恢复。
 
 ### 2. 加功能：`/flow-build --feature ["<功能描述>"]`
 
-在已有项目上加一个中等规模的功能：F0 功能说明（你批准）→ F1 影响面分析与本功能 DAG（你批准 + typecheck）→ S3 实施 → S4 新功能验收测试 + 全量回归（你批准，随后合入主分支）。跳过 S2。
+流程相同。dev-advocate 会先读已有代码再发表意见；D1 视情况跳过；D2 只规划这次涉及哪几个模块、各改什么、各负责哪些验收标准。
 
 ### 3. 修复：`/flow-fix ["<问题描述>"]`
 
-不建 DAG，由程序依次派发：
-
-1. **scout** 只读定位：问题位置、根因假设、需要改的文件、建议的实施角色。
-2. **升级判断**：需要改契约、或预计改动超过 `fix_max_files` 个文件时暂停，建议改用 `/flow-build --feature`；你决定 `/flow-approve`（仍按修复）或 `/flow abort`。
-3. **test-engineer** 写复现测试，程序运行它并**要求失败**。
-4. 实施角色在复现测试的基础上修复，只能改 scout 给出的文件。
-5. 审查、verify 后**直接合入主分支**，写 `.flow/fixes/<日期>-<序号>.md`（问题、根因、改动、验证结果、成本）。
+不建 DAG，由程序依次推进：一个 implementer 定位并修复，同时加回归测试 → 合并（全量测试，直接合入主分支）→ acceptor 复现确认已修好（不过就交回 implementer 的会话修，两轮仍不过转"需要你处理"）→ 写 `.flow/fixes/<日期>-<序号>.md`（问题、改动、验收结果、成本）。预计改动超过 `limits.fix_max_files` 个文件时暂停，建议改用 `/flow-build --feature`；你决定 `/flow-approve`（仍按修复）或 `/flow abort`。
 
 没有进行中的流程时可以随时修复；build/feature 流程等待你审批时也可以修复（会请你确认）。
+
+### 中途追加需求：`/flow-add "<需求>"`
+
+子进程以 RPC 方式运行（`pi --mode rpc`），追加的需求直接送进正在做的模块的会话（steer），同时写进该模块 notes 的目标。只有一个模块在做时自动送给它；有多个时交给 architect 判断归哪个模块或新增模块（`--task <任务>` 可以直接指定）。在调度模式下直接告诉主 agent 也可以。
+
+### notes 与 history
+
+所有 agent（包括主 agent）都有两个工具：
+- **notes**：结构化笔记（goal、current、done、todo、决定、坑），每次请求由程序原样放回上下文末尾（不改系统提示，不影响缓存）。任务开始时程序填好目标与验收标准，之后由模型自己维护。上下文用到 `context.compact_at`（默认 70%）时压缩，压缩前提醒先更新笔记，压缩后笔记原样还在。
+- **history**：检索完整的会话历史（subagent 查本任务所有运行，返工前的也能查到；主 agent 查主会话），压缩掉的细节可以查回来。
 
 ---
 
@@ -173,19 +153,21 @@ pi                          # 正常启动 pi，pi-flow 随之加载
 
 | 命令 | 作用 |
 |---|---|
-| `/flow-status` | 当前处于哪个阶段（需求 → 规划 → 实施 → 验收 → 完成）、进度、正在做什么；需要你处理的事排在最上面 |
-| `/flow-status --detail` | 完整的任务列表与内部状态（底层阶段、任务 DAG、失败原因） |
+| `/flow-status` | 当前处于哪个阶段（需求 → 原型 → 规划 → 实施 → 完成）、进度、正在做什么；需要你处理的事排在最上面 |
+| `/flow-status --detail` | 完整的任务列表与内部状态（底层阶段、任务 DAG、失败原因、验收结果） |
 | `/flow-status --cost` | 按流程、阶段、角色、模型、任务汇总 token 与耗时；返工最多的任务；修复日志 |
 | `/flow next` | 由程序选择 ready 任务并派发 |
-| `/flow-approve [--yes]` | 批准当前阶段闸门（仅你可以）；有待批准的计划修订时先批准修订。最后一个阶段会把集成分支合入主分支 |
-| `/flow-reject "<意见>"` | 打回设计阶段（S0/S1/F0/F1），生成修订任务 |
+| `/flow-approve [--yes]` | 批准当前阶段闸门（仅你可以）；有待批准的计划修订时先批准修订。实施阶段批准时把集成分支合入主分支 |
+| `/flow-reject "<意见>"` | 打回需求、原型或规划阶段，写作者接着原会话修改 |
+| `/flow-add "<需求>" [--task <任务>]` | 中途追加需求 |
+| `/flow accept <任务> [--note "<说明>"]` | 验收两轮不过、转"需要你处理"时人工放行这个模块 |
 | `/flow answer [<任务>]` | 回答阻塞任务提出的问题：弹出输入框由你作答，回答交给该任务后它继续 |
 | `/flow unblock <任务> ["<回答>"] [--attempts N]` | 解除阻塞，任务回到 ready（没有交互界面时用它回答） |
 | `/flow gate` | 闸门失败并修复后重跑闸门 |
 | `/flow rules [apply [all\|<草案文件>...]]` | 查看或应用规则与命令草案（`docs/rules-draft/`，来自架构师或知识提升）；由程序写入 `rules/` 与 `workflow.yaml` 并提交 |
 | `/flow budget [tokens\|cost <数值>]` | 查看或设置本流程的预算；用到 80% 时提醒，超出后暂停派发新任务，提高预算后继续 |
 | `/flow models [resume <模型>\|all]` | 查看因额度用完、限流、服务连不上而暂停的模型；`resume` 立即恢复派发（模型名可只写 id） |
-| `/flow replan "<要改什么>"` | 执行中修订计划：architect 起草新增任务、调整或取消未开始的任务，你用 `/flow-approve` 批准（`/flow-reject "<意见>"` 打回重做）。在调度模式下直接告诉主 agent 也可以 |
+| `/flow replan "<要改什么>"` | 执行中修订模块清单：architect 起草（新增模块、调整或取消未开始的模块），你用 `/flow-approve` 批准（`/flow-reject "<意见>"` 打回重做）。在调度模式下直接告诉主 agent 也可以 |
 | `/flow sync` | 把主分支同步进集成分支（每个阶段开始时自动执行）；同步冲突由你处理后用它恢复 |
 | `/flow run [<run_id>]` | 某次子进程运行的工具调用摘要（含被拦下的调用）与最后的回复；不给 id 时列出最近的运行。会话文件保存在 `<项目>.worktrees/.sessions/<run>/` |
 | `/flow knowledge [<搜索词>] [--all]` | 列出、搜索项目知识；`accept <K-编号> ["<改写>"]` 确认候选，`retire <K-编号>...` 废弃，`promote <K-编号>... [--rule <规则名>]` 提升为规则草案 |
@@ -201,67 +183,47 @@ pi                          # 正常启动 pi，pi-flow 随之加载
 需要你处理：无
 
 B-001「做一个待办应用」
-需求 ✓ → 规划 ✓ → [实施] → 验收 → 完成
+需求 ✓ → 原型（跳过） → 规划 ✓ → [实施] → 完成
 
-实施阶段：按任务拆解实现，每个任务跑全量测试后合入集成分支；阶段末统一审查一次、按模块修复
-进度：7 / 11 个任务完成
+实施阶段：一个模块交给一个模型实现，合并时跑全量测试，合并后独立验收
+进度：2 / 4 个任务完成
 
 正在进行：
-- T-008 实现 UserService（backend-engineer）实现中
-- T-009 用户列表页面（frontend-engineer）等待重新派发（第 2 次，上次：审查打回）
+- T-003 看板与卡片（implementer）实现中
+- T-004 用户与登录（acceptor）验收中
 
 阻塞：无
 ```
 
-### 成本控制
+### 成本与模型
 
-- **按风险审查（三档，只在开启逐任务审查 `review.per_task: true` 时，以及设计阶段的文档审查中生效）**：
-  - 低风险：只改文档或测试、改动不超过 3 个文件和 100 行、不涉及契约与 shared，用便宜模型审查（`review.low_risk.model`，取不到时用原来的审查模型）；设 `mode: skip` 则只做程序检查、不派审查。之前失败过的任务不算低风险。
-  - 普通：用 reviewer 自己的模型。模板中 reviewer 默认是**中等档**（以前是强档）。
-  - 高风险：解决合并冲突、改动契约或 shared、改动 `review.high_risk.paths` 中的路径、改动超过 400 行（`review.high_risk.max_lines`），用强模型审查（先行验收测试不算高风险：它必须先失败已由程序在审查前验证，审查用普通档）。强模型取 `/flow-config escalate reviewer <模型>` > `review.high_risk.model` > reviewer 档位的上一档。
-  - 用 `/flow-config` 为 reviewer 显式指定过模型的（例如设成强模型），普通审查就用那个模型；想省成本时把 reviewer 改成中等模型，再用 `/flow-config escalate reviewer <强模型>` 指定高风险审查用的模型。run 记录的 `review_mode` 是 light、full（普通）、strong。同时进行的审查数受 `review.max_parallel` 限制。
-- **返工接着上一次的对话**：任务被打回（审查、验证、合并后验证）后，实施者不再从头开始读任务和代码，而是复制上一次运行的对话（`pi --fork`）接着做，只收到"为什么没通过"和新的临时目录。换了模型（例如失败后升级）或会话太长（超过约 400 KB）时仍从头开始。`limits.continue_session: false` 关闭。run 记录的 `forked_from` 标明接着的是哪次运行。
-- **并发**：模板默认同时进行 3 个实施任务（`limits.max_parallel`，以前是 2），审查另计（`review.max_parallel`，默认 2）。实施用本地模型时，确认本地服务能承受这么多并发请求；已有项目的 `workflow.yaml` 不受影响，需要时自己改。
-- **审查提示直接附 diff**：改动不超过约 2 万字符时，diff 直接放进审查提示（第二轮起只附上次审查之后的改动），审查者不用再花一轮去 `git diff`。`/flow-status --cost` 的每行显示平均每次运行几轮，便于找出来回多的角色。
-- **先验证再审查**：提交后程序先跑 verify，typecheck 或测试不过直接退回实施者，不派审查；先行验收测试、复现测试在这一步确认"先失败"。通过后再派审查，审查通过时代码没变，就沿用这次结果，不重跑。`review.verify_first: false` 可恢复旧顺序（审查通过后才跑 verify）。
-- **多轮审查只核对上次的问题**：任务被审查打回后，下一轮审查的提示附上上次打回的问题清单和之后的改动（`git diff <上次审查的提交> HEAD`），要求审查者先逐条核对，只为"上次的问题没解决"或"新改动引入的明确缺陷"打回，新的改进建议写在通过时的备注里。可选的 `review.max_rounds` 设轮次上限：到达后只剩建议类问题就通过。
-- **关键底座第一次就用升级模型**：被至少 3 个任务硬依赖的实施任务（`escalation.critical_fanout`，0 关闭）第一次派发就用升级模型。它卡住时后面的任务全部等待，交给弱模型风险太大。
-- **失败后升级模型**：同一任务失败 2 次后（`escalation.after_failures`），下一次实施换成升级模型：`/flow-config escalate <角色> <模型>` 或菜单"设置失败后升级用的模型" > `roles.<角色>.escalate_model` > 上一档（cheap → medium → strong）。run 记录标明升级。
-- **模型额度用完、限流时暂停，不判失败**：子进程因模型额度用完（usage limit、insufficient_quota 等）或暂时不可用（限流、过载、5xx、本地服务没启动）而结束时，任务不计失败、不会被推向阻塞，而是暂停这个模型：用它的实施、审查、升级都先不派发，用其他模型的照常进行。"需要你处理"里会列出被暂停的模型、原因、受影响的角色与任务。恢复方式：错误信息里带恢复时间（如 Codex 的 "Try again in ~120 min"）时到点自动恢复；限流、过载从 5 分钟起自动重试，再失败时间隔加倍（最多 60 分钟）；额度用完又没给时间的等你 `/flow models resume <模型>`；也可以用 `/flow-config` 给受影响的角色换模型，换后立即继续。
-- **预算**：`workflow.yaml` 的 `budget`（tokens 计输入 + 输出、cost 计金额）或 `/flow budget` 为单个流程设置。用到 `warn_ratio`（默认 80%）时在"需要你处理"中提醒，超出后暂停派发新任务（返工与审查照常），提高预算后继续。`/flow-status --cost` 显示用量。
+- **返工接着上一次的对话**：合并失败、验收没通过、会话中断后，implementer 不从头开始，而是复制上一次运行的对话（`pi --fork`）接着做，只收到"为什么没通过"和新的临时目录。换了模型（例如失败后升级）或会话太长（超过约 400 KB）时仍从头开始。`limits.continue_session: false` 关闭。
+- **并发**：模板默认同时进行 3 个模块（`limits.max_parallel`）。实施用本地模型时，确认本地服务能承受这么多并发请求。
+- **失败后升级模型**：同一任务失败 2 次后（`escalation.after_failures`），下一次换成升级模型：`/flow-config escalate <角色> <模型>` 或菜单"设置失败后升级用的模型" > `roles.<角色>.escalate_model` > 上一档（cheap → medium → strong）。`escalation.critical_fanout` 设为 N 时，被至少 N 个模块硬依赖的模块第一次就用升级模型。
+- **模型额度用完、限流时暂停，不判失败**：子进程因模型额度用完或暂时不可用（限流、过载、5xx、本地服务没启动）而结束时，任务不计失败，而是暂停这个模型：用它的任务先不派发，用其他模型的照常进行。"需要你处理"里会列出被暂停的模型、原因、受影响的任务。错误信息里带恢复时间时到点自动恢复；限流、过载从 5 分钟起自动重试（间隔加倍，最多 60 分钟）；额度用完又没给时间的等你 `/flow models resume <模型>`；也可以用 `/flow-config` 换模型。
+- **预算**：`workflow.yaml` 的 `budget`（tokens 计输入 + 输出、cost 计金额）或 `/flow budget` 为单个流程设置。用到 `warn_ratio`（默认 80%）时提醒，超出后暂停派发新任务（返工照常）。
 
 ### 执行中修订计划
 
-实施过程中要改需求、发现漏了功能、或者某个任务拆得不对，直接告诉主 agent（例如"账户要支持多币种"）。主 agent 调用 `flow_replan` 把你的原话交给 architect；不在调度模式时用 `/flow replan "<要改什么>"`。实施者发现 API 文档有缺口、或上游的测试写错时，也会阻塞并写"建议修订计划"，由你转给 architect。
-
-architect 按这个顺序提交修订：
-1. **分析影响**：要改哪些 API 接口和模块，受影响的任务里哪些已完成、哪些在进行、哪些还没开始。这段分析会原样给你看。
-2. **先改 API 文档**：新增一个"改 API 文档"的任务（批准规划后契约是锁定的，只有这种任务能改它）。
-3. **处理受影响的任务**：未开始的取消，换成按新文档实现的新任务；进行中的不打断，做完后再接一个修改任务；已完成的新增修改任务。新任务都等 API 文档改完再开工。
-
-程序校验合并后的任务图（角色、范围、无环、测试方式），在"需要你处理"中列出影响分析和修订内容。修订待批准期间本阶段闸门不运行。你执行 `/flow-approve` 后，程序在一个事务里新增任务（重新编号）、改依赖、取消任务；`/flow-reject "<意见>"` 让 architect 按意见重做。
+实施过程中要改需求、发现漏了功能、或者某个模块划分得不对，直接告诉主 agent。主 agent 调用 `flow_replan` 把你的原话交给 architect；不在调度模式时用 `/flow replan "<要改什么>"`。architect 先写影响分析（要改哪些接口和模块，受影响的模块哪些已完成、在做、没开始），再提交修订：未开始的取消或调整，进行中的做完后接一个修改任务，已完成的新增修改任务。程序校验合并后的任务图（角色、范围、无环），你 `/flow-approve` 后在一个事务里生效。
 
 ### codemode（Pi 0.99 内置）
 
-architect、reviewer、scout 默认启用 Pi 的 codemode：模型可以写一段脚本并行调用 read、serena、codegraph 等工具，在脚本里过滤后只把需要的结果带回，减少来回轮次和上下文。脚本里的每个工具调用都照常经过 pi-flow 的安全检查。需要给其他角色启用时，在 `workflow.yaml` 该角色的 `tools` 中加上 `codemode`。
+architect 默认启用 Pi 的 codemode：模型可以写一段脚本并行调用 read、serena、codegraph 等工具，在脚本里过滤后只把需要的结果带回。脚本里的每个工具调用都照常经过 pi-flow 的安全检查。需要给其他角色启用时，在 `workflow.yaml` 该角色的 `tools` 中加上 `codemode`。
 
 ### 项目知识库
 
-项目在多次流程中积累的经验（约定、踩过的坑、做出的决策、环境与外部依赖的注意事项）保存在 `.flow/knowledge.json`，跨流程保留，build、feature、fix 都会用到。
+项目在多次流程中积累的经验（约定、踩过的坑、做出的决策、环境注意事项）保存在 `.flow/knowledge.json`，跨流程保留。notes 只属于一个任务，知识库跨任务、跨流程，两者互补。
 
-- **谁来写**：
-  - 实施、审查、探查角色用 `flow_learn` 提交，程序去重、限长、检查范围后写入并立即生效，每次运行最多 3 条。
-  - 可选：在 `workflow.yaml` 中设 `knowledge: { auto_candidates: true }`，审查打回意见、合并后验证失败原因会由程序截取为**候选**，在"需要你处理"中提示，由你 `/flow knowledge accept`（可改写）或 `retire`。默认关闭（真实模型冒烟中这些候选多是一次性的细节）。
-  - agent 不能直接改这个文件，它和其他状态文件一样受完整性校验。
-- **怎么用**：派发任务时，程序按任务的 scopes、writes、inputs 选出相关条目，放在子进程系统提示的规则与技能之后，并注明"不是规则，与规则冲突时以规则为准"。条目按编号只追加，新增条目只让它之后的提示缓存失效。下游任务的提示中还会附上它依赖的上游任务的 handoff 摘要。
-- **变成规则**：`/flow knowledge promote K-003 K-007` 把条目追加进规则草案 `docs/rules-draft/<规则名>.md` 并提交，你确认后用 `/flow rules apply` 应用。应用后条目标为"已成为规则"，不再作为知识注入。
-- 访谈新功能或修复时，访谈者会先读相关条目。
+- **谁来写**：各角色用 `flow_learn` 提交，程序去重、限长、检查范围后写入并立即生效，每次运行最多 3 条。可选：`knowledge: { auto_candidates: true }` 时，合并后验证失败的原因会由程序截取为**候选**，由你 `/flow knowledge accept`（可改写）或 `retire`。agent 不能直接改这个文件。
+- **怎么用**：派发任务时，程序按任务的 scopes、writes、inputs 选出相关条目，放在子进程系统提示的规则与技能之后，注明"不是规则，与规则冲突时以规则为准"。条目按编号只追加。下游任务的提示中还会附上上游任务的 handoff 摘要。
+- **变成规则**：`/flow knowledge promote K-003 K-007` 把条目追加进规则草案 `docs/rules-draft/<规则名>.md`，你确认后用 `/flow rules apply` 应用。
 
-高层阶段与底层阶段的对应写在 `workflow.yaml` 每个阶段的 `phase` 字段（discovery、planning、execution、acceptance），可以按需调整。pi-flow 只在进入新阶段、出现需要你处理的事、任务第一次未通过、流程结束时主动提醒你。
+高层阶段与底层阶段的对应写在 `workflow.yaml` 每个阶段的 `phase` 字段（requirements、prototype、planning、execution），可以按需调整。pi-flow 只在进入新阶段、出现需要你处理的事、任务第一次未通过、流程结束时主动提醒你。
 
-调度模式下，终端底部的状态栏实时显示流程、当前阶段、本阶段进度、正在进行的任务和需要你处理的事项数，例如 `pi-flow B-001 实施 · 3/7 · 进行中：T-004 实现中，T-005 审查中`。
+调度模式下，终端底部的状态栏实时显示流程、当前阶段、本阶段进度、正在进行的任务和需要你处理的事项数，例如 `pi-flow B-001 实施 · 1/3 · 进行中：T-002 实现中，T-001 验收中`。
 
-开始流程或执行 `/flow-resume` 后，当前会话进入**调度模式**：会话切换到你在 `/flow-config` 中为 orchestrator 设置的模型，只能查看状态、派发任务和等待结果，不能自己改代码；每轮开头会看到"当前状态与唯一允许的下一步"。ready 的任务默认由程序自动派发（`limits.auto_dispatch`），主 agent 只在任务完成或阻塞、需要你处理、阶段变化时醒来向你汇报，审查、验证、合并这些中间步骤不会唤醒它；主会话的 token 用量记在 `/flow-status --cost` 的 orchestrator 一行（它的"耗时"是会话跨度）。自动派发之后主 agent 只负责沟通，可以用 `/flow-config` 给 orchestrator 选中等模型。流程结束、中止或执行 `/flow off` 后恢复原来的模型与工具。普通的 pi 会话不受影响。
+开始流程或执行 `/flow-resume` 后，当前会话进入**调度模式**：会话切换到你在 `/flow-config` 中为 orchestrator 设置的模型，只能查看状态、派发任务和等待结果，不能自己改代码；每轮开头会看到"当前状态与唯一允许的下一步"。ready 的任务默认由程序自动派发（`limits.auto_dispatch`），主 agent 只在任务完成或阻塞、需要你处理、阶段变化时醒来向你汇报；主会话的 token 用量记在 `/flow-status --cost` 的 orchestrator 一行。流程结束、中止或执行 `/flow off` 后恢复原来的模型与工具。普通的 pi 会话不受影响。
 
 ---
 
@@ -271,10 +233,10 @@ architect、reviewer、scout 默认启用 Pi 的 codemode：模型可以写一�
 |---|---|---|---|
 | `settings.json` | `~/.pi/agent/` | `pi install` | Pi 加载哪些包（pi-flow 与插件）。项目级的在 `<项目>/.pi/settings.json`（`pi install -l`） |
 | 模型与账号 | `~/.pi/agent/`（`models.json`、`/login` 保存的凭据） | Pi 的 `/login` 或你手写 | 有哪些模型可用；pi-flow 只通过 Pi 查询可用的模型，不读取也不打印密钥 |
-| `pi-flow.json` | `~/.pi/agent/` | `/flow-config` | **各角色用哪个模型、思考级别、失败后升级用的模型**（reviewer 的升级模型用于高风险审查）。全局，所有项目共用，优先于项目里的模型档位 |
+| `pi-flow.json` | `~/.pi/agent/` | `/flow-config` | **各角色用哪个模型、思考级别、失败后升级用的模型**。全局，所有项目共用，优先于项目里的模型档位 |
 | `workflow.yaml` | 项目根目录 | `/flow init` 生成，**你修改** | 项目的流程配置，见下表 |
-| `rules/*.md` | 项目根目录 | 你（或批准 architect 起草的草案） | 按 scope 注入给各角色的编码规则 |
-| `docs/`、`AGENTS.md` | 项目根目录 | 流程中的各角色 | PRD、架构、ADR、契约、功能说明；批准后的 `docs/contracts/` 只读 |
+| `rules/*.md` | 项目根目录 | 你（或批准 architect 起草的草案） | `global.md` 加上规划阶段生成的项目专属 `project.md`，注入给实现者与验收者 |
+| `docs/`、`AGENTS.md` | 项目根目录 | 流程中的各角色 | 需求（`requirements.md`）、模块划分（`modules.md`）、模块之间的接口（`interfaces/`，实施中只能追加）；`prototype/` 原型 |
 | `.flow/` | 项目根目录 | **只有程序** | 流程状态、任务、运行记录、事件日志；不要手改（会被完整性校验发现） |
 | `<项目>.worktrees/` | 项目目录旁边 | 只有程序 | 每个任务的 worktree、子进程会话留档、临时目录 |
 
@@ -284,42 +246,45 @@ architect、reviewer、scout 默认启用 Pi 的 codemode：模型可以写一�
 
 | 部分 | 内容 |
 |---|---|
-| `main_branch`、`commands` | 主分支名；install、typecheck、lint、test、test_affected、e2e 的实际命令。verify 与闸门只能引用这里的命令名 |
-| `limits` | 实施并发 `max_parallel`、失败上限 `max_attempts`、租约 `lease_minutes`、单条 bash 超时 `bash_timeout_s`、自动派发 `auto_dispatch`、返工接续对话 `continue_session`、违规上限等 |
+| `main_branch`、`commands` | 主分支名；install、typecheck、lint、test 的实际命令，可选的 `merge_check`（合并时一起跑的额外检查）。闸门只能引用这里的命令名 |
+| `limits` | 模块并发 `max_parallel`、批量合并 `merge_batch`、失败上限 `max_attempts`、租约 `lease_minutes`、单条 bash 超时 `bash_timeout_s`、自动派发 `auto_dispatch`、返工接续对话 `continue_session`、违规上限等 |
 | `models` | 档位（strong、medium、cheap）对应的具体模型；`/flow-config` 设置过的角色以它为准 |
-| `review` | 逐任务审查 `per_task`（默认关闭）、阶段末审查 `stage_end`（默认开启）、审查并发、先验证再审查 `verify_first`、低风险与高风险的判定和模型、轮次上限 |
+| `context` | 触发压缩的上下文占比 `compact_at`（默认 0.7） |
+| `testing` | 适配已有测试 `adjust_tests`（默认开） |
 | `escalation` | 失败几次后升级模型 `after_failures`、关键底座第一次就升级 `critical_fanout` |
 | `budget` | 每个流程的 token 或金额预算（可选） |
-| `modes` | build、feature 的阶段与闸门 |
+| `modes` | build、feature 的阶段（D0 需求、D1 原型、D2 规划、E 实施）与闸门 |
 | `scopes`、`tool_groups`、`roles` | 每个 scope 的可写路径与规则；工具组；每个角色的档位、scope、可用工具与环境变量 |
 
 ## 项目里会多出什么
 
 ```
 workflow.yaml        命令、并发与失败上限、模型档位、阶段、scope 与可写范围、角色与工具（只有你修改）
-rules/               按模块注入的规则（只有你修改）
-docs/                PRD、ARCHITECTURE、DESIGN、adr/、contracts/、features/、research/
-AGENTS.md            极简说明
+rules/               global.md 与规划阶段生成的 project.md（只有你修改，或批准草案时由程序写入）
+docs/                requirements.md、modules.md、interfaces/、adr/、research/、rules-draft/
+prototype/           原型（D1，可跳过）
+AGENTS.md            项目说明（architect 在规划阶段起草）
 .flow/               运行时状态（程序维护；不进入分支历史，每次状态变化提交到专用引用 refs/pi-flow/state，
                      用 git log refs/pi-flow/state 查看；需要备份时 git push origin refs/pi-flow/state）
+  flows/<流程>/notes/  各任务的结构化笔记；notes/main.json 是主会话的（notes 工具经程序写入）
   knowledge.json     项目知识库（跨流程；只经 flow_learn 与 /flow knowledge 由程序写入）
   model-pauses.json  因额度用完、限流而暂停的模型（程序写入；/flow models 查看与恢复）
 ../<项目>.worktrees/  每个任务的 worktree（在项目目录之外）
 ```
 
-`workflow.yaml` 中 verify 与闸门只能引用 `commands` 里的命令名；scope 决定每个角色能写哪些路径。
+`workflow.yaml` 中闸门只能引用 `commands` 里的命令名；scope 决定每个角色能写哪些路径。
 
 ---
 
 ## 安全边界
 
 - 每个子进程只启用本角色的工具；写操作（write、edit、serena 编辑）只能落在本任务的 `writes` 内。
-- `.flow/`、`.git/`、`workflow.yaml`、`rules/`、`.pi/`、已批准的 `docs/contracts/` 对所有 agent 只读。
+- `.flow/`、`.git/`、`workflow.yaml`、`rules/`、`.pi/` 对所有 agent 只读；`docs/interfaces/` 在实施中只能追加，修改或删除已有内容的提交会被拒。
 - bash 拦截重定向到受保护路径、`tee`、`sed -i`、`mv`、`cp`、`rm`、改写 git 历史、切到 worktree 之外、联网命令；只读角色只能执行只读命令。
 - 禁止读取 `.env*`、`*.pem`、`secrets/**`，禁止打印环境变量。
 - 这一层不可能拦全（例如脚本文件内部的行为），所以**提交时的 diff 检查是兜底**：改动越出 `writes` 或碰到受保护路径一律被拒。
 - 每次违规都记入事件日志；单次运行违规达到上限会被终止，任务转为阻塞等你处理。
-- run token 只经环境变量交给子进程，`.flow/` 只存哈希；没有有效 token 的提交和审查结论一律被拒。
+- run token 只经环境变量交给子进程，`.flow/` 只存哈希；没有有效 token 的提交和验收结论一律被拒。
 
 ---
 
@@ -332,8 +297,9 @@ AGENTS.md            极简说明
 | "状态完整性校验失败" | `.flow/` 被手工修改或损坏，程序已停止。执行 `/flow doctor` 查看具体文件；用 `git log -- .flow` 找回上一次正确的状态 |
 | 任务反复失败后转为阻塞 | `/flow-status` 顶部会列出阻塞原因，`/flow-status --detail` 查看每次失败的详情；修正需求或环境后 `/flow unblock <任务>`。失败上限在 `workflow.yaml` 的 `limits.max_attempts` |
 | "角色 X 没有设置模型" | 执行 `/flow-config` 为该角色选择模型 |
+| 验收两轮修复后仍不过 | `/flow-status` 列出没通过的条目与验收者的证据；`/flow replan` 调整，或确认可以接受后 `/flow accept <任务>` 放行 |
 | 闸门失败 | `/flow-status` 显示失败命令与输出摘要（evidence 在 `.flow/flows/<流程>/evidence/stage-<阶段>/`）。修复后 `/flow gate` |
-| 合并冲突转为阻塞 | 冲突涉及契约或受保护文件时需要你人工合并；只在任务范围内的冲突会自动生成 merge-fix 任务 |
+| 合并冲突转为阻塞 | 冲突涉及受保护文件时需要你人工合并；只在任务范围内的冲突会自动生成 merge-fix 任务 |
 | 合入主分支失败 | 主工作区有未提交改动，或主分支在流程期间被修改。提交或暂存后重试 `/flow-approve` |
 | 残留的 worktree 或临时文件 | `/flow doctor --fix` |
 | 想看每个任务花了多少 | `/flow-status --cost` |
@@ -347,7 +313,7 @@ AGENTS.md            极简说明
 npm install
 npm run typecheck
 npm test            # 单元测试 + 端到端测试（真实 pi 子进程配合本地假模型，不依赖真实 LLM）
-node scripts/demo.ts             # 演示：用假模型跑完一个 build 流程 S0→S5
+node scripts/demo.ts             # 演示：用假模型跑完一个 build 流程（需求 → 规划 → 实施与验收）
 node scripts/demo.ts --real-fix  # 演示：用你在 /flow-config 中配置的真实模型跑一次 /flow-fix
 ```
 

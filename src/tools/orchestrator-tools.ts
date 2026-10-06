@@ -1,5 +1,5 @@
 // orchestrator 的工具：flow_status（只读）、flow_dispatch（只收 ready 任务，非阻塞）、flow_wait（等待变化，返回精简摘要）。
-import { allIssues, describeStageReview } from '../core/stage-review.ts';
+import { describeAcceptance, failedOf } from '../core/acceptance.ts';
 import { activePauses, describePause } from '../core/model-pause.ts';
 import { Type, type Static } from 'typebox';
 import type { StateStore } from '../core/state-store.ts';
@@ -77,13 +77,9 @@ export function statusText(store: StateStore, engine: Engine | null, flowId: str
   }
   const rev = openReplan(store, flowId)?.revision;
   if (rev) lines.push(`等待用户：计划修订待批准 → /flow-approve（或 /flow-reject "<意见>"）\n${formatRevision(rev)}`);
-  const sr = flow.mode !== 'fix' ? store.readStageReview(flowId, flow.stage) : null;
-  if (sr && sr.status !== 'done') {
-    const answer = (id: string) => { const c = sr.batches.flatMap((b) => b.confirm).find((x) => x.id === id); return c ? (c.resolved ? ' ✓已解决' : ` ✗未解决${c.note ? `：${one(c.note, 80)}` : ''}`) : ''; };
-    const issues = allIssues(sr);
-    lines.push(`阶段末审查（${sr.status}）：${describeStageReview(sr)}${issues.length ? `\n${issues.map((i) => `- ${i.id}［${i.module}］${one(i.location, 60)}：${one(i.problem, 120)}${answer(i.id)}`).join('\n')}` : ''}`);
-    if (sr.status === 'needs_human') lines.push(`全量测试失败日志：.flow/flows/${flowId}/evidence/stage-${flow.stage}/`);
-  }
+  // 模块验收（第五轮）：进行中与需要用户处理的
+  const accepts = store.listAcceptances(flowId).filter((a) => a.status !== 'accepted');
+  if (accepts.length) lines.push(`模块验收：\n${accepts.map((a) => `- ${a.task}：${describeAcceptance(a)}${failedOf(a).length ? `\n${failedOf(a).map((c) => `  · ${c.id} ${one(c.text, 80)}：${one(a.results.find((r) => r.id === c.id)?.evidence ?? '', 120)}`).join('\n')}` : ''}`).join('\n')}`);
   const gateFail = [...store.readEvents()].reverse().find((e) => e.flow === flowId && e.type === 'gate_result');
   if (gateFail && gateFail.to === 'active' && flow.stage_status === 'active') lines.push(`阶段闸门未通过：${one(gateFail.reason ?? '', 300)}（修复后执行 /flow gate 重跑）`);
   return lines.join('\n');
@@ -108,7 +104,7 @@ export async function flowDispatch(store: StateStore, engine: Engine, p: Static<
 
 /**
  * 等待值得告诉用户的变化（第三轮后续 5）：任务完成、阻塞或取消，出现需要用户处理的事，阶段或流程状态变化，
- * 关闭自动派发时出现可派发的任务，或者引擎已无事可做。审查、验证、合并等中间步骤不唤醒 orchestrator。
+ * 关闭自动派发时出现可派发的任务，或者引擎已无事可做。合并、验收等中间步骤不唤醒 orchestrator。
  * 给了 task_id 时只等这个任务的状态变化。
  */
 export async function flowWait(store: StateStore, engine: Engine, p: Static<typeof WaitParams>, config?: FlowConfig): Promise<ToolResult> {

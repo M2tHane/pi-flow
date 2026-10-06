@@ -1,0 +1,6 @@
+{ "steps": [
+  { "tool_calls": [ { "name": "flow_claim", "arguments": {} } ] },
+  { "tool_calls": [ { "name": "flow_note", "arguments": { "text": "开发视角：单用户用 SQLite 足够，不做多人协作" } } ] },
+  { "tool_calls": [ { "name": "flow_submit", "arguments": { "summary": "开发视角的意见" } } ] },
+  { "text": "完成" }
+] }

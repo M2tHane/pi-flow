@@ -11,35 +11,29 @@ import { acceptCandidate, retireEntries, promoteToDraft, markPromoted, selectKno
 import { applyDrafts, listDrafts } from '../../src/core/rules-draft.ts';
 import { renderStatus } from '../../src/core/status-view.ts';
 
-const YAML = `${PROJECT_YAML.replace(/  test:      ".*"/, '  test:      "true"')}
+const YAML = `${PROJECT_YAML.replace(/  test:      ".*"/, '  test:      "! grep -rqs FAIL src/server"')}
 knowledge:
   auto_candidates: true
 `;
 const LESSON = '订单金额一律用整数分存储，避免浮点误差';
 
-async function implement(a: FakeAgent, file: string, note: string) {
+async function implement(a: FakeAgent, file: string, note: string, content = 'x\n') {
   assert.ok((await a.call('flow_claim')).ok);
-  assert.ok((await a.call('write', { path: file, content: 'x\n' })).ok, file);
+  assert.ok((await a.call('write', { path: file, content })).ok, file);
   await a.call('flow_note', { text: note });
   const r = await a.call('flow_submit', { summary: file });
   assert.ok(r.ok, r.text);
 }
 
-test('知识库：agent 提交的知识注入后续同 scope 任务的提示，下游看到上游 handoff；审查打回生成候选，确认后才注入；可废弃、可提升为规则；完整性校验覆盖', async () => {
+test('知识库：agent 提交的知识注入后续同 scope 任务的提示，下游看到上游 handoff；合并后验证失败生成候选，确认后才注入；可废弃、可提升为规则；完整性校验覆盖', async () => {
   const p = await setupProject({ yaml: YAML, tasks: [
-    mkTask('T-001', { verify: [] }),
+    mkTask('T-001', { verify: ['test'] }),
     mkTask('T-002', { verify: [], deps: [{ task: 'T-001', type: 'hard', reason: '需要订单模型' }] }),
     mkTask('T-003', { role: 'frontend-engineer', scopes: ['frontend'], writes: ['src/web/t-003/**'], verify: [] }),
   ] });
   try {
-    const settings = { version: 1 as const, roles: { 'backend-engineer': { model: 'f/m' }, 'frontend-engineer': { model: 'f/m' }, reviewer: { model: 'f/r' } } };
-    const { engine, launcher, errors } = makeEngine(p, async (role, nth, a) => {
-      if (role === 'reviewer') {
-        if (a.env.task === 'T-001' && nth === 1) {
-          assert.ok((await a.call('flow_approve', { decision: 'reject', issues: [{ location: 'src/server/t-001/a.ts:1', problem: '缺少金额校验', expected: '金额必须是正整数' }] })).ok);
-        } else assert.ok((await a.call('flow_approve', { decision: 'pass', notes: 'ok' })).ok);
-        return;
-      }
+    const settings = { version: 1 as const, roles: { 'backend-engineer': { model: 'f/m' }, 'frontend-engineer': { model: 'f/m' } } };
+    const { engine, launcher, errors } = makeEngine(p, async (_role, nth, a) => {
       if (a.env.task === 'T-001') {
         if (nth === 1) {
           const r = await a.call('flow_learn', { category: 'convention', content: LESSON, scopes: ['backend'] });
@@ -50,7 +44,8 @@ test('知识库：agent 提交的知识注入后续同 scope 任务的提示，�
           const w = await a.call('write', { path: path.join(p.dir, '.flow/knowledge.json'), content: '{}' });
           assert.ok(!w.ok, w.text);
         }
-        return implement(a, 'src/server/t-001/a.ts', `订单模型已建好（第 ${nth} 次）`);
+        // 第一次的代码让合并时的全量测试失败
+        return implement(a, 'src/server/t-001/a.ts', `订单模型已建好（第 ${nth} 次）`, nth === 1 ? 'FAIL\n' : 'x\n');
       }
       if (a.env.task === 'T-002') return implement(a, 'src/server/t-002/a.ts', '完成');
       return implement(a, 'src/web/t-003/a.ts', '完成');
@@ -62,7 +57,7 @@ test('知识库：agent 提交的知识注入后续同 scope 任务的提示，�
     assert.deepEqual(errors, []);
     for (const id of ['T-001', 'T-002', 'T-003']) assert.equal(p.store.readTask(p.flowId, id).status, 'done', id);
 
-    const specOf = (task: string) => launcher.launched.find((s) => s.env['PI_FLOW_TASK'] === task && s.env['PI_FLOW_ROLE'] !== 'reviewer')!;
+    const specOf = (task: string) => launcher.launched.find((s) => s.env['PI_FLOW_TASK'] === task)!;
     const sys = (task: string) => readFileSync(specOf(task).appendSystemPromptFiles[0]!, 'utf8');
     // 同 scope 的后续任务看到知识；其他 scope 的看不到
     assert.match(sys('T-002'), new RegExp(`K-001 \\[约定\\]（backend） ${LESSON}`));
@@ -71,12 +66,12 @@ test('知识库：agent 提交的知识注入后续同 scope 任务的提示，�
     assert.match(specOf('T-002').prompt, /## 上游任务的 handoff[\s\S]*T-001「任务 T-001」（硬依赖，已完成）[\s\S]*订单模型已建好（第 2 次）/);
     assert.ok(!specOf('T-003').prompt.includes('上游任务的 handoff'));
 
-    // 审查打回生成候选：未确认前不注入
+    // 合并后验证失败生成候选：未确认前不注入
     const k = p.store.readKnowledge();
     const cand = k.entries.find((e) => e.status === 'candidate')!;
-    assert.equal(cand.source.kind, 'review');
-    assert.match(cand.content, /T-001「任务 T-001」审查打回：1\. src\/server\/t-001\/a\.ts:1：缺少金额校验/);
-    assert.ok(!sys('T-002').includes('缺少金额校验'));
+    assert.equal(cand.source.kind, 'merge');
+    assert.match(cand.content, /T-001「任务 T-001」合并后验证失败：合并后验证失败（[^）]*test 退出码 1）/);
+    assert.ok(!sys('T-002').includes('合并后验证失败'));
     assert.match(renderStatus(p.store, p.config), /1 条知识候选待确认/);
     const t2 = p.store.readTask(p.flowId, 'T-002');
     await acceptCandidate(p.store, cand.id, '订单金额必须校验为正整数（分）');

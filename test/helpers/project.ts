@@ -14,14 +14,11 @@ export const PROJECT_YAML = TEST_YAML
   typecheck: "true"
   lint:      "true"
   test:      "test -f src/server/t-001/a.ts && ! grep -q FAIL src/server/t-001/a.ts"
-  test_affected: "true {files}"
   e2e:       "true"
 limits:`);
 
-/** 关闭逐任务审查（模板默认）：提交后直接进入合并队列，合并时跑全量 typecheck、lint、test */
-export const DIRECT_YAML = PROJECT_YAML.replace(/^  per_task: true$/m, '  per_task: false');
-/** 模板默认的新流程：不逐任务审查，阶段末审查一次 */
-export const STAGE_REVIEW_YAML = DIRECT_YAML.replace(/^  stage_end: false$/m, '  stage_end: true');
+/** 第五轮起提交后都直接合并（合并时跑全量测试）：保留这个名字给旧测试 */
+export const DIRECT_YAML = PROJECT_YAML;
 
 export interface Project {
   dir: string;

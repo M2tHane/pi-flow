@@ -21,7 +21,7 @@ export function nextStep(store: StateStore, maxParallel: number, activeRunCount 
   const tasks = store.listTasks(flowId);
   const stageTasks = tasks.filter((t) => t.stage === flow.stage);
   const count = (pred: (t: TaskFile) => boolean) => stageTasks.filter(pred).length;
-  const summary = `流程 ${flow.id}「${flow.title}」阶段 ${flow.stage}（${flow.stage_status}）；本阶段任务 ${stageTasks.length} 个：完成 ${count((t) => t.status === 'done')}，进行中 ${count((t) => ['in_progress', 'review', 'verifying', 'queued_merge', 'merging'].includes(t.status))}，可派发 ${count((t) => t.status === 'ready' || t.status === 'pending')}，阻塞 ${count((t) => t.status === 'blocked')}。`;
+  const summary = `流程 ${flow.id}「${flow.title}」阶段 ${flow.stage}（${flow.stage_status}）；本阶段任务 ${stageTasks.length} 个：完成 ${count((t) => t.status === 'done')}，进行中 ${count((t) => ['in_progress', 'queued_merge', 'merging'].includes(t.status))}，可派发 ${count((t) => t.status === 'ready' || t.status === 'pending')}，阻塞 ${count((t) => t.status === 'blocked')}。`;
 
   if (store.readRevision(flowId)?.status === 'proposed') return { summary, next: '计划修订等待用户批准。请向用户概述修订内容（flow_status 中可见），请其执行 /flow-approve 或 /flow-reject "<意见>"；你只能等待。', tool: 'none' };
   if (flow.stage_status === 'awaiting_human') return { summary, next: `阶段 ${flow.stage} 的闸门等待用户批准。请向用户说明结果，请其执行 /flow-approve；你只能等待。`, tool: 'none' };
@@ -40,12 +40,12 @@ export function nextStep(store: StateStore, maxParallel: number, activeRunCount 
     if (p) waiting.set(t.id, p);
   }
   const pick = selectDispatchable(view.filter((t) => !held.has(t.id) && !waiting.has(t.id)), flow.stage, maxParallel)[0];
-  const busy = view.some((t) => t.lease || ['verifying', 'queued_merge', 'merging'].includes(t.status)) || activeRunCount > 0;
+  const busy = view.some((t) => t.lease || ['queued_merge', 'merging'].includes(t.status)) || activeRunCount > 0;
   // 自动派发（limits.auto_dispatch，默认开）时 ready 任务由程序派发；只有程序空闲却还有可派发的任务（自动派发出错）时才让 orchestrator 手动派发以看到原因
   const auto = config?.limits.auto_dispatch !== false;
   if (pick && !overBudget && !(auto && busy)) return { summary, next: `调用 flow_dispatch(${pick})。不要自己实现任务。`, tool: 'flow_dispatch', task: pick };
   if (busy) return { summary, next: auto
-    ? '任务由程序自动派发、合并，阶段末统一审查与修复。调用 flow_wait 等待：它只在任务完成或阻塞、需要用户处理、阶段变化时返回；返回后用一两句话向用户汇报进展，再继续 flow_wait。'
+    ? '任务由程序自动派发、合并，合并后由独立的验收者确认。调用 flow_wait 等待：它只在任务完成或阻塞、需要用户处理、阶段变化时返回；返回后用一两句话向用户汇报进展，再继续 flow_wait。'
     : '有任务在运行或合并中，调用 flow_wait 等待结果。', tool: 'flow_wait' };
   if (overBudget) return { summary, next: overBudget, tool: 'none' };
   if (waiting.size) {
@@ -54,9 +54,9 @@ export function nextStep(store: StateStore, maxParallel: number, activeRunCount 
   }
   const blocked = stageTasks.filter((t) => t.status === 'blocked');
   if (blocked.length) return { summary, next: `没有可推进的任务。向用户报告阻塞：${blocked.map((t) => `${t.id}（${(t.blocked_reason ?? '').slice(0, 60)}）`).join('；')}，请其回答问题（/flow answer <任务>）；如果用户认为需要改计划（例如任务拆得不对、验收标准不合理），调用 flow_replan 交给 architect 修订。`, tool: 'none' };
-  const sr = store.readStageReview(flowId, flow.stage);
-  if (sr?.status === 'needs_human') return { summary, next: `阶段末的全量测试自动修复两轮后仍失败（${(sr.reason ?? '').slice(0, 120)}）。向用户说明，请其决定：用 flow_replan 转达修复要求交给 architect，或由用户处理后执行 /flow gate；你只能等待。`, tool: 'none' };
-  if (stageTasks.length && stageTasks.every(isSettled)) return { summary, next: '本阶段任务全部完成，等待程序进行阶段末审查与闸门；调用 flow_wait。', tool: 'flow_wait' };
+  const human = store.listAcceptances(flowId).filter((a) => a.status === 'needs_human');
+  if (human.length) return { summary, next: `模块 ${human.map((a) => a.task).join('、')} 的验收两轮修复后仍未通过（${(human[0]!.reason ?? '').slice(0, 120)}），依赖它们的模块在等待。向用户说明，请其决定：/flow accept <任务> 人工放行，或用 flow_replan 转达修改要求；你只能等待。`, tool: 'none' };
+  if (stageTasks.length && stageTasks.every(isSettled)) return { summary, next: '本阶段任务全部完成，等待程序进行验收与阶段检查；调用 flow_wait。', tool: 'flow_wait' };
   return { summary, next: '当前阶段没有任务。向用户说明并等待指示。', tool: 'none' };
 }
 

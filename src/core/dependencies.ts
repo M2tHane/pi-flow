@@ -162,7 +162,7 @@ export function checkDependencies(d: DependencyDeps): DependencyItem[] {
     }
   }
 
-  const needCodegraph = !config || rolesUsing(config, ['codegraph']).length > 0 || 'test_affected' in config.raw.commands;
+  const needCodegraph = !config || rolesUsing(config, ['codegraph']).length > 0;
   if (needCodegraph) {
     const v = (d.probe?.codegraphVersion ?? (() => runVersion(process.env['PI_FLOW_CODEGRAPH_BIN'] ?? 'codegraph', ['--version'])))();
     if (!v) push('warn', 'codegraph', `未安装：合并后验证将运行全量测试，codegraph 工具不可用。安装：${CODEGRAPH_CLI.install}（${linkText(CODEGRAPH_CLI.links)}）`);

@@ -177,8 +177,10 @@ test('需求阶段：汇总者判断没有界面时跳过原型阶段；用户�
       }, SETTINGS5);
       for (let i = 0; i < 6 && p.store.readFlow(flow.id).stage_status !== 'awaiting_human'; i++) { await engine.pump(flow.id); await engine.next(flow.id); await engine.idle(); }
       assert.deepEqual(p.store.readFlow(flow.id).skip_stages, ['D1']);
+      assert.match(renderStatus(p.store, p.config), /\[需求\] → 原型（跳过） → 规划/);
       await runFlowCommand(`approve ${flag}`.trim(), cmdEnv(p, engine));
       assert.equal(p.store.readFlow(flow.id).stage, flag ? 'D1' : 'D2');
+      assert.match(renderStatus(p.store, p.config), flag ? /需求 ✓ → \[原型\] → 规划/ : /需求 ✓ → 原型（跳过） → \[规划\]/);
     } finally { p.cleanup(); }
   }
 });

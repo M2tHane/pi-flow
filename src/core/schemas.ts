@@ -9,13 +9,14 @@ const FlowId = Type.String({ pattern: '^[BFX]-[0-9]{3,}$' });
 const TaskId = Type.String({ pattern: '^T-[0-9]{3,}$' });
 
 export const TASK_STATUSES = [
-  'pending', 'ready', 'in_progress', 'review', 'verifying',
+  'pending', 'ready', 'in_progress',
   'queued_merge', 'merging', 'done', 'blocked', 'cancelled',
 ] as const;
 export const TaskStatus = Type.Enum(TASK_STATUSES);
 export type TaskStatus = (typeof TASK_STATUSES)[number];
 
-export const TASK_KINDS = ['test', 'impl', 'doc', 'infra', 'integration', 'review-fix', 'merge-fix', 'analysis'] as const;
+/** impl 实现（模块）、doc 文档（需求、原型、规划）、review-fix 修复（验收没通过、闸门失败）、merge-fix 解决合并冲突、analysis 只读（需求讨论、验收、计划修订） */
+export const TASK_KINDS = ['impl', 'doc', 'review-fix', 'merge-fix', 'analysis'] as const;
 export const TaskKind = Type.Enum(TASK_KINDS);
 export type TaskKind = (typeof TASK_KINDS)[number];
 
@@ -117,31 +118,14 @@ export const TaskFile = Type.Object({
   worktree: Nullable(Type.String()),
   base_sha: Nullable(Type.String()),
   blocked_reason: Nullable(Type.String()),
-  /** 经 flow_block 阻塞时所处的状态：审查中提问的任务，回答后回到审查而不是重新实施 */
-  blocked_from: Type.Optional(TaskStatus),
   last_failure: Nullable(Type.String()),
   /** 计划修订任务（只读 analysis，由 architect 提交修订）：用户提出的修订原因 */
   replan: Type.Optional(Type.String({ minLength: 1 })),
-  /** 修改已锁定契约的任务（由批准的计划修订创建）：只有它在契约锁定后可以写 docs/contracts/ */
-  contract_change: Type.Optional(Type.Boolean()),
-  // scout（analysis 任务）提交的结构化结论（fix 模式）
-  findings: Type.Optional(Type.Object({
-    location: Type.String(),
-    root_cause: Type.String(),
-    impact_files: Type.Array(Type.String()),
-    suggested_role: Type.String(),
-    contract_change: Type.Boolean(),
-    estimated_files: Type.Integer({ minimum: 0 }),
-  }, { additionalProperties: false })),
   // merge-fix 专用：被挂起的原任务与冲突文件
   merge_fix_for: Type.Optional(TaskId),
   conflict_files: Type.Optional(Type.Array(Type.String())),
   /** 同步主分支的冲突修复任务：合并的主分支提交（worktree 是含冲突标记的合并提交） */
   sync_main: Type.Optional(Type.String({ minLength: 1 })),
-  /** 阶段末审查（第四轮）的只读任务：review 提交问题清单，confirm 逐条确认修复（kind=analysis，角色 reviewer） */
-  stage_review: Type.Optional(Type.Union([Type.Literal('review'), Type.Literal('confirm')])),
-  /** 阶段审查修复任务（kind=review-fix）分到的问题编号 */
-  review_issues: Type.Optional(Type.Array(Type.String({ pattern: '^R-[0-9]+$' }))),
   /** 修复任务接着写过这些代码的任务的对话继续（第四轮后续）：同角色、同模型、会话不太大时 fork 它最后一次提交的会话 */
   fork_from_task: Type.Optional(TaskId),
   /** 最近一次提交修改过的、writes 之外的已有测试文件（第四轮后续，testing.adjust_tests） */
@@ -214,8 +198,6 @@ export const RunFile = Type.Object({
   cost: Type.Optional(Nullable(Type.Number({ minimum: 0 }))),
   /** 失败后升级模型派发的 run */
   escalated: Type.Optional(Type.Boolean()),
-  /** 审查 run 的方式：light 低风险便宜审查，full 普通审查（审查者自己的模型），strong 高风险强模型审查 */
-  review_mode: Type.Optional(Type.Union([Type.Literal('full'), Type.Literal('light'), Type.Literal('strong')])),
   /** 模型回复的轮数（assistant 消息数；fork 的 run 只计本次） */
   turns: Type.Optional(Type.Integer({ minimum: 0 })),
   /** 接着哪次 run 的对话继续（返工时 fork 上一次的会话） */
@@ -310,41 +292,6 @@ export const WorkflowFile = Type.Object({
     /** 失败后升级用的模型：档位名或 provider/model；不填时取上一档（cheap → medium → strong） */
     escalate_model: Type.Optional(Type.String({ minLength: 1 })),
   }, { additionalProperties: false })),
-  /** 按风险审查（第二轮 H）：低风险任务用便宜模型审查或只做程序检查；审查 run 的并发上限 */
-  review: Type.Optional(Type.Object({
-    /** 逐任务审查（第四轮，默认 false）：关闭时提交后直接进入合并队列，合并时跑全量测试；设计阶段与 fix 流程照旧逐任务审查 */
-    per_task: Type.Optional(Type.Boolean()),
-    /** 阶段末审查（第四轮，默认 true）：实施阶段的任务全部合入后，强模型审查一次本阶段全部代码，按模块并行修复、确认一次，再跑全量测试 */
-    stage_end: Type.Optional(Type.Boolean()),
-    /** 只含测试任务（test、integration）的阶段怎么做阶段审查：skip 跳过（默认，闸门照样跑全量测试）、light 用审查者自己的模型、strong 用强模型 */
-    test_stages: Type.Optional(Type.Union([Type.Literal('skip'), Type.Literal('light'), Type.Literal('strong')])),
-    max_parallel: Type.Optional(PosInt),
-    low_risk: Type.Optional(Type.Object({
-      enabled: Type.Optional(Type.Boolean()),
-      /** cheap：便宜模型审查（默认）；skip：只做程序检查，不派审查 */
-      mode: Type.Optional(Type.Union([Type.Literal('cheap'), Type.Literal('skip')])),
-      /** 便宜审查用的模型：档位名或 provider/model，默认档位 cheap；取不到时用审查者原来的模型 */
-      model: Type.Optional(Type.String({ minLength: 1 })),
-      max_files: Type.Optional(PosInt),
-      max_lines: Type.Optional(PosInt),
-      /** 改动文件都在这些路径内才算低风险 */
-      paths: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
-      /** 改动涉及这些路径一律高风险（契约与 shared scope 总是高风险） */
-      exclude: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
-    }, { additionalProperties: false })),
-    /** 高风险任务用强模型审查（第三轮 C）：合并冲突、契约与 shared、paths 中的路径、改动超过 max_lines */
-    high_risk: Type.Optional(Type.Object({
-      enabled: Type.Optional(Type.Boolean()),
-      /** 档位名或 provider/model；不填时用 /flow-config escalate reviewer、roles.reviewer.escalate_model 或上一档 */
-      model: Type.Optional(Type.String({ minLength: 1 })),
-      max_lines: Type.Optional(PosInt),
-      paths: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
-    }, { additionalProperties: false })),
-    /** 派审查前先跑 verify（默认 true）：失败直接退回实施；通过且审查后代码未变时，审查后的 verify 复用结果 */
-    verify_first: Type.Optional(Type.Boolean()),
-    /** 审查轮次上限（第三轮 B，可选）：到达时提示审查者只剩建议类问题就通过 */
-    max_rounds: Type.Optional(PosInt),
-  }, { additionalProperties: false })),
   /** 失败后升级模型（第二轮 I）：同一任务失败 after_failures 次后，下一次派发换成升级模型 */
   escalation: Type.Optional(Type.Object({
     enabled: Type.Optional(Type.Boolean()),
@@ -352,10 +299,9 @@ export const WorkflowFile = Type.Object({
     /** 被至少这么多任务硬依赖的实施任务（底座）第一次就用升级模型，默认 3；0 关闭（第三轮后续：底座任务对弱模型太大） */
     critical_fanout: Type.Optional(Type.Integer({ minimum: 0 })),
   }, { additionalProperties: false })),
-  /** 测试方式（第三轮后续）：默认由实施者边写边测、合并后跑全量；leading_tests 为 true 时才允许"先行验收测试 → 实现"的拆法 */
-  /** adjust_tests（第四轮后续，默认开）：实施任务可以修改别的角色已有的测试来适配按契约变化的接口（只改不增删，审查时核对） */
-  testing: Type.Optional(Type.Object({ leading_tests: Type.Optional(Type.Boolean()), adjust_tests: Type.Optional(Type.Boolean()) }, { additionalProperties: false })),
-  /** 项目知识库：auto_candidates 为 true 时，审查打回与合并后验证失败会提炼为知识候选（默认关闭：真实冒烟中这些候选多是一次性细节） */
+  /** adjust_tests（第四轮后续，默认开）：实现任务可以修改别的模块已有的测试来适配接口变化（只改不增删） */
+  testing: Type.Optional(Type.Object({ adjust_tests: Type.Optional(Type.Boolean()) }, { additionalProperties: false })),
+  /** 项目知识库：auto_candidates 为 true 时，合并后验证失败会提炼为知识候选（默认关闭：真实冒烟中这些候选多是一次性细节） */
   knowledge: Type.Optional(Type.Object({ auto_candidates: Type.Optional(Type.Boolean()) }, { additionalProperties: false })),
   /** 上下文管理（第五轮）：compact_at 为触发压缩的上下文占比（默认 0.7）；压缩后靠 notes 与 history 延续 */
   context: Type.Optional(Type.Object({ compact_at: Type.Optional(Type.Number({ minimum: 0.3, maximum: 0.95 })) }, { additionalProperties: false })),
@@ -426,60 +372,11 @@ export const RevisionTask = Type.Object({
   writes: Type.Array(Type.String(), { minItems: 1 }),
   acceptance: Type.Array(Type.String(), { minItems: 1 }),
   verify: Type.Array(Type.String()),
-  /** 修改已锁定的 API 文档（docs/contracts/）的任务：只能由批准的计划修订创建，只有它能写契约 */
-  contract_change: Type.Optional(Type.Boolean()),
-  /** 模块登记的公共文件（第五轮） */
+
   shared: Type.Optional(Type.Array(Type.String())),
 }, { additionalProperties: false });
 export type RevisionTask = Static<typeof RevisionTask>;
 
-// —— 阶段末审查（第四轮）：本阶段任务全部合入后审查一次 → 按模块并行修复 → 只确认不新增 → 全量测试与有限重试 ——
-export const STAGE_REVIEW_STATUSES = ['reviewing', 'gating', 'test_fixing', 'needs_human', 'done'] as const;
-export const REVIEW_BATCH_STATUSES = ['reviewing', 'fixing', 'confirming', 'refixing', 'done'] as const;
-export const StageIssue = Type.Object({
-  id: Type.String({ pattern: '^R-[0-9]+$' }),
-  module: Type.String({ minLength: 1 }),
-  location: Type.String({ minLength: 1 }),
-  problem: Type.String({ minLength: 1 }),
-  expected: Type.String({ minLength: 1 }),
-  files: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
-}, { additionalProperties: false });
-export type StageIssue = Static<typeof StageIssue>;
-
-/** 一批审查（第四轮后续）：某些角色的任务全部合入后就审查它们的代码，不必等整个阶段；每批各走一遍审查 → 修复 → 确认 */
-export const ReviewBatch = Type.Object({
-  id: Type.Integer({ minimum: 1 }),
-  /** 本批覆盖的角色与任务 */
-  roles: Type.Array(Type.String({ minLength: 1 })),
-  tasks: Type.Array(TaskId),
-  status: Type.Enum(REVIEW_BATCH_STATUSES),
-  review_task: Nullable(TaskId),
-  /** 审查者是否已提交清单（可以为空清单） */
-  reported: Type.Boolean(),
-  issues: Type.Array(StageIssue),
-  /** 修复开始时的集成分支提交：确认时看之后的改动 */
-  fix_base: Type.Optional(Type.String()),
-  fix_tasks: Type.Array(TaskId),
-  confirm_task: Nullable(TaskId),
-  confirm: Type.Array(Type.Object({ id: Type.String({ pattern: '^R-[0-9]+$' }), resolved: Type.Boolean(), note: Type.Optional(Type.String()) }, { additionalProperties: false })),
-  /** 确认未解决的问题再修一轮（不再确认） */
-  refix_tasks: Type.Array(TaskId),
-}, { additionalProperties: false });
-export type ReviewBatch = Static<typeof ReviewBatch>;
-
-export const StageReviewFile = Type.Object({
-  stage: Type.String({ minLength: 1 }),
-  /** reviewing：各批审查进行中；gating 起是阶段级的全量测试与有限重试 */
-  status: Type.Enum(STAGE_REVIEW_STATUSES),
-  /** 本阶段第一次合并前的集成分支提交：审查看 base_sha..HEAD */
-  base_sha: Nullable(Type.String()),
-  batches: Type.Array(ReviewBatch),
-  /** 全量测试失败后的修复轮次（最多两轮） */
-  test_rounds: Type.Array(Type.Object({ command: Type.String(), tasks: Type.Array(TaskId), at: IsoTime }, { additionalProperties: false })),
-  reason: Type.Optional(Type.String()),
-  version: Type.Integer({ minimum: 1 }),
-}, { additionalProperties: false });
-export type StageReviewFile = Static<typeof StageReviewFile>;
 
 export const RevisionFile = Type.Object({
   /** 发起修订的任务（replan 任务）与原因 */
@@ -501,19 +398,6 @@ export const RevisionFile = Type.Object({
 }, { additionalProperties: false });
 export type RevisionFile = Static<typeof RevisionFile>;
 
-// —— 需求访谈：开流程之前由主会话与用户访谈，程序保存摘要（.flow/brief.json，同一时间一份） ——
-
-export const BriefFile = Type.Object({
-  mode: Type.Union([Type.Literal('build'), Type.Literal('feature'), Type.Literal('fix')]),
-  description: Type.String(),
-  sections: Type.Record(Type.String(), Type.String({ maxLength: 4000 })),
-  status: Type.Union([Type.Literal('collecting'), Type.Literal('confirmed'), Type.Literal('cancelled')]),
-  flow: Nullable(FlowId),
-  created_at: IsoTime,
-  updated_at: IsoTime,
-  version: Type.Integer({ minimum: 1 }),
-}, { additionalProperties: false });
-export type BriefFile = Static<typeof BriefFile>;
 
 // —— 项目级知识库（.flow/knowledge.json）：跨流程积累的约定、坑、决策；只由程序写入 ——
 
@@ -652,11 +536,9 @@ export const SCHEMAS = {
   workflow: WorkflowFile,
   'role-settings': RoleSettingsFile,
   proposal: ProposalFile,
-  brief: BriefFile,
   knowledge: KnowledgeFile,
   revision: RevisionFile,
   'model-pauses': ModelPausesFile,
-  'stage-review': StageReviewFile,
   notes: NotesFile,
   acceptance: AcceptanceFile,
 } as const;

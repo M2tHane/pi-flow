@@ -9,6 +9,7 @@ import { startFlow } from '../../src/core/stages.ts';
 import { setupProject, type Project } from '../helpers/project.ts';
 import { makeEngine, commitToBranch } from '../helpers/engine.ts';
 import { TEMPLATE_YAML } from '../helpers/config.ts';
+import { FLOW5_YAML } from '../helpers/flow5.ts';
 
 function env(p: Project, engine: ReturnType<typeof makeEngine>['engine'], ui: CommandEnv['ui'] = null): CommandEnv {
   return {
@@ -61,8 +62,8 @@ test('不合法的草案被拒绝且不写入任何文件', async () => {
   } finally { p.cleanup(); }
 });
 
-test('批准 S1 时：无界面只提示不应用；之后用 /flow rules apply 指定文件应用', async () => {
-  const p = await setupProject({ yaml: TEMPLATE_YAML.replace(/commands:[\s\S]*?\nlimits:/, 'commands:\n  install: "true"\n  typecheck: "true"\n  lint: "true"\n  test: "true"\n  test_affected: "true"\n  e2e: "true"\nlimits:') });
+test('批准规划阶段（D2）时：架构师写的项目专属规则草案在无界面时自动应用', async () => {
+  const p = await setupProject({ yaml: FLOW5_YAML });
   try {
     await p.store.transitionStage(p.flowId, { to: 'aborted', trigger: 'abort', actor: 'human' });
     const flow = await startFlow({ root: p.dir, store: p.store, config: p.config }, 'build', '待办');
@@ -72,18 +73,22 @@ test('批准 S1 时：无界面只提示不应用；之后用 /flow rules apply 
       await p.store.transitionStage(flow.id, { to: 'awaiting_gate', trigger: 'submit_gate', actor: 'engine' });
       await p.store.transitionStage(flow.id, { to: 'awaiting_human', trigger: 'gate_passed', actor: 'engine', needs_human: true });
     };
-    await toGate();
-    await p.store.transitionStage(flow.id, { to: 'done', trigger: 'approve', actor: 'human' });
-    await p.store.advanceStage(flow.id, 'human');
-    await p.store.saveProposal(flow.id, { stage: 'S1', run: 'r', created_at: 'x', tasks: [{ id: 'T-001', stage: 'S3', kind: 'impl', title: 'a', role: 'backend-engineer', scopes: ['backend'], depends_on: [], inputs: [], writes: ['src/server/a/**'], acceptance: ['a'], verify: [] }],
+    // 需求、原型两个阶段直接放行，停在规划阶段
+    for (const stage of ['D0', 'D1']) {
+      assert.equal(p.store.readFlow(flow.id).stage, stage);
+      await toGate();
+      await p.store.transitionStage(flow.id, { to: 'done', trigger: 'approve', actor: 'human' });
+      await p.store.advanceStage(flow.id, 'human');
+    }
+    assert.equal(p.store.readFlow(flow.id).stage, 'D2');
+    await p.store.saveProposal(flow.id, { stage: 'D2', run: 'r', created_at: 'x', tasks: [{ id: 'T-001', stage: 'E', kind: 'impl', title: '待办模块', role: 'implementer', scopes: ['code'], depends_on: [], inputs: [], writes: ['src/todo/**'], acceptance: ['能新建待办'], verify: ['test'], needs_acceptance: true }],
       report: { task_count: 1, critical_path: ['T-001'], critical_path_length: 1, max_width: 1, hard_ratio: 0, warnings: [] } }, 'architect');
-    commitToBranch(p.dir, flow.integration_branch, { 'docs/rules-draft/backend.md': '# 后端\n1. 用 Fastify。\n' }, '草案');
+    commitToBranch(p.dir, flow.integration_branch, { 'docs/rules-draft/project.md': '# 项目规则\n1. 用 Fastify。\n' }, '草案');
     await toGate();
     const out = await runFlowCommand('approve', e);
-    assert.match(out, /已批准阶段 S1[\s\S]*架构师提出了规则与命令草案[\s\S]*\/flow rules apply all/);
-    assert.doesNotMatch(readFileSync(path.join(p.dir, 'rules/backend.md'), 'utf8'), /Fastify/, '无界面时不自动应用');
-    assert.match(await runFlowCommand('rules apply backend.md', e), /已应用：rules\/backend\.md/);
-    assert.match(readFileSync(path.join(p.dir, 'rules/backend.md'), 'utf8'), /Fastify/);
+    assert.match(out, /已批准阶段 D2[\s\S]*已按模块清单创建 1 个模块任务[\s\S]*架构师提出了规则与命令草案[\s\S]*已应用：rules\/project\.md/);
+    assert.match(readFileSync(path.join(p.dir, 'rules/project.md'), 'utf8'), /Fastify/);
+    assert.equal(await runFlowCommand('rules', e), '没有待应用的规则或命令草案。');
     await engine.idle();
   } finally { p.cleanup(); }
 });

@@ -7,8 +7,7 @@ export const BUILTIN_READ_TOOLS = ['read', 'grep', 'find', 'ls'] as const;
 export const BUILTIN_WRITE_TOOLS = ['write', 'edit'] as const;
 export const FLOW_TOOLS = [
   'flow_status', 'flow_dispatch', 'flow_wait', 'flow_claim', 'flow_note', 'flow_submit',
-  'flow_approve', 'flow_propose_tasks', 'flow_block', 'flow_learn', 'flow_revise_plan', 'flow_replan',
-  'flow_review_report', 'flow_review_confirm', 'notes', 'history',
+  'flow_block', 'flow_learn', 'flow_revise_plan', 'flow_replan', 'notes', 'history',
   'flow_propose_modules', 'flow_sync', 'flow_accept', 'flow_accept_confirm',
 ] as const;
 /** 所有角色（包括 orchestrator）都隐式拥有的工具（第五轮：结构化笔记与历史检索） */
@@ -23,7 +22,7 @@ export const ORCHESTRATING_TOOLS = ['codemode'] as const;
 export const BASH_READONLY = 'bash_readonly';
 
 /** 只能出现在特定角色上的工具 */
-const ROLE_EXCLUSIVE: Record<string, string> = { flow_accept: 'acceptor', flow_accept_confirm: 'acceptor', flow_propose_modules: 'architect', flow_approve: 'reviewer', flow_review_report: 'reviewer', flow_review_confirm: 'reviewer', flow_propose_tasks: 'architect', flow_revise_plan: 'architect', flow_replan: 'orchestrator' };
+const ROLE_EXCLUSIVE: Record<string, string> = { flow_accept: 'acceptor', flow_accept_confirm: 'acceptor', flow_propose_modules: 'architect', flow_revise_plan: 'architect', flow_replan: 'orchestrator' };
 /** orchestrator 只允许这些工具（第 20 节） */
 const ORCHESTRATOR_ALLOWED = new Set(['read', 'flow_status', 'flow_dispatch', 'flow_wait', 'flow_replan', ...MEMORY_TOOLS]);
 const WRITE_GROUP = 'serena_edit';
@@ -217,13 +216,11 @@ export function parseConfig(source: string): FlowConfig {
     // 偏离：所有 subagent 角色都隐式拥有 flow_learn（项目知识库，第二轮 C 项）
     if (name !== 'orchestrator' && !toolList.includes('flow_learn')) toolList.push('flow_learn');
     // 偏离（第二轮 G）：能提交任务 DAG 的角色隐式拥有 flow_revise_plan；orchestrator 隐式拥有 flow_replan（转达用户的修订要求）
-    if ((toolList.includes('flow_propose_tasks') || toolList.includes('flow_propose_modules')) && !toolList.includes('flow_revise_plan')) toolList.push('flow_revise_plan');
+    if (toolList.includes('flow_propose_modules') && !toolList.includes('flow_revise_plan')) toolList.push('flow_revise_plan');
     if (name === 'orchestrator' && !toolList.includes('flow_replan')) toolList.push('flow_replan');
     // 第五轮：所有角色都有结构化笔记与历史检索
     for (const x of MEMORY_TOOLS) if (!toolList.includes(x)) toolList.push(x);
-    // 偏离（第四轮）：审查者隐式拥有阶段末审查的两个工具（已有项目的 workflow.yaml 不必改）
-    if (toolList.includes('flow_approve')) for (const x of ['flow_review_report', 'flow_review_confirm']) if (!toolList.includes(x)) toolList.push(x);
-    // 偏离：有 flow_submit 的角色隐式拥有 flow_claim（角色提示要求先 claim；第 8 节模板对 architect、researcher、scout 漏写）
+    // 偏离：有 flow_submit 的角色隐式拥有 flow_claim（角色提示要求先 claim）
     if (toolList.includes('flow_submit') && !toolList.includes('flow_claim')) toolList.push('flow_claim');
     const unique = [...new Set(toolList)];
     const tools = new Set(unique);
@@ -253,8 +250,6 @@ export function parseConfig(source: string): FlowConfig {
     if (ref && !ref.includes('/') && !(ref in wf.models)) errors.push(`${at(loc)}: 模型档位 ${ref} 未在 models 中定义（也可以写 provider/model）`);
   };
   for (const [name, def] of Object.entries(wf.roles)) modelRef(def.escalate_model, ['roles', name, 'escalate_model']);
-  modelRef(wf.review?.low_risk?.model, ['review', 'low_risk', 'model']);
-  modelRef(wf.review?.high_risk?.model, ['review', 'high_risk', 'model']);
 
   if (errors.length) throw new ConfigError(errors);
   return new FlowConfig(wf, roles, kinds, warnings);

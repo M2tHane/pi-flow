@@ -1,6 +1,0 @@
-{ "steps": [
-  { "tool_calls": [ { "name": "flow_brief", "arguments": { "sections": {
-    "goal": "个人管理待办", "users": "我自己，网页端", "scope": "新建、完成、删除待办",
-    "non_goals": "不做多人协作", "acceptance": "新建后列表多一条", "constraints": "无" } } } ] },
-  { "text": "需求已整理完毕：目标、用户、范围、非目标、验收标准、约束都已记录。请执行 /flow-build --confirm 开始。" }
-] }

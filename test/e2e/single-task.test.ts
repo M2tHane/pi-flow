@@ -3,15 +3,15 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { Engine, DispatchError } from '../../src/core/dispatcher.ts';
+import { DispatchError } from '../../src/core/dispatcher.ts';
 import type { RoleSettingsFile } from '../../src/core/schemas.ts';
-import { FakeLauncher, type FakeAgent, type Script } from '../fixtures/fake-subagent/launcher.ts';
-import { setupProject, PROJECT_YAML, type Project } from '../helpers/project.ts';
+import type { FakeAgent } from '../fixtures/fake-subagent/launcher.ts';
+import { makeEngine } from '../helpers/engine.ts';
+import { setupProject } from '../helpers/project.ts';
 import { mkTask } from '../helpers/tasks.ts';
 
-const AGENTS = path.join(import.meta.dirname, '../../agents');
 const allFake: RoleSettingsFile = { version: 1, roles: Object.fromEntries(
-  ['backend-engineer', 'reviewer', 'frontend-engineer'].map((r) => [r, { model: 'fake/model', thinking: 'low' as const }])) };
+  ['backend-engineer', 'frontend-engineer'].map((r) => [r, { model: 'fake/model', thinking: 'low' as const }])) };
 
 const task1 = () => mkTask('T-001', { verify: ['typecheck', 'test'] });
 
@@ -22,22 +22,12 @@ async function implGood(a: FakeAgent, content = 'export const a = 1;') {
   const r = await a.call('flow_submit', { summary: '实现 a' });
   assert.ok(r.ok, r.text);
 }
-const approve: Script = async (a) => { assert.ok((await a.call('flow_approve', { decision: 'pass', notes: '满足验收' })).ok); };
 
-function makeEngine(p: Project, scripts: (role: string, nth: number, a: FakeAgent) => Promise<void>, settings = allFake) {
-  const launcher = new FakeLauncher(p.store, p.config, (spec, nth) => (a) => scripts(spec.env['PI_FLOW_ROLE']!, nth, a));
-  const errors: unknown[] = [];
-  const engine = new Engine({
-    root: p.dir, store: p.store, config: p.config, roleSettings: () => settings, launcher,
-    packageAgentsDir: AGENTS, subagentExtension: '/dev/null/subagent.ts', onError: (e) => errors.push(e),
-  });
-  return { engine, launcher, errors };
-}
 
 test('一个任务从 ready 走到 queued_merge 并自动合入；run 记录写入指标', async () => {
   const p = await setupProject({ tasks: [task1()] });
   try {
-    const { engine, launcher, errors } = makeEngine(p, async (role, _n, a) => (role === 'reviewer' ? approve(a) : implGood(a)));
+    const { engine, launcher, errors } = makeEngine(p, async (_role, _n, a) => implGood(a));
     const d = await engine.next(p.flowId);
     assert.equal(d.length, 1);
     assert.equal(d[0]!.model, 'fake/model');
@@ -45,42 +35,39 @@ test('一个任务从 ready 走到 queued_merge 并自动合入；run 记录写�
     assert.deepEqual(errors, []);
     const t = p.store.readTask(p.flowId, 'T-001');
     assert.equal(t.status, 'done', t.last_failure ?? '');
-    assert.ok(p.store.readEvents().some((e) => e.task === 'T-001' && e.from === 'verifying' && e.to === 'queued_merge'));
+    assert.ok(p.store.readEvents().some((e) => e.task === 'T-001' && e.trigger === 'submit' && e.from === 'in_progress' && e.to === 'queued_merge'));
     assert.deepEqual(p.store.readMergeQueue().queue, []);
     assert.equal(p.git('show', `flow/${p.flowId}/integration:src/server/t-001/a.ts`), 'export const a = 1;');
 
     // 子进程规格：模型、思考级别、工具白名单、guard 扩展最后、token 只在环境变量中
-    const [impl, rev] = launcher.launched;
+    assert.equal(launcher.launched.length, 1, '提交后直接合并，不派审查');
+    const [impl] = launcher.launched;
     assert.equal(impl!.thinking, 'low');
-    assert.ok(impl!.tools.includes('flow_submit') && !impl!.tools.includes('flow_approve'));
-    assert.ok(rev!.tools.includes('flow_approve') && !rev!.tools.includes('write'));
+    assert.ok(impl!.tools.includes('flow_submit') && impl!.tools.includes('notes') && !impl!.tools.includes('flow_accept'));
     assert.equal(impl!.extensions.at(-1), '/dev/null/subagent.ts');
     assert.ok(!impl!.prompt.includes(impl!.env['PI_FLOW_RUN_TOKEN']!));
     assert.match(impl!.cwd, /\.worktrees\/B-001-T-001$/);
-    assert.equal(rev!.cwd, impl!.cwd);
 
     const runs = p.store.listRuns();
-    assert.deepEqual(runs.map((r) => [r.role, r.outcome]).sort(), [['backend-engineer', 'submitted'], ['reviewer', 'approved']]);
+    assert.deepEqual(runs.map((r) => [r.role, r.outcome]), [['backend-engineer', 'submitted']]);
     for (const r of runs) {
       assert.ok(r.ended_at && r.tokens.input! > 0 && r.tokens.output! > 0 && r.model === 'fake/model');
       assert.equal(r.token_hash.length, 64);
     }
     const ev = readdirSync(path.join(p.dir, '.flow/flows', p.flowId, 'evidence/T-001'));
-    // 审查前已验证同一份代码，审查后的 verify 沿用结果，不再重跑（第三轮 1）
-    assert.deepEqual(ev.sort(), ['merge-a0-test.log', 'merge-a0-typecheck.log', 'precheck-a0-test.log', 'precheck-a0-typecheck.log']);
-    assert.ok(p.store.readEvents().some((e) => e.trigger === 'verify_pass' && e.evidence === 'precheck-a0'));
-    assert.match(p.store.readHandoff(p.flowId, 'T-001'), /提交说明：实现 a[\s\S]*审查通过/);
+    // 合并时在集成分支上跑全量 typecheck、lint、test
+    assert.deepEqual(ev.sort(), ['merge-a0-lint.log', 'merge-a0-test.log', 'merge-a0-typecheck.log']);
+    assert.match(p.store.readHandoff(p.flowId, 'T-001'), /提交说明：实现 a/);
     // 主工作区没有被实施角色改动
     assert.ok(!existsSync(path.join(p.dir, 'src/server/t-001/a.ts')));
     assert.deepEqual((await p.store.verifyIntegrity()).errors, []);
   } finally { p.cleanup(); }
 });
 
-test('无 token 或错 token 的提交被拒；审查者不能用实施者的身份通过', async () => {
+test('无 token 或错 token 的提交被拒；实施角色没有验收工具', async () => {
   const p = await setupProject({ tasks: [task1()] });
   try {
     const { engine } = makeEngine(p, async (role, _n, a) => {
-      if (role === 'reviewer') return approve(a);
       await a.call('flow_claim');
       await a.call('write', { path: 'src/server/t-001/a.ts', content: 'x' });
       await a.call('flow_note', { text: 'n' });
@@ -91,8 +78,8 @@ test('无 token 或错 token 的提交被拒；审查者不能用实施者的身
       assert.equal(none.ok, false);
       const otherRun = await a.callAs({ run: 'r-fake' }, 'flow_submit', { summary: 'x' });
       assert.equal(otherRun.ok, false);
-      // 实施角色没有 flow_approve
-      assert.match((await a.call('flow_approve', { decision: 'pass' })).text, /无权使用|未启用/);
+      // 实施角色没有 flow_accept
+      assert.match((await a.call('flow_accept', { items: [] })).text, /无权使用|未启用/);
       assert.ok((await a.call('flow_submit', { summary: 'x' })).ok);
     });
     await engine.next(p.flowId);
@@ -106,7 +93,6 @@ test('diff 越界被拒（改了已跟踪的文件）；还原后再提交通过
   try {
     let rejected = '';
     const { engine } = makeEngine(p, async (role, _n, a) => {
-      if (role === 'reviewer') return approve(a);
       await a.call('flow_claim');
       await a.call('write', { path: 'src/server/t-001/a.ts', content: 'x' });
       // write 工具越界会被 guard 拦下；绕过工具层的改动（例如程序运行改写了已跟踪的文件）靠提交时的 diff 检查兜底。
@@ -129,13 +115,11 @@ test('diff 越界被拒（改了已跟踪的文件）；还原后再提交通过
   } finally { p.cleanup(); }
 });
 
-test('审查前验证失败：不派审查，回到 in_progress 重新派发并带上失败原因', async () => {
+test('合并时全量测试失败：回到 in_progress 重新派发并带上失败原因', async () => {
   const p = await setupProject({ tasks: [task1()] });
   try {
     const prompts: string[] = [];
-    let reviews = 0;
-    const { engine } = makeEngine(p, async (role, nth, a) => {
-      if (role === 'reviewer') { reviews++; return approve(a); }
+    const { engine } = makeEngine(p, async (_role, nth, a) => {
       prompts.push(a.spec.prompt);
       await implGood(a, nth === 1 ? 'FAIL' : 'ok');
     });
@@ -145,23 +129,9 @@ test('审查前验证失败：不派审查，回到 in_progress 重新派发并�
     assert.equal(t.status, 'done');
     assert.equal(t.attempts, 1);
     assert.equal(prompts.length, 2);
-    assert.match(prompts[1]!, /上次未通过的原因[\s\S]*审查前验证失败：test 退出码 1/);
-    assert.equal(reviews, 1, '失败的那次提交没有派审查');
+    assert.match(prompts[1]!, /上次未通过的原因[\s\S]*合并后验证失败（[^）]*test 退出码 1）/);
     const transitions = p.store.readEvents().filter((e) => e.type === 'transition' && e.task === 'T-001').map((e) => `${e.trigger}:${e.from}->${e.to}`);
-    assert.ok(transitions.includes('precheck_fail:review->in_progress'));
-  } finally { p.cleanup(); }
-});
-
-test('review.verify_first: false 时照旧：审查通过后才跑 verify，失败回到 in_progress', async () => {
-  const p = await setupProject({ yaml: PROJECT_YAML.replace('verify_first: true ', 'verify_first: false'), tasks: [task1()] });
-  try {
-    const { engine } = makeEngine(p, async (role, nth, a) => (role === 'reviewer' ? approve(a) : implGood(a, nth === 1 ? 'FAIL' : 'ok')));
-    await engine.next(p.flowId);
-    await engine.idle();
-    assert.equal(p.store.readTask(p.flowId, 'T-001').status, 'done');
-    const transitions = p.store.readEvents().filter((e) => e.type === 'transition' && e.task === 'T-001').map((e) => `${e.trigger}:${e.from}->${e.to}`);
-    assert.ok(transitions.includes('verify_fail:verifying->in_progress'));
-    assert.ok(!transitions.some((x) => x.startsWith('precheck_fail')));
+    assert.ok(transitions.includes('merge_verify_fail:merging->in_progress'));
   } finally { p.cleanup(); }
 });
 
@@ -170,7 +140,6 @@ test('提交前清理可写范围外、未被跟踪的文件（测试运行留�
   try {
     let submitText = '';
     const { engine } = makeEngine(p, async (role, _n, a) => {
-      if (role === 'reviewer') return approve(a);
       assert.ok((await a.call('flow_claim')).ok);
       assert.ok((await a.call('write', { path: 'src/server/t-001/a.ts', content: 'export const a = 1;' })).ok);
       // 模拟测试或程序运行时在工作区写下的数据文件（不经过工具，guard 看不到）
@@ -193,7 +162,7 @@ test('提交前清理可写范围外、未被跟踪的文件（测试运行留�
 test('失败达上限转 blocked，不再派发', async () => {
   const p = await setupProject({ tasks: [task1()] });
   try {
-    const { engine, launcher } = makeEngine(p, async (role, _n, a) => (role === 'reviewer' ? approve(a) : implGood(a, 'FAIL')));
+    const { engine, launcher } = makeEngine(p, async (_role, _n, a) => implGood(a, 'FAIL'));
     await engine.next(p.flowId);
     await engine.idle();
     const t = p.store.readTask(p.flowId, 'T-001');
@@ -204,35 +173,10 @@ test('失败达上限转 blocked，不再派发', async () => {
   } finally { p.cleanup(); }
 });
 
-test('审查打回：带位置、问题、期望修改；实施者收到意见后修复', async () => {
-  const p = await setupProject({ tasks: [task1()] });
-  try {
-    const prompts: string[] = [];
-    const { engine } = makeEngine(p, async (role, nth, a) => {
-      if (role === 'reviewer') {
-        if (nth === 1) {
-          const bad = await a.call('flow_approve', { decision: 'reject', issues: [{ location: 'a.ts', problem: '', expected: 'x' }] });
-          assert.equal(bad.ok, false);
-          assert.ok((await a.call('flow_approve', { decision: 'reject', issues: [{ location: 'src/server/t-001/a.ts:1', problem: '缺少校验', expected: '参数非法时返回 422' }] })).ok);
-          return;
-        }
-        return approve(a);
-      }
-      prompts.push(a.spec.prompt);
-      await implGood(a);
-    });
-    await engine.next(p.flowId);
-    await engine.idle();
-    assert.equal(p.store.readTask(p.flowId, 'T-001').status, 'done');
-    assert.match(prompts[1]!, /src\/server\/t-001\/a\.ts:1：缺少校验；期望：参数非法时返回 422/);
-  } finally { p.cleanup(); }
-});
-
 test('子进程未提交就退出：计一次失败并重新派发', async () => {
   const p = await setupProject({ tasks: [task1()] });
   try {
-    const { engine } = makeEngine(p, async (role, nth, a) => {
-      if (role === 'reviewer') return approve(a);
+    const { engine } = makeEngine(p, async (_role, nth, a) => {
       if (nth === 1) { await a.call('flow_claim'); throw new Error('模型连接失败'); }
       await implGood(a);
     });
@@ -250,8 +194,7 @@ test('子进程未提交就退出：计一次失败并重新派发', async () =>
 test('违规达到上限：run 被终止，任务转 blocked', async () => {
   const p = await setupProject({ tasks: [task1()] });
   try {
-    const { engine } = makeEngine(p, async (role, _n, a) => {
-      if (role === 'reviewer') return approve(a);
+    const { engine } = makeEngine(p, async (_role, _n, a) => {
       for (let i = 0; i < 7; i++) await a.call('bash', { command: 'echo x > .flow/state.json' });
     });
     await engine.next(p.flowId);

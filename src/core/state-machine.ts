@@ -1,19 +1,17 @@
 // 任务与阶段的转移表、前置条件与副作用。纯函数：只根据 facts 判断，不做 IO。
-// 能由程序推导的 facts（依赖状态、并发、互斥、handoff、evidence 等）由 StateStore 计算后传入，不采信调用方。
+// 能由程序推导的 facts（依赖状态、并发、互斥、handoff 等）由 StateStore 计算后传入，不采信调用方。
+// 第五轮起没有逐任务审查与单独的 verify：提交后直接进入合并队列，合并时跑全量测试，质量由模块的独立验收把关。
 import { createHash } from 'node:crypto';
 import type { Lease, StageStatus, TaskFile, TaskStatus } from './schemas.ts';
 import { hardDepsDone } from './dag.ts';
-import { CONTRACTS_PATH, isProtected, matchesAny } from './paths.ts';
+import { INTERFACES_PATH, isProtected, matchesAny } from './paths.ts';
 
 export type Trigger =
-  | 'schedule' | 'dispatch' | 'submit' | 'review_pass' | 'review_reject'
-  | 'verify_pass' | 'verify_fail' | 'merge_start' | 'merge_done' | 'merge_verify_fail'
-  | 'merge_blocked' | 'merge_requeue' | 'block' | 'unblock' | 'lease_expired' | 'run_failed' | 'run_interrupted' | 'run_paused' | 'precheck_fail' | 'report' | 'repro_confirmed' | 'cancel' | 'review_skip' | 'submit_direct';
+  | 'schedule' | 'dispatch' | 'submit' | 'merge_start' | 'merge_done' | 'merge_verify_fail' | 'merge_blocked' | 'merge_requeue'
+  | 'block' | 'unblock' | 'lease_expired' | 'run_failed' | 'run_interrupted' | 'run_paused' | 'report' | 'cancel';
 
 /** 同一任务连续会话中断达到此次数转 blocked，防止无限重来 */
 export const MAX_INTERRUPTIONS = 5;
-
-export interface VerifyResult { command: string; exit_code: number }
 
 export interface Facts {
   now: Date;
@@ -29,25 +27,18 @@ export interface Facts {
   merging_other?: string | null;
   queue_head?: boolean;
   handoff_written?: boolean;
-  evidence_saved?: boolean;
-  contracts_locked?: boolean;
   // —— 由调用方（程序内模块或工具层）提供 ——
   token?: string;
   diff_files?: string[];
-  verify_results?: VerifyResult[];
   rebase_ok?: boolean;
   post_verify_ok?: boolean;
   fast_forwarded?: boolean;
   worktree_clean?: boolean;
   reason?: string;
-  /** 阶段审查修复任务改动了契约中已有的行（只允许新增）：文件列表，由 flow_submit 计算 */
-  contract_rewrites?: string[];
+  /** 改动了模块之间接口文档（docs/interfaces/）里已有的行：实现者只能追加，文件列表由 flow_submit 计算 */
+  interface_rewrites?: string[];
   /** 修改过的、writes 之外的已有测试文件（testing.adjust_tests），由 flow_submit 计算；允许越出 writes */
   test_adjustments?: string[];
-  /** 按 review.per_task 判定本任务不逐任务审查，提交后直接进入合并队列（submit_direct，由 flow_submit 的程序判定） */
-  direct_merge?: boolean;
-  /** 引擎按风险规则判定为低风险（review_skip） */
-  low_risk?: boolean;
   /** unblock 时由用户指定的 attempts，缺省清零 */
   attempts?: number;
 }
@@ -65,7 +56,7 @@ interface Rule {
   failure?: boolean;
 }
 
-export const IN_FLIGHT: readonly TaskStatus[] = ['in_progress', 'review', 'verifying', 'queued_merge', 'merging'];
+export const IN_FLIGHT: readonly TaskStatus[] = ['in_progress', 'queued_merge', 'merging'];
 /** 已结束：完成或被计划修订取消（阶段完成的判断以此为准） */
 export const isSettled = (t: { status: TaskStatus }) => t.status === 'done' || t.status === 'cancelled';
 
@@ -82,33 +73,26 @@ function leaseValid(lease: Lease | null, f: Facts, what: string): string[] {
   return [];
 }
 
-/** 提交（submit、submit_direct）的共同检查：租约、diff 非空且不越界、已写 handoff */
+/** 实现类任务可以在模块之间的接口文档里追加（第五轮）：缺了需要的调用时补上，不能改已有内容 */
+export const canAppendInterfaces = (t: Pick<TaskFile, 'kind'>) => t.kind === 'impl' || t.kind === 'review-fix';
+
+/** 提交的检查：租约、diff 非空且不越界（含登记的公共文件、可追加的接口文档、适配过的已有测试）、已写 handoff */
 function submitErrors(t: TaskFile, f: Facts): string[] {
   const errs = leaseValid(t.lease, f, '提交被拒');
   const diff = f.diff_files;
   if (!diff) errs.push('缺少 worktree diff');
   else if (diff.length === 0) errs.push('worktree 没有改动，无可提交内容');
   else {
-    const prot = diff.filter((p) => isProtected(p, { contractsLocked: f.contracts_locked ?? true }));
+    const prot = diff.filter((p) => isProtected(p));
     if (prot.length) errs.push(`diff 含受保护路径：${prot.join('、')}`);
-    // 阶段审查的修复任务可以补充契约（第四轮）；只能新增由 flow_submit 检查（contract_rewrites）
-    // 适配已有测试（第四轮后续）：只修改、不新增删除的已有测试文件由 flow_submit 算出，不算越界
     const adjusted = new Set(f.test_adjustments ?? []);
     const owned = [...t.writes, ...(t.shared ?? [])];
-    const outside = diff.filter((p) => !matchesAny(p, owned) && !adjusted.has(p) && !(t.kind === 'review-fix' && matchesAny(p, [CONTRACTS_PATH])));
+    const outside = diff.filter((p) => !matchesAny(p, owned) && !adjusted.has(p) && !(canAppendInterfaces(t) && matchesAny(p, [INTERFACES_PATH])));
     if (outside.length) errs.push(`diff 越出任务 writes：${outside.join('、')}`);
-    if (f.contract_rewrites?.length) errs.push(`只能在契约中新增内容，不能修改或删除已有内容：${f.contract_rewrites.join('、')}`);
+    if (f.interface_rewrites?.length) errs.push(`只能在接口文档中追加内容，不能修改或删除已有内容：${f.interface_rewrites.join('、')}`);
   }
   errs.push(...need(f.handoff_written, '尚未写 handoff，请先调用 flow_note'));
   return errs;
-}
-
-/** 提交的共同效果：记录实施 run、收回租约、记下适配过的已有测试（审查时核对） */
-function submitEffect(t: TaskFile, f: Facts): void {
-  t.impl_run = t.lease!.run_id;
-  t.lease = null;
-  if (f.test_adjustments?.length) t.test_adjustments = [...f.test_adjustments];
-  else delete t.test_adjustments;
 }
 
 export const TRANSITIONS: readonly Rule[] = [
@@ -135,68 +119,15 @@ export const TRANSITIONS: readonly Rule[] = [
     ],
   },
   {
-    from: ['in_progress'], to: 'review', trigger: 'submit',
-    check: (t, f) => [...need(f.direct_merge !== true, '本任务不逐任务审查，应直接进入合并队列'), ...submitErrors(t, f)],
-    effect: submitEffect,
-  },
-  {
-    // 偏离（第四轮）：关闭逐任务审查时提交后直接进入合并队列，合并时跑全量测试，质量由阶段末审查把关
-    from: ['in_progress'], to: 'queued_merge', trigger: 'submit_direct',
-    check: (t, f) => [...need(f.direct_merge === true, '本任务需要逐任务审查'), ...submitErrors(t, f)],
-    effect: submitEffect,
-  },
-  {
-    from: ['review'], to: 'verifying', trigger: 'review_pass',
-    check: (t, f) => [
-      ...leaseValid(t.lease, f, '审查结论被拒'),
-      ...need(!t.lease || t.lease.run_id !== t.impl_run, '审查 run 与实施 run 是同一个 run'),
-    ],
-    effect: (t) => { t.lease = null; },
-  },
-  {
-    // 偏离（第二轮 H）：低风险任务按 workflow.yaml 配置只做程序检查、免审查。只能由引擎在没有审查 run 时执行
-    from: ['review'], to: 'verifying', trigger: 'review_skip',
-    check: (t, f) => [
-      ...need(f.actor === 'engine', '只有引擎可以按风险规则免审查'),
-      ...need(!t.lease, '已有审查 run 在进行'),
-      ...need(f.low_risk === true, '任务不是低风险'),
-      ...reasonRequired(f),
-    ],
-  },
-  {
-    from: ['review'], to: 'in_progress', trigger: 'review_reject', failure: true,
-    check: (t, f) => [
-      ...leaseValid(t.lease, f, '审查结论被拒'),
-      ...need(!t.lease || t.lease.run_id !== t.impl_run, '审查 run 与实施 run 是同一个 run'),
-      ...need(!!f.reason?.trim(), '打回必须附原因'),
-    ],
-  },
-  {
-    from: ['verifying'], to: 'queued_merge', trigger: 'verify_pass',
-    check: (t, f) => {
-      const results = f.verify_results ?? [];
-      const errs: string[] = [];
-      for (const c of t.verify) {
-        const r = results.find((x) => x.command === c);
-        if (!r) errs.push(`verify 命令 ${c} 未执行`);
-        else if (r.exit_code !== 0) errs.push(`verify 命令 ${c} 退出码 ${r.exit_code}`);
-      }
-      return [...errs, ...need(f.evidence_saved, 'evidence 未保存')];
+    // 提交后直接进入合并队列，合并时跑全量测试
+    from: ['in_progress'], to: 'queued_merge', trigger: 'submit',
+    check: submitErrors,
+    effect: (t, f) => {
+      t.impl_run = t.lease!.run_id;
+      t.lease = null;
+      if (f.test_adjustments?.length) t.test_adjustments = [...f.test_adjustments];
+      else delete t.test_adjustments;
     },
-  },
-  {
-    // 偏离（第三轮 1）：派审查前程序先跑 verify，失败直接退回实施，不花审查的钱
-    from: ['review'], to: 'in_progress', trigger: 'precheck_fail', failure: true,
-    check: (t, f) => [
-      ...need(f.actor === 'verify-runner', '只有程序可以执行审查前验证'),
-      ...need(!t.lease, '审查已在进行'),
-      ...need((f.verify_results ?? []).some((r) => r.exit_code !== 0), 'verify 结果中没有失败的命令'),
-      ...need(f.evidence_saved, 'evidence 未保存'),
-    ],
-  },
-  {
-    from: ['verifying'], to: 'in_progress', trigger: 'verify_fail', failure: true,
-    check: (_t, f) => need((f.verify_results ?? []).some((r) => r.exit_code !== 0), 'verify 结果中没有失败的命令'),
   },
   {
     from: ['queued_merge'], to: 'merging', trigger: 'merge_start',
@@ -231,41 +162,19 @@ export const TRANSITIONS: readonly Rule[] = [
   {
     from: IN_FLIGHT, to: 'blocked', trigger: 'block',
     check: (_t, f) => reasonRequired(f),
-    effect: (t, f) => { t.blocked_from = t.status; t.blocked_reason = f.reason!; t.lease = null; },
+    effect: (t, f) => { t.blocked_reason = f.reason!; t.lease = null; },
   },
   {
-    // 偏离（真实模型冒烟）：审查者在审查中 flow_block 提问，用户回答后回到审查（保留 worktree 与已提交的改动），不重新实施
-    from: ['blocked'], to: 'review', trigger: 'unblock',
-    check: (t, f) => [
-      ...need(f.actor === 'human', '只有用户可以通过 /flow unblock 解除阻塞'),
-      ...need(t.blocked_from === 'review', '只有在审查中阻塞的任务可以回到审查'),
-      ...need(!!t.worktree && !!t.base_sha, '任务的 worktree 已不存在，只能回到 ready 重新实施'),
-    ],
-    effect: (t) => { delete t.blocked_from; t.blocked_reason = null; t.lease = null; t.lease_expirations = 0; },
-  },
-  {
-    // 偏离（fix 模式）：只读探查任务（analysis）提交结论后直接完成，没有 diff、审查与合并
+    // 只读任务（需求讨论、验收、计划修订）提交结论后直接完成，没有 diff 与合并
     from: ['in_progress'], to: 'done', trigger: 'report',
     check: (t, f) => [
       ...leaseValid(t.lease, f, '提交被拒'),
       ...need(t.kind === 'analysis', '只有 analysis 任务可以直接提交结论'),
       ...need((f.diff_files ?? []).length === 0, `只读任务不得有改动：${(f.diff_files ?? []).join('、')}`),
       ...need(f.handoff_written, '尚未写 handoff，请先调用 flow_note'),
-      ...need(!!t.findings || !!t.replan || !!t.stage_review || !!t.advocate || !!t.accept_of, '缺少结构化结论（findings）'),
+      ...need(!!t.replan || !!t.advocate || !!t.accept_of, '缺少结构化结论'),
     ],
     effect: (t) => { t.impl_run = t.lease!.run_id; t.lease = null; t.worktree = null; },
-  },
-  {
-    // 偏离：测试必须先失败（fix 的复现测试、build/feature 的先行验收测试）；确认失败即完成，随修复任务或承载者一起合入
-    from: ['verifying'], to: 'done', trigger: 'repro_confirmed',
-    check: (t, f) => {
-      const results = f.verify_results ?? [];
-      return [
-        ...need(t.kind === 'test', '只有复现测试任务可以确认复现'),
-        ...need(results.length > 0 && results.every((r) => r.exit_code !== 0), '复现测试没有失败，不能确认复现'),
-        ...need(f.evidence_saved, 'evidence 未保存'),
-      ];
-    },
   },
   {
     // 偏离（第二轮 G）：用户批准的计划修订取消未开始或已阻塞（已停止）的任务；进行中或已完成的任务不能取消
@@ -285,11 +194,6 @@ export const TRANSITIONS: readonly Rule[] = [
     effect: (t) => { t.lease = null; t.interruptions = (t.interruptions ?? 0) + 1; },
   },
   {
-    from: ['review'], to: 'review', trigger: 'run_interrupted',
-    check: (t, f) => [...need(!!t.lease, '任务没有运行中的审查 run'), ...reasonRequired(f)],
-    effect: (t) => { t.lease = null; t.interruptions = (t.interruptions ?? 0) + 1; },
-  },
-  {
     // 偏离（第三轮 A）：模型服务不可用（额度用完、限流等）不是任务的问题，不计失败也不计中断；
     // 清空租约等模型恢复后由引擎重新派发（暂停记录见 core/model-pause.ts）
     from: ['in_progress'], to: 'in_progress', trigger: 'run_paused',
@@ -297,19 +201,9 @@ export const TRANSITIONS: readonly Rule[] = [
     effect: (t) => { t.lease = null; },
   },
   {
-    from: ['review'], to: 'review', trigger: 'run_paused',
-    check: (t, f) => [...need(!!t.lease, '任务没有运行中的审查 run'), ...reasonRequired(f)],
-    effect: (t) => { t.lease = null; },
-  },
-  {
-    from: ['review'], to: 'review', trigger: 'run_failed', failure: true,
-    check: (t, f) => [...need(!!t.lease, '任务没有运行中的审查 run'), ...reasonRequired(f)],
-  },
-  {
     from: ['blocked'], to: 'ready', trigger: 'unblock',
     check: (_t, f) => need(f.actor === 'human', '只有用户可以通过 /flow unblock 解除阻塞'),
     effect: (t, f) => {
-      delete t.blocked_from;
       t.attempts = f.attempts ?? 0;
       t.lease_expirations = 0;
       t.blocked_reason = null;
@@ -355,10 +249,6 @@ export function planTransition(task: TaskFile, to: TaskStatus, trigger: Trigger,
     next.attempts += 1;
     next.lease = null;
     if (facts.reason) next.last_failure = facts.reason;
-    else if (facts.verify_results) {
-      next.last_failure = facts.verify_results.filter((r) => r.exit_code !== 0)
-        .map((r) => `${r.command} 退出码 ${r.exit_code}`).join('；');
-    }
     if (next.attempts >= facts.limits.max_attempts) {
       effective = 'blocked';
       next.blocked_reason = `失败次数达到上限 ${facts.limits.max_attempts}：${next.last_failure ?? trigger}`;

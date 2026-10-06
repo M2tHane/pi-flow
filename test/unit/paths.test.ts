@@ -34,12 +34,11 @@ test('normalizeRelPath：消除 .. 并拒绝越出根目录', () => {
 test('matchesAny 与受保护路径', () => {
   assert.equal(matchesAny('src/server/a.ts', ['src/server/**']), true);
   assert.equal(matchesAny('.flow/state.json', ['src/**']), false);
-  assert.equal(isProtected('.flow/state.json', { contractsLocked: false }), true);
-  assert.equal(isProtected('.git/HEAD', { contractsLocked: false }), true);
-  assert.equal(isProtected('workflow.yaml', { contractsLocked: false }), true);
-  assert.equal(isProtected('rules/backend.md', { contractsLocked: false }), true);
-  assert.equal(isProtected('.pi/settings.json', { contractsLocked: false }), true);
-  assert.equal(isProtected('docs/contracts/a.ts', { contractsLocked: false }), false);
-  assert.equal(isProtected('docs/contracts/a.ts', { contractsLocked: true }), true);
-  assert.equal(isProtected('src/a.ts', { contractsLocked: true }), false);
+  assert.equal(isProtected('.flow/state.json'), true);
+  assert.equal(isProtected('.git/HEAD'), true);
+  assert.equal(isProtected('workflow.yaml'), true);
+  assert.equal(isProtected('rules/backend.md'), true);
+  assert.equal(isProtected('.pi/settings.json'), true);
+  assert.equal(isProtected('docs/interfaces/a.md'), false);
+  assert.equal(isProtected('src/a.ts'), false);
 });

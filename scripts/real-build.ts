@@ -1,4 +1,4 @@
-// 真实模型冒烟：用 /flow-config 中的模型从零跑一个小项目的 build 流程（S0→S5），实施中途发起一次计划修订。
+// 真实模型冒烟：用 /flow-config 中的模型从零跑一个小项目的 build 流程（需求 → 原型 → 规划 → 模块实施与验收），实施中途发起一次计划修订。
 //   node scripts/real-build.ts [--keep] [--no-replan] [--dir <已有项目目录>]
 // 任务阻塞时自动解除一次（代替用户），同一任务再次阻塞则停止。
 // 每一步都通过 pi -p 执行斜杠命令（不调用主会话模型）；闸门由脚本代替用户批准，批准前打印要审批的内容。
@@ -67,7 +67,6 @@ try {
   typecheck: "true"
   lint: "true"
   test: "node --test --test-timeout=60000"
-  test_affected: "node --test --test-timeout=60000 {files}"
   e2e: "node --test --test-timeout=60000"
 limits:`));
   sh(dir, 'git', ['add', 'workflow.yaml']);
@@ -90,19 +89,26 @@ limits:`));
     const rev = store.readRevision(active);
     if (rev?.status === 'proposed') {
       step(`计划修订待批准：${rev.summary}`);
-      await pi(dir, '/flow approve');
+      await pi(dir, '/flow-approve');
       continue;
     }
     if (f.stage_status === 'awaiting_human') {
       step(`阶段 ${f.stage} 等待批准`);
-      if (f.stage === 'S0' && existsSync(path.join(dir, '.flow'))) {
-        try { console.log(sh(dir, 'git', ['show', `${f.integration_branch}:docs/PRD.md`]).slice(0, 3000)); } catch { /* 无 PRD */ }
+      if (f.stage === 'D0' && existsSync(path.join(dir, '.flow'))) {
+        try { console.log(sh(dir, 'git', ['show', `${f.integration_branch}:docs/requirements.md`]).slice(0, 3000)); } catch { /* 无需求说明 */ }
       }
-      await pi(dir, f.stage === f.stages.at(-1) ? '/flow approve --yes' : '/flow approve --rules all');
+      await pi(dir, f.stage === f.stages.at(-1) ? '/flow-approve --yes' : '/flow-approve --rules all');
+      continue;
+    }
+    // 验收两轮仍未通过：打印结论后代替用户放行（真实使用时用户会先看结论再决定）
+    const stuck = store.listAcceptances(active).find((a) => a.status === 'needs_human');
+    if (stuck) {
+      step(`${stuck.task} 验收需要人工处理：\n${stuck.results.filter((r) => !r.passed).map((r) => `- ${r.id} ${r.evidence}`).join('\n')}\n→ 代替用户 /flow accept`);
+      await pi(dir, `/flow accept ${stuck.task} --note "冒烟脚本代替用户放行"`);
       continue;
     }
     const blocked = store.listTasks(active).filter((t) => t.status === 'blocked');
-    const busy = store.listTasks(active).some((t) => t.lease || ['verifying', 'queued_merge', 'merging'].includes(t.status) || t.status === 'ready');
+    const busy = store.listTasks(active).some((t) => t.lease || ['queued_merge', 'merging'].includes(t.status) || t.status === 'ready');
     if (blocked.length && !busy) {
       // 代替"只和主 agent 对话、不动代码"的用户回答：同一任务最多三次，采纳 agent 给出的建议
       const b = blocked.find((t) => (unblockCount.get(t.id) ?? 0) < 3);
@@ -129,7 +135,7 @@ limits:`));
       step(`模型暂停，停止：${pauses.map((p) => describePause(p, new Date())).join('；')}\n恢复后：node scripts/real-build.ts --dir ${dir} --keep`);
       break;
     }
-    if (!replanned && f.stage === 'S3' && store.listTasks(active).some((t) => t.stage === 'S3' && t.status === 'done')) {
+    if (!replanned && f.stage === 'E' && store.listTasks(active).some((t) => t.stage === 'E' && t.status === 'done')) {
       replanned = true;
       step('实施中途发起计划修订');
       await pi(dir, '/flow replan "还需要 remove(id) 删除待办（id 不存在时抛错），以及 clearDone() 清除已完成的待办"');
@@ -161,7 +167,7 @@ limits:`));
   console.log(`\n知识库：${store.readKnowledge().entries.map((e) => `${e.id}[${e.status}] ${e.content.slice(0, 80)}`).join('\n  ') || '（空）'}`);
   const ev = store.readEvents().filter((e) => e.flow === flowId);
   console.log(`\n违规 ${ev.filter((e) => e.type === 'violation').length} 次：${ev.filter((e) => e.type === 'violation').map((e) => (e.reason ?? '').slice(0, 100)).join('\n  ')}`);
-  console.log(`审查打回 ${ev.filter((e) => e.trigger === 'review_reject').length} 次；审查前验证失败 ${ev.filter((e) => e.trigger === 'precheck_fail').length} 次；验证失败 ${ev.filter((e) => e.trigger === 'verify_fail').length} 次；合并后验证失败 ${ev.filter((e) => e.trigger === 'merge_verify_fail').length} 次；免审查 ${ev.filter((e) => e.trigger === 'review_skip').length} 次`);
+  console.log(`合并后验证失败 ${ev.filter((e) => e.trigger === 'merge_verify_fail').length} 次`);
   // 工具调用统计（来自会话留档；codemode 脚本内部的调用不单独计）
   const { summarizeSession, findSessionFile } = await import('../src/core/session-log.ts');
   const calls = new Map<string, { runs: number; calls: number; errors: number }>();
@@ -175,7 +181,7 @@ limits:`));
   console.log(`\n工具调用（顶层，按角色）：`);
   for (const [role, c] of calls) console.log(`  ${role}：${c.runs} 次运行，${c.calls} 次工具调用，其中失败 ${c.errors} 次`);
   const runs = store.listRuns().filter((x) => x.flow === flowId);
-  console.log(`升级模型的运行 ${runs.filter((r) => r.escalated).length} 次；低风险审查 ${runs.filter((r) => r.review_mode === 'light').length} 次；强模型审查 ${runs.filter((r) => r.review_mode === 'strong').length} 次；被终止 ${runs.filter((r) => r.outcome === 'killed').length} 次；接着上次对话的返工 ${runs.filter((r) => r.forked_from).length} 次；模型暂停 ${runs.filter((r) => r.outcome === 'unavailable').length} 次`);
+  console.log(`升级模型的运行 ${runs.filter((r) => r.escalated).length} 次；被终止 ${runs.filter((r) => r.outcome === 'killed').length} 次；接着上次对话的返工 ${runs.filter((r) => r.forked_from).length} 次；模型暂停 ${runs.filter((r) => r.outcome === 'unavailable').length} 次`);
   console.log(`完整性校验：${(await store.verifyIntegrity()).ok ? '通过' : '失败'}`);
 } finally {
   if (!args.has('--keep')) { rmSync(dir, { recursive: true, force: true }); rmSync(`${dir}.worktrees`, { recursive: true, force: true }); }

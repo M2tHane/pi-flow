@@ -13,10 +13,7 @@ import { approveStage, rejectStage, unblockTask, startFlow } from '../core/stage
 import { PROTOTYPE_STAGE } from '../modes/plan.ts';
 import { addRequirement } from '../core/additions.ts';
 import { acceptManually } from '../core/acceptance.ts';
-import { continueFix } from '../modes/fix.ts';
 import { readFileSync } from 'node:fs';
-import type { BriefFile } from '../core/schemas.ts';
-import { CHECKLISTS, CONFIRM_COMMAND, MODE_LABEL, activeBrief, cancelBrief, confirmBrief, markConfirmed, renderBrief, startBrief, type InterviewMode } from '../modes/interview.ts';
 import { costReport, formatCost } from '../core/cost.ts';
 import { renderStatus, visibleFlows } from '../core/status-view.ts';
 import { applyDrafts, formatDrafts, listDrafts, type Draft } from '../core/rules-draft.ts';
@@ -52,8 +49,6 @@ export interface CommandEnv {
   availableModels(): string[];
   /** 进入调度模式（orchestrator）：收窄工具、切换到 orchestrator 的模型；返回提示信息 */
   activateOrchestrator(): Promise<string | void> | string | void;
-  /** 进入需求访谈模式（主会话只能读文档与记录需求） */
-  activateInterview?(mode: InterviewMode): Promise<void> | void;
   /** 退出调度模式：恢复进入前的模型、思考级别与工具 */
   deactivateOrchestrator?(): Promise<string> | string;
   /** 非交互模式：命令结束后进程退出，需要等待引擎跑完 */
@@ -204,12 +199,7 @@ export async function runFlowCommand(args: string, env: CommandEnv): Promise<str
     case 'approve': {
       const h = env.engine();
       const flowId = currentFlowId(h.store);
-      if (h.store.readFlow(flowId).mode === 'fix') {
-        const text = await continueFix(h.store, flowId);
-        await h.engine.pump(flowId);
-        if (env.waitForIdle) await h.engine.idle();
-        return `${text}\n\n${renderStatus(h.store, h.config)}`;
-      }
+      if (h.store.readFlow(flowId).mode === 'fix') return '修复不需要批准：合并后由验收者确认，通过即合入主分支。验收"需要你处理"时用 /flow accept <任务> 放行。';
       if (h.store.readRevision(flowId)?.status === 'proposed') {
         const text = await approveRevision({ root: env.root, store: h.store, config: h.config }, flowId);
         await h.engine.pump(flowId);
@@ -400,23 +390,16 @@ export async function runFlowCommand(args: string, env: CommandEnv): Promise<str
 
 export const BUILD_USAGE = [
   '用法：',
-  '  /flow-build ["<项目描述>"]              先与你访谈需求，确认后从零建新项目',
-  '  /flow-build --feature ["<功能描述>"]    先访谈功能需求，确认后在已有项目上加功能',
-  '  /flow-build --confirm                   需求访谈完成后确认，开始流程',
-  '  /flow-build --cancel                    放弃当前的需求访谈',
-  '  /flow-build --direct "<描述>"           跳过访谈直接开始（加 --feature 为功能）',
-  '  /flow-build --from <文件>               用写好的需求文档直接开始（加 --feature 为功能）',
+  '  /flow-build "<想法>"                    从零建新项目：先讨论需求（用户视角、开发视角各一版，汇总给你审），再原型、规划、按模块实施',
+  '  /flow-build --feature "<功能描述>"      在已有项目上加功能，流程相同',
+  '  /flow-build --from <文件>               用写好的需求文档开始（加 --feature 为功能）',
   '小改动（单文件、几十行以内）直接用 pi 更划算；缺陷修复用 /flow-fix。',
 ].join('\n');
 
 export const FIX_USAGE = [
   '用法：',
-  '  /flow-fix ["<问题描述>"]          先问清现象与复现步骤，确认后开始修复',
-  '  /flow-fix --confirm [--yes]       访谈完成后确认，开始修复',
-  '  /flow-fix --cancel                放弃当前的访谈',
-  '  /flow-fix --direct "<问题描述>"   跳过访谈直接修复',
-  '  /flow-fix --from <文件>           用写好的问题描述直接修复',
-  '流程：scout 定位 → （超出规模时请你决定）→ 复现测试（必须先失败）→ 修复 → 审查 → verify → 直接合入主分支。',
+  '  /flow-fix "<问题描述>"            修复缺陷：实现者定位并修复（加回归测试）→ 合并时跑全量测试 → 验收者复现确认 → 合入主分支',
+  '  /flow-fix --from <文件>           用写好的问题描述开始',
 ].join('\n');
 
 async function ensureInitialized(env: CommandEnv, lines: string[]): Promise<void> {
@@ -444,19 +427,6 @@ function assertNoActiveFlow(h: EngineHandle): void {
   }
 }
 
-/** 开始一次需求访谈（主会话进入访谈模式） */
-async function beginInterview(env: CommandEnv, mode: InterviewMode, description: string, lines: string[]): Promise<string> {
-  const h = env.engine();
-  if (activeBrief(h.store)) await cancelBrief(h.store);
-  const brief = await startBrief(h.store, mode, description);
-  await env.activateInterview?.(mode);
-  lines.push(`开始需求访谈（${MODE_LABEL[mode]}）。我会一次问一个问题，问清 ${CHECKLISTS[mode].map((x) => x.label).join('、')}。`);
-  lines.push(`问完后执行 ${CONFIRM_COMMAND[mode]} 开始；不想访谈可以用 --direct "<描述>" 或 --from <文件>。`);
-  if (!env.ui) lines.push('（当前没有交互界面：请直接发送你的回答，访谈者会记录。）');
-  void brief;
-  return lines.join('\n');
-}
-
 /** /flow-build 与 /flow-build --feature */
 export async function runFlowBuild(args: string, env: CommandEnv): Promise<string> {
   const argv = splitArgs(args);
@@ -464,25 +434,13 @@ export async function runFlowBuild(args: string, env: CommandEnv): Promise<strin
   const lines: string[] = [];
   await ensureInitialized(env, lines);
   const h = env.engine();
-  if (argv.includes('--cancel')) { await cancelBrief(h.store); await env.deactivateOrchestrator?.(); return '已放弃需求访谈。'; }
-
-  if (argv.includes('--confirm')) {
-    const b = await confirmBrief(h.store, 'build');
-    assertNoActiveFlow(h);
-    return startBuildFlow(env, b.mode as 'build' | 'feature', b.description || b.sections['goal'] || '新项目', renderBrief(b), lines, b);
-  }
-
-  const feature = argv.includes('--feature');
+  const mode = argv.includes('--feature') ? 'feature' : 'build';
   const fromFile = readFromFile(env, argv);
   const description = argv.filter((a, i) => !a.startsWith('--') && argv[i - 1] !== '--from').join(' ').trim();
   assertNoActiveFlow(h);
-  const mode = feature ? 'feature' : 'build';
   if (fromFile) return startBuildFlow(env, mode, fromFile.split('\n')[0]!.replace(/^#+\s*/, '').slice(0, 120) || '新项目', fromFile, lines);
-  if (argv.includes('--direct')) {
-    if (!description) throw new Error(`--direct 需要描述。\n${BUILD_USAGE}`);
-    return startBuildFlow(env, mode, description, '', lines);
-  }
-  return beginInterview(env, mode, description, lines);
+  if (!description) throw new Error(`请写下你的想法（几句话就够，需求阶段会展开讨论）。\n${BUILD_USAGE}`);
+  return startBuildFlow(env, mode, description, '', lines);
 }
 
 /** 开流程前检查依赖：Pi 版本过低直接拒绝；插件缺失或版本未经验证只提醒 */
@@ -496,12 +454,11 @@ function dependencyGate(env: CommandEnv, config: FlowConfig, lines: string[]): v
   if (warns.length) lines.push(`依赖提醒（不影响开始，相关工具可能不可用；/flow doctor 查看）：\n${warns.map((i) => `! ${i.item}：${i.detail}`).join('\n')}`, '');
 }
 
-async function startBuildFlow(env: CommandEnv, mode: 'build' | 'feature', title: string, brief: string, lines: string[], confirmed?: BriefFile): Promise<string> {
+async function startBuildFlow(env: CommandEnv, mode: 'build' | 'feature', title: string, brief: string, lines: string[]): Promise<string> {
   const h = env.engine();
   dependencyGate(env, h.config, lines);
   const flow = await startFlow({ root: env.root, store: h.store, config: h.config }, mode, title);
   if (brief) await h.store.saveFlowBrief(flow.id, brief);
-  if (confirmed) await markConfirmed(h.store, flow.id);
   await env.activateOrchestrator();
   await h.engine.pump(flow.id);
   const d = await h.engine.next(flow.id);
@@ -519,26 +476,11 @@ export async function runFlowFix(args: string, env: CommandEnv): Promise<string>
   const lines: string[] = [];
   await ensureInitialized(env, lines);
   const h = env.engine();
-  if (argv.includes('--cancel')) { await cancelBrief(h.store); await env.deactivateOrchestrator?.(); return '已放弃访谈。'; }
-
-  let description: string;
-  let brief = '';
-  let confirmed: BriefFile | undefined;
-  if (argv.includes('--confirm')) {
-    confirmed = await confirmBrief(h.store, 'fix');
-    description = confirmed.description || confirmed.sections['symptom'] || '修复';
-    brief = renderBrief(confirmed);
-  } else {
-    const fromFile = readFromFile(env, argv);
-    const desc = argv.filter((a, i) => !a.startsWith('--') && argv[i - 1] !== '--from').join(' ').trim();
-    if (fromFile) { description = fromFile.split('\n')[0]!.replace(/^#+\s*/, '').slice(0, 120); brief = fromFile; }
-    else if (argv.includes('--direct')) {
-      if (!desc) throw new Error(`--direct 需要问题描述。\n${FIX_USAGE}`);
-      description = desc;
-    } else {
-      return beginInterview(env, 'fix', desc, lines);
-    }
-  }
+  const fromFile = readFromFile(env, argv);
+  const desc = argv.filter((a, i) => !a.startsWith('--') && argv[i - 1] !== '--from').join(' ').trim();
+  const description = fromFile ? fromFile.split('\n')[0]!.replace(/^#+\s*/, '').slice(0, 120) : desc;
+  const brief = fromFile ?? '';
+  if (!description) throw new Error(`请描述问题：现象、复现步骤、期望结果。\n${FIX_USAGE}`);
 
   const active = h.store.readState().active_flow;
   if (active) {
@@ -556,10 +498,9 @@ export async function runFlowFix(args: string, env: CommandEnv): Promise<string>
   dependencyGate(env, h.config, lines);
   const fix = await h.store.createFixFlow(description, main, git(env.root, ['rev-parse', main]).trim());
   if (brief) await h.store.saveFlowBrief(fix.id, brief);
-  if (confirmed) await markConfirmed(h.store, fix.id);
   await env.activateOrchestrator();
   await h.engine.pump(fix.id);
-  lines.push(`已创建修复 ${fix.id}，scout 开始定位问题。`);
+  lines.push(`已创建修复 ${fix.id}，实现者开始定位并修复。`);
   if (env.waitForIdle) await h.engine.idle();
   lines.push('', renderStatus(h.store, h.config));
   return lines.join('\n');
@@ -660,7 +601,7 @@ async function runKnowledge(argv: string[], env: CommandEnv): Promise<string> {
       const query = argv.filter((a) => a !== '--all').join(' ');
       const k = store.readKnowledge();
       const hits = searchKnowledge(k, query, all);
-      if (!k.entries.length) return `项目知识库还是空的。任务执行中 agent 会用 flow_learn 记录经验；审查打回与合并后验证失败会生成候选。\n\n${KNOWLEDGE_USAGE}`;
+      if (!k.entries.length) return `项目知识库还是空的。任务执行中 agent 会用 flow_learn 记录经验；合并后验证失败会生成候选（knowledge.auto_candidates）。\n\n${KNOWLEDGE_USAGE}`;
       if (!hits.length) return `没有匹配的知识条目${query ? `（${query}）` : ''}。\n\n${KNOWLEDGE_USAGE}`;
       const cand = hits.filter((e) => e.status === 'candidate').length;
       return `项目知识（${hits.length} 条${cand ? `，其中 ${cand} 条候选待确认` : ''}）：\n${formatKnowledgeList(hits)}\n\n${KNOWLEDGE_USAGE}`;
@@ -675,8 +616,8 @@ async function offerDrafts(env: CommandEnv, h: EngineHandle, flowId: string, fla
   const list = `架构师提出了规则与命令草案：\n${formatDrafts(drafts)}`;
   if (flag === 'all') return `${list}\n${await applyAndReport(env, h, flowId, drafts)}`;
   if (flag === 'none') return `${list}\n未应用（之后可用 /flow rules apply）。`;
-  if (!env.ui) return `${list}\n建议应用：/flow rules apply all（或逐个指定文件）；不应用时实施与审查按通用规则，可能与架构设计冲突。`;
-  const pick = await env.ui.select(`${list}\n\n是否应用？草案是架构师按本项目技术栈写的，通常建议全部应用；不应用时实施与审查按通用规则，可能与架构设计冲突。`, ['全部应用（推荐）', '逐个选择', '暂不应用']);
+  if (!env.ui) return `${list}\n建议应用：/flow rules apply all（或逐个指定文件）；不应用时实现者只按通用规则，可能与规划冲突。`;
+  const pick = await env.ui.select(`${list}\n\n是否应用？草案是架构师按本项目技术栈写的，通常建议全部应用；不应用时实现者只按通用规则，可能与规划冲突。`, ['全部应用（推荐）', '逐个选择', '暂不应用']);
   if (pick === '全部应用（推荐）') return applyAndReport(env, h, flowId, drafts);
   if (pick !== '逐个选择') return '规则草案暂未应用（之后可用 /flow rules apply）。';
   const chosen: Draft[] = [];

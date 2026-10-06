@@ -45,7 +45,6 @@ test('执行中修订计划：经主 agent 发起，architect 起草，校验拒
     const hold = new Promise<void>((r) => { release = r; });
     const architectSaw: string[] = [];
     const { engine, launcher, errors } = makeEngine(p, async (role, _n, a) => {
-      if (role === 'reviewer') { assert.ok((await a.call('flow_approve', { decision: 'pass', notes: 'ok' })).ok); return; }
       if (role === 'architect') {
         const t = p.store.readTask(p.flowId, a.env.task);
         architectSaw.push(t.replan!);
@@ -144,7 +143,6 @@ test('修订待批准期间，被点名调整或取消的任务暂停派发；�
   const p = await setupProject({ yaml: YAML, tasks: [mkTask('T-001', { verify: [] }), mkTask('T-002', { verify: [], writes: ['src/server/t-002/**'] })] });
   try {
     const { engine } = makeEngine(p, async (role, _n, a) => {
-      if (role === 'reviewer') { assert.ok((await a.call('flow_approve', { decision: 'pass', notes: 'ok' })).ok); return; }
       return implement(a, `src/server/${a.env.task.toLowerCase()}/a.ts`);
     }, ALL_FAKE);
     await engine.promote(p.flowId);
@@ -156,71 +154,5 @@ test('修订待批准期间，被点名调整或取消的任务暂停派发；�
     await p.store.rejectRevision(p.flowId, '不改了');
     assert.deepEqual((await engine.next(p.flowId)).map((d) => d.task).sort(), ['T-001', 'T-002']);
     await engine.idle();
-  } finally { p.cleanup(); }
-});
-
-test('运行中改 API 文档：修订分析影响、新增"改 API 文档"任务，取消受影响的未开始任务并派发新任务；只有该任务能写已锁定的契约', async () => {
-  const p = await setupProject({ yaml: YAML, files: { 'docs/contracts/api.md': '# API\nPOST /accounts\n' }, tasks: [
-    mkTask('T-001', { verify: [] }),
-    mkTask('T-002', { verify: [], writes: ['src/server/t-002/**'], deps: [{ task: 'T-001', type: 'hard', reason: '需要账户' }] }),
-  ] });
-  try {
-    // 规划阶段已批准：契约锁定
-    await p.store.transaction((tx) => { const f = tx.readFlow(p.flowId); tx.putFlow({ ...f, approvals: { ...f.approvals, S1: { by: 'human', at: tx.ts } } }); tx.event({ flow: p.flowId, actor: 'human', type: 'approval', reason: '测试：锁定契约' }); });
-    const doc = { kind: 'doc' as const, role: 'architect', scopes: ['docs'], inputs: [], verify: [] };
-    let blockedWrite = '';
-    const { engine, errors } = makeEngine(p, async (role, _n, a) => {
-      const t = p.store.readTask(p.flowId, a.env.task);
-      if (t.replan) {
-        assert.ok((await a.call('flow_claim')).ok);
-        // 写契约但没标 contract_change：校验拒绝
-        const bad = await a.call('flow_revise_plan', { summary: 'x', impact: 'x', add: [{ ...doc, id: 'N-001', stage: 'S3', title: '改接口', depends_on: [], writes: ['docs/contracts/**'], acceptance: ['a'] }] });
-        assert.equal(bad.ok, false); assert.match(bad.text, /contract_change/);
-        const r = await a.call('flow_revise_plan', {
-          summary: '账户接口增加 currency 字段',
-          impact: '接口：POST /accounts 增加 currency；模块：账户、记录；T-001 已完成，新增 N-002 按新接口修改；T-002 未开始，取消，由 N-003 代替',
-          add: [
-            { ...doc, id: 'N-001', stage: 'S3', title: '改 API 文档：账户增加 currency', depends_on: [], writes: ['docs/contracts/**'], acceptance: ['api.md 写明 currency'], contract_change: true },
-            { id: 'N-002', stage: 'S3', kind: 'impl', title: '按新接口修改账户', role: 'backend-engineer', scopes: ['backend'], depends_on: [{ task: 'N-001', type: 'hard', reason: '新接口' }], inputs: [], writes: ['src/server/t-001/**'], acceptance: ['支持 currency'], verify: [] },
-            { id: 'N-003', stage: 'S3', kind: 'impl', title: '按新接口实现记录', role: 'backend-engineer', scopes: ['backend'], depends_on: [{ task: 'N-001', type: 'hard', reason: '新接口' }], inputs: [], writes: ['src/server/t-002/**'], acceptance: ['使用 currency'], verify: [] },
-          ],
-          cancel: [{ task: 'T-002', reason: '按新接口重做（N-003）' }],
-        });
-        assert.ok(r.ok, r.text);
-        await a.call('flow_note', { text: '影响分析见修订' });
-        assert.ok((await a.call('flow_submit', { summary: '修订' })).ok);
-        return;
-      }
-      if (role === 'reviewer') { assert.ok((await a.call('flow_approve', { decision: 'pass', notes: 'ok' })).ok); return; }
-      assert.ok((await a.call('flow_claim')).ok);
-      if (t.contract_change) {
-        assert.ok((await a.call('write', { path: 'docs/contracts/api.md', content: '# API\nPOST /accounts {name, currency}\n' })).ok, '改 API 文档的任务可以写已锁定的契约');
-      } else {
-        const w = await a.call('write', { path: 'docs/contracts/api.md', content: 'hack' });
-        if (!w.ok) blockedWrite = w.text;
-        assert.ok((await a.call('write', { path: `${t.writes[0]!.replace('/**', '')}/a.ts`, content: `// ${t.title}\n` })).ok);
-      }
-      await a.call('flow_note', { text: '完成' });
-      const s = await a.call('flow_submit', { summary: t.title });
-      assert.ok(s.ok, s.text);
-    }, ALL_FAKE);
-    await engine.promote(p.flowId); await engine.dispatch(p.flowId, 'T-001'); await engine.idle(); // 只做 T-001，T-002 留在未开始
-    assert.equal(p.store.readTask(p.flowId, 'T-001').status, 'done');
-    // 直接起修订任务并只派发它（/flow replan 还会顺手派发 ready 的 T-002，这里要让 T-002 保持未开始）
-    const rid = await startReplan({ root: p.dir, store: p.store, config: p.config }, p.flowId, '账户要支持多币种', 'human');
-    await engine.promote(p.flowId); await engine.dispatch(p.flowId, rid); await engine.idle();
-    assert.equal(p.store.readTask(p.flowId, 'T-002').status, 'ready');
-    const status = await runFlowCommand('status --detail', env(p, engine));
-    assert.match(status, /影响分析：接口：POST \/accounts 增加 currency[\s\S]*【改 API 文档】/);
-    await runFlowCommand('approve', env(p, engine));
-    for (let i = 0; i < 4; i++) { await engine.next(p.flowId); await engine.idle(); }
-    assert.deepEqual(errors, []);
-    const tasks = p.store.listTasks(p.flowId);
-    assert.equal(tasks.find((t) => t.id === 'T-002')!.status, 'cancelled');
-    const change = tasks.find((t) => t.contract_change)!;
-    assert.equal(change.status, 'done');
-    assert.ok(tasks.filter((t) => !t.replan && !t.contract_change && t.id !== 'T-001' && t.id !== 'T-002').every((t) => t.status === 'done'));
-    assert.match(p.git('show', `flow/${p.flowId}/integration:docs/contracts/api.md`), /currency/);
-    assert.match(blockedWrite, /被阻断|受保护/, '普通任务仍不能写契约');
   } finally { p.cleanup(); }
 });

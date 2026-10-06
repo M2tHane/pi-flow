@@ -7,8 +7,8 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import lockfile from 'proper-lockfile';
 import {
-  validate, type FlowFile, type MergeQueueFile, type RunFile, type ProposalFile, type BriefFile, type KnowledgeFile, type ModelPausesFile, type RevisionFile, type SchemaKind, type StageStatus, type StateFile,
-  type TaskFile, type TaskStatus, type FlowEvent, type StageReviewFile, type NotesFile, type AcceptanceFile,
+  validate, type FlowFile, type MergeQueueFile, type RunFile, type ProposalFile, type KnowledgeFile, type ModelPausesFile, type RevisionFile, type SchemaKind, type StageStatus, type StateFile,
+  type TaskFile, type TaskStatus, type FlowEvent, type NotesFile, type AcceptanceFile,
 } from './schemas.ts';
 import {
   IN_FLIGHT, planStageTransition, planTransition, type Facts, type StageTrigger, type TaskPatch, type Trigger,
@@ -62,7 +62,6 @@ export const runRel = (run: string) => `runs/${run}.json`;
 export const proposalRel = (flow: string) => `flows/${flow}/proposal.json`;
 export const revisionRel = (flow: string) => `flows/${flow}/revision.json`;
 export const stageEvidenceRel = (flow: string, stage: string) => `flows/${flow}/evidence/stage-${stage}`;
-export const stageReviewRel = (flow: string, stage: string) => `flows/${flow}/stage-review-${stage}.json`;
 export const acceptanceRel = (flow: string, task: string) => `flows/${flow}/acceptance/${task}.json`;
 const MQ_REL = 'merge-queue.json';
 export const KNOWLEDGE_REL = 'knowledge.json';
@@ -79,7 +78,6 @@ export function schemaKindOf(rel: string): SchemaKind | null {
   if (/^runs\/[^/]+\.json$/.test(rel)) return 'run';
   if (/^flows\/[^/]+\/proposal\.json$/.test(rel)) return 'proposal';
   if (/^flows\/[^/]+\/revision\.json$/.test(rel)) return 'revision';
-  if (rel === 'brief.json') return 'brief';
   if (rel === KNOWLEDGE_REL) return 'knowledge';
   if (rel === MODEL_PAUSES_REL) return 'model-pauses';
   if (/^flows\/[^/]+\/acceptance\/[^/]+\.json$/.test(rel)) return 'acceptance';
@@ -159,7 +157,7 @@ export interface TransitionRequest {
   facts?: Partial<Facts>;
   patch?: TaskPatch;
   evidence?: string;
-  /** 附加到事件的数据（例如审查打回时被审查的提交） */
+  /** 附加到事件的数据 */
   data?: Record<string, unknown>;
 }
 
@@ -172,9 +170,7 @@ export interface CreateFlowInput {
 }
 
 export type TaskInput = Pick<TaskFile, 'id' | 'stage' | 'kind' | 'title' | 'role' | 'scopes' | 'depends_on' | 'inputs'
-  | 'writes' | 'acceptance' | 'verify'> & Partial<Pick<TaskFile, 'merge_fix_for' | 'conflict_files' | 'worktree' | 'branch' | 'base_sha' | 'sync_main' | 'replan' | 'contract_change' | 'stage_review' | 'review_issues' | 'fork_from_task' | 'shared' | 'needs_acceptance' | 'advocate' | 'accept_of' | 'accept_kind'>>;
-
-export type Findings = NonNullable<TaskFile['findings']>;
+  | 'writes' | 'acceptance' | 'verify'> & Partial<Pick<TaskFile, 'merge_fix_for' | 'conflict_files' | 'worktree' | 'branch' | 'base_sha' | 'sync_main' | 'replan' | 'fork_from_task' | 'shared' | 'needs_acceptance' | 'advocate' | 'accept_of' | 'accept_kind'>>;
 
 export interface IntegrityReport { ok: boolean; errors: string[] }
 
@@ -462,15 +458,6 @@ export class StateStore {
     return this.listFlows().map((id) => this.readFlow(id)).find((f) => f.mode === 'fix' && !isFinished(f)) ?? null;
   }
 
-  async setFindings(flow: string, task: string, findings: Findings, actor: string): Promise<TaskFile> {
-    return this.transaction((tx) => {
-      const t = tx.readTask(flow, task);
-      const saved = tx.putTask(flow, { ...t, findings });
-      tx.event({ flow, task, actor, type: 'note', reason: 'scout 结论', data: { ...findings } });
-      return saved;
-    });
-  }
-
   async writeFixLog(name: string, content: string, flow: string): Promise<string> {
     if (!/^[\w.-]+\.md$/.test(name)) throw new StateError(`fix 日志文件名不合法：${name}`);
     return this.transaction((tx) => {
@@ -507,8 +494,6 @@ export class StateStore {
       ...(t.conflict_files ? { conflict_files: [...t.conflict_files] } : {}),
       ...(t.sync_main ? { sync_main: t.sync_main } : {}),
       ...(t.replan ? { replan: t.replan } : {}),
-      ...(t.stage_review ? { stage_review: t.stage_review } : {}),
-      ...(t.review_issues ? { review_issues: [...t.review_issues] } : {}),
       ...(t.fork_from_task ? { fork_from_task: t.fork_from_task } : {}),
       ...(t.shared?.length ? { shared: [...t.shared] } : {}),
       ...(t.needs_acceptance ? { needs_acceptance: true } : {}),
@@ -550,31 +535,6 @@ export class StateStore {
     });
   }
 
-  readStageReview(flow: string, stage: string): StageReviewFile | null {
-    return this.readJsonRel<StageReviewFile>(stageReviewRel(flow, stage));
-  }
-
-  /**
-   * 推进阶段审查记录（第四轮）：在同一事务内写记录、新增任务并写它们的 handoff，崩溃后不会出现"状态已推进、任务没建"。
-   * next.version 必须基于当前版本（新记录忽略）。
-   */
-  async updateStageReview(flow: string, next: StageReviewFile, opts: { tasks?: readonly TaskInput[]; handoffs?: Record<string, string>; actor: string; reason: string }): Promise<StageReviewFile> {
-    return this.transaction((tx) => {
-      tx.readFlow(flow);
-      const rel = stageReviewRel(flow, next.stage);
-      const cur = tx.readJson<StageReviewFile>(rel);
-      const saved = tx.putJson(rel, 'stage-review', { ...next, version: cur ? next.version : 1 });
-      const added = (opts.tasks ?? []).map((t) => this.putNewTask(tx, flow, t, opts.actor));
-      for (const [task, text] of Object.entries(opts.handoffs ?? {})) {
-        const h = handoffRel(flow, task);
-        tx.putText(h, `${tx.readText(h) ?? ''}\n## ${tx.ts} ${opts.actor}\n\n${text.trim()}\n`);
-      }
-      tx.event({ flow, actor: opts.actor, type: 'note', reason: opts.reason,
-        data: { stage: next.stage, stage_review: next.status, ...(added.length ? { tasks: added.map((t) => t.id) } : {}) } });
-      return saved;
-    });
-  }
-
   async transitionTask(flowId: string, taskId: string, req: TransitionRequest): Promise<TaskFile> {
     return this.transaction((tx) => {
       const flow = tx.readFlow(flowId);
@@ -598,8 +558,6 @@ export class StateStore {
         merging_other: merging && merging !== me ? merging : null,
         queue_head: mq.queue[0] ? key(mq.queue[0]) === me : false,
         handoff_written: (tx.readText(handoffRel(flowId, taskId)) ?? '').trim().length > 0,
-        evidence_saved: this.hasEvidence(tx, flowId, taskId),
-        contracts_locked: ('S1' in flow.approvals || 'F1' in flow.approvals) && !task.contract_change && task.kind !== 'review-fix',
       };
       const plan = planTransition(task, req.to, req.trigger, facts, req.patch);
       if (!plan.ok) throw new StateError(`转移被拒（${me} ${task.status} -> ${req.to}）`, plan.errors);
@@ -620,7 +578,7 @@ export class StateStore {
   private applyQueueEffects(tx: Tx, mq: MergeQueueFile, flow: string, task: string, from: TaskStatus, to: TaskStatus) {
     const same = (e: { flow: string; task: string }) => e.flow === flow && e.task === task;
     let changed = false;
-    if (to === 'queued_merge' && (from === 'verifying' || from === 'in_progress')) {
+    if (to === 'queued_merge' && from === 'in_progress') {
       if (!mq.queue.some(same)) mq.queue.push({ flow, task, enqueued_at: tx.ts });
       changed = true;
     } else if (to === 'queued_merge' && from === 'merging') {
@@ -666,14 +624,9 @@ export class StateStore {
     });
   }
 
-  private hasEvidence(tx: Tx, flow: string, task: string): boolean {
-    const prefix = `${evidenceRel(flow, task)}/`;
-    if ([...tx.writes.keys()].some((k) => k.startsWith(prefix))) return true;
-    const dir = this.abs(evidenceRel(flow, task));
-    return existsSync(dir) && readdirSync(dir).length > 0;
-  }
 
-  /** 修改非状态字段（租约、worktree 等），例如为 review 派发审查 run。状态只能经 transitionTask 改变。 */
+
+  /** 修改非状态字段（租约、worktree、base_sha 等）。状态只能经 transitionTask 改变。 */
   async updateTask(flow: string, id: string, patch: TaskPatch, ev: { actor: string; type: 'dispatch' | 'note' | 'lease_expired'; reason?: string; data?: Record<string, unknown> }): Promise<TaskFile> {
     const bad = Object.keys(patch).filter((k) => !TASK_PATCH_KEYS.has(k));
     if (bad.length) throw new StateError(`updateTask 不能修改字段：${bad.join('、')}；状态变更请走转移表`);
@@ -685,12 +638,12 @@ export class StateStore {
     });
   }
 
-  /** 为 in_progress/review 且没有租约的任务取得租约（重新派发、派审查）。在事务内检查，避免并发重复派发。 */
+  /** 为 in_progress 且没有租约的任务取得租约（重新派发）。在事务内检查，避免并发重复派发。 */
   async acquireLease(flow: string, id: string, lease: NonNullable<TaskFile['lease']>, actor: string, data: Record<string, unknown> = {}): Promise<TaskFile> {
     return this.transaction((tx) => {
       const t = tx.readTask(flow, id);
       if (t.lease) throw new StateError(`任务 ${id} 已有运行中的 run ${t.lease.run_id}`);
-      if (t.status !== 'in_progress' && t.status !== 'review') throw new StateError(`任务 ${id} 当前是 ${t.status}，不能取得租约`);
+      if (t.status !== 'in_progress') throw new StateError(`任务 ${id} 当前是 ${t.status}，不能取得租约`);
       const next = tx.putTask(flow, { ...t, lease });
       tx.event({ flow, task: id, actor, type: 'dispatch', data: { run: lease.run_id, role: lease.role, ...data } });
       return next;
@@ -707,7 +660,7 @@ export class StateStore {
       const l = t.lease;
       if (!l || l.run_id !== runId || l.token_hash !== tokenHash) throw new StateError(`任务 ${id} 的租约不属于 run ${runId}，不能续租`);
       if (this.now().getTime() >= Date.parse(l.expires_at)) throw new StateError(`任务 ${id} 的租约已过期，不能续租`);
-      if (t.status !== 'in_progress' && t.status !== 'review') throw new StateError(`任务 ${id} 当前是 ${t.status}，不能续租`);
+      if (t.status !== 'in_progress') throw new StateError(`任务 ${id} 当前是 ${t.status}，不能续租`);
       if (Date.parse(expiresAt) <= Date.parse(l.expires_at)) return t;
       const next = tx.putTask(flow, { ...t, lease: { ...l, expires_at: expiresAt } });
       tx.event({ flow, task: id, actor, type: 'note', reason: '续租', data: { run: runId, from: l.expires_at, to: expiresAt } });
@@ -859,22 +812,7 @@ export class StateStore {
     });
   }
 
-  readBrief(): BriefFile | null {
-    return this.readJsonRel<BriefFile>('brief.json');
-  }
-
-  /** 写入需求访谈摘要；mutate 收到当前摘要（可能为 null），返回新摘要 */
-  async writeBrief(mutate: (cur: BriefFile | null, ts: string) => Omit<BriefFile, 'version'> & { version?: number }, actor: string, reason: string): Promise<BriefFile> {
-    return this.transaction((tx) => {
-      const cur = tx.readJson<BriefFile>('brief.json');
-      const next = mutate(cur, tx.ts);
-      const saved = tx.putJson('brief.json', 'brief', { ...next, version: cur?.version ?? 1 });
-      tx.event({ flow: next.flow, actor, type: 'note', reason, data: { brief: next.mode, status: next.status } });
-      return saved;
-    });
-  }
-
-  /** 流程的需求摘要（访谈确认后写入），供设计阶段任务与 scout 使用 */
+  /** 流程的需求说明（/flow-build --from、/flow-fix --from 给出的文件内容），写进需求阶段任务的 handoff */
   async saveFlowBrief(flow: string, markdown: string): Promise<void> {
     await this.transaction((tx) => {
       tx.readFlow(flow);
@@ -980,8 +918,8 @@ export class StateStore {
           acceptance: [...t.acceptance], verify: [...t.verify], status: 'pending', attempts: 0, violations: 0,
           lease_expirations: 0, lease: null, impl_run: null, branch: null, worktree: null, base_sha: null,
           blocked_reason: null, last_failure: null, created_by: 'architect', version: 1,
-          // 改 API 文档的任务只能由用户批准的修订创建（提案与普通任务没有这个字段）
-          ...(t.contract_change ? { contract_change: true } : {}),
+          ...(t.shared?.length ? { shared: [...t.shared] } : {}),
+          ...(t.needs_acceptance ? { needs_acceptance: true } : {}),
         });
       }
       for (const r of input.rewire) {

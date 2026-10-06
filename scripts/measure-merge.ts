@@ -14,8 +14,7 @@ async function run(label: string, testCmd: string) {
   const tasks = Array.from({ length: N }, (_, i) => mkTask(`T-${String(i + 1).padStart(3, '0')}`, { verify: ['test'] }));
   const p = await setupProject({ yaml, tasks });
   try {
-    const { engine } = makeEngine(p, async (role, _n, a) => {
-      if (role === 'reviewer') { await a.call('flow_approve', { decision: 'pass', notes: 'ok' }); return; }
+    const { engine } = makeEngine(p, async (_role, _n, a) => {
       await a.call('flow_claim');
       await new Promise((r) => setTimeout(r, IMPL_MS)); // 模拟实施耗时
       await a.call('write', { path: `src/server/${a.env.task.toLowerCase()}/a.ts`, content: a.env.task });

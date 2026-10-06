@@ -43,7 +43,7 @@ export function modulesToTasks(ctx: ToolContext, p: Static<typeof ProposeModules
   const tasks = p.modules.map((m): ProposedTask => {
     for (const w of [...m.writes, ...(m.shared ?? [])]) {
       if (w === '**' || w === '*' || w.startsWith('/') || w.split('/').includes('..')) errors.push(`${m.id}：可写范围 ${w} 不合法（要具体到模块的目录，不能是整个仓库或仓库外）`);
-      else if (isProtected(w.replace(/\/\*\*$/, '/x'), { contractsLocked: false })) errors.push(`${m.id}：${w} 是受保护路径（.flow、.git、workflow.yaml、rules、.pi）`);
+      else if (isProtected(w.replace(/\/\*\*$/, '/x'))) errors.push(`${m.id}：${w} 是受保护路径（.flow、.git、workflow.yaml、rules、.pi）`);
     }
     for (const d of m.depends_on ?? []) if (!ids.has(d.module)) errors.push(`${m.id}：依赖的模块 ${d.module} 不存在`);
     return {

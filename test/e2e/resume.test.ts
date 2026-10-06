@@ -16,7 +16,6 @@ const until = async (cond: () => boolean, ms = 60_000) => {
   const end = Date.now() + ms;
   while (!cond()) { if (Date.now() > end) throw new Error('等待超时'); await new Promise((r) => setTimeout(r, 20)); }
 };
-const approve = async (a: FakeAgent) => { await a.call('flow_approve', { decision: 'pass' }); };
 async function good(a: FakeAgent) {
   await a.call('flow_claim');
   await a.call('write', { path: 'src/server/t-001/a.ts', content: 'ok' });
@@ -24,8 +23,7 @@ async function good(a: FakeAgent) {
   await a.call('flow_submit', { summary: 's' });
 }
 /** 第一次派发写了文件后挂起（模拟会话被杀），之后的派发正常完成 */
-const hangFirst = async (role: string, nth: number, a: FakeAgent) => {
-  if (role === 'reviewer') return approve(a);
+const hangFirst = async (_role: string, nth: number, a: FakeAgent) => {
   if (nth === 1) {
     await a.call('flow_claim');
     await a.call('write', { path: 'src/server/t-001/a.ts', content: 'half' });
@@ -62,7 +60,7 @@ test('任务进行中会话中断：残留 run 被终止，保留 worktree，计
     assert.match(r.brief, /恢复摘要[\s\S]*T-001[\s\S]*最近事件/);
 
     // 新引擎（新会话）中 nth 从 1 重新计数：用一个总是成功的脚本
-    const ok = makeEngine({ ...p, store }, async (role, _n, a) => (role === 'reviewer' ? approve(a) : good(a)));
+    const ok = makeEngine({ ...p, store }, async (_role, _n, a) => good(a));
     await ok.engine.pump(p.flowId);
     await ok.engine.idle();
     // 新的 subagent 被告知工作区里已有上一次运行留下的改动
@@ -136,7 +134,7 @@ test('租约过期且有改动：用户选择继续，保留改动并重新派�
 test('合并中断（快进前）：放回队首，重新合并完成', async () => {
   const p = await setupProject({ tasks: [mkTask('T-001', { verify: ['test'] })] });
   try {
-    const old = makeEngine(p, async (role, _n, a) => (role === 'reviewer' ? approve(a) : good(a)), undefined, { affectedFiles: forever as never });
+    const old = makeEngine(p, async (_role, _n, a) => good(a), undefined, { beforeVerify: forever });
     await old.engine.next(p.flowId);
     await until(() => p.store.readTask(p.flowId, 'T-001').status === 'merging' && p.store.readTask(p.flowId, 'T-001').base_sha !== null
       && p.store.readEvents().some((e) => e.reason === 'rebase 到集成分支'));
@@ -157,7 +155,7 @@ test('合并中断（快进前）：放回队首，重新合并完成', async ()
 test('合并中断（已快进、状态未更新）：识别集成分支已包含提交，补完为 done 并清理', async () => {
   const p = await setupProject({ tasks: [mkTask('T-001', { verify: ['test'] })] });
   try {
-    const old = makeEngine(p, async (role, _n, a) => (role === 'reviewer' ? approve(a) : good(a)), undefined, { affectedFiles: forever as never });
+    const old = makeEngine(p, async (_role, _n, a) => good(a), undefined, { beforeVerify: forever });
     await old.engine.next(p.flowId);
     await until(() => p.store.readEvents().some((e) => e.reason === 'rebase 到集成分支'));
     const t = p.store.readTask(p.flowId, 'T-001');

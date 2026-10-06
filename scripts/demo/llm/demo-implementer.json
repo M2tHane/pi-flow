@@ -1,0 +1,9 @@
+{ "steps": [
+  { "tool_calls": [ { "name": "flow_claim", "arguments": {} } ] },
+  { "tool_calls": [ { "name": "write", "arguments": { "path": "src/todo/index.mjs", "content": "const items = [];\n\nexport function add(title) {\n  const item = { title, done: false };\n  items.push(item);\n  return item;\n}\n\nexport function list() {\n  return [...items];\n}\n" } } ] },
+  { "tool_calls": [ { "name": "write", "arguments": { "path": "tests/todo/todo.test.mjs", "content": "import { test } from 'node:test';\nimport assert from 'node:assert/strict';\nimport { add, list } from '../../src/todo/index.mjs';\n\ntest('新建后列表多一条', () => {\n  add('买菜');\n  assert.deepEqual(list(), [{ title: '买菜', done: false }]);\n});\n" } } ] },
+  { "tool_calls": [ { "name": "bash", "arguments": { "command": "node --test", "timeout": 60 } } ] },
+  { "tool_calls": [ { "name": "flow_note", "arguments": { "text": "add/list 完成，测试通过" } } ] },
+  { "tool_calls": [ { "name": "flow_submit", "arguments": { "summary": "待办模块：add、list 与测试" } } ] },
+  { "text": "完成" }
+] }

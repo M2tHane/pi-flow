@@ -6,7 +6,8 @@ const MM = { dot: true } as const;
 const GLOB_CHARS = /[*?[\]{}]/;
 
 export const PROTECTED_PATHS = ['.flow/**', '.git/**', 'workflow.yaml', 'rules/**', '.pi/**'] as const;
-export const CONTRACTS_PATH = 'docs/contracts/**';
+/** 模块之间的接口文档（第五轮）：实现者只能追加 */
+export const INTERFACES_PATH = 'docs/interfaces/**';
 export const SENSITIVE_PATHS = ['**/.env*', '**/*.pem', 'secrets/**', '**/secrets/**'] as const;
 
 /** 把路径规范化为相对 root 的 posix 路径；越出 root 返回 null。不解析符号链接（由调用方用 realpath 处理）。 */
@@ -22,12 +23,12 @@ export function matchesAny(rel: string, globs: readonly string[]): boolean {
   return globs.some((g) => minimatch(rel, g, MM));
 }
 
-export function protectedGlobs(opts: { contractsLocked: boolean }): string[] {
-  return opts.contractsLocked ? [...PROTECTED_PATHS, CONTRACTS_PATH] : [...PROTECTED_PATHS];
+export function protectedGlobs(): string[] {
+  return [...PROTECTED_PATHS];
 }
 
-export function isProtected(rel: string, opts: { contractsLocked: boolean }): boolean {
-  return matchesAny(rel, protectedGlobs(opts));
+export function isProtected(rel: string): boolean {
+  return matchesAny(rel, PROTECTED_PATHS);
 }
 
 export function isSensitive(rel: string): boolean {

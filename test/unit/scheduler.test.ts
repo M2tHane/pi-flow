@@ -22,7 +22,7 @@ test('不超过并发上限；运行中的任务占用名额', () => {
 
 test('不与在途任务互斥，也不在同一批里选互斥的任务', () => {
   const tasks = [
-    mkTask('T-001', { status: 'review', writes: ['src/server/a/**'] }),
+    mkTask('T-001', { status: 'queued_merge', writes: ['src/server/a/**'] }),
     mkTask('T-002', { status: 'ready', writes: ['src/server/a/x.ts'] }),
     mkTask('T-003', { status: 'ready', writes: ['src/server/b/**'] }),
     mkTask('T-004', { status: 'ready', writes: ['src/server/b/c.ts'] }),

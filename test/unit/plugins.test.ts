@@ -20,7 +20,7 @@ test('按角色的工具组解析插件：项目级优先，未安装的报告�
     const config = parseConfig(TEST_YAML);
     const be = pluginExtensionsFor(config, 'backend-engineer', [projNm!, agentNm!]);
     assert.deepEqual(be.paths, [path.join(projNm!, '@bacnh85/pi-serena')]);
-    const rv = pluginExtensionsFor(config, 'reviewer', [projNm!, agentNm!]);
+    const rv = pluginExtensionsFor(config, 'architect', [projNm!, agentNm!]);
     assert.deepEqual(rv.paths.sort(), ['builtin:codemode', path.join(projNm!, '@bacnh85/pi-serena'), path.join(agentNm!, '@vndv/pi-codegraph')].sort());
     const rs = pluginExtensionsFor(config, 'researcher', [projNm!, agentNm!]);
     assert.deepEqual(rs, { paths: [], missing: ['pi-web-access'] });
@@ -33,8 +33,8 @@ test('角色启用 codemode 时显式加载 Pi 内置扩展 builtin:codemode（�
   const { TEST_YAML } = await import('../helpers/config.ts');
   const { pluginExtensionsFor } = await import('../../src/pi-adapter/plugins.ts');
   const config = parseConfig(TEST_YAML);
-  assert.deepEqual(pluginExtensionsFor(config, 'reviewer', []).paths, ['builtin:codemode']);
+  assert.deepEqual(pluginExtensionsFor(config, 'architect', []).paths, ['builtin:codemode']);
   assert.ok(!pluginExtensionsFor(config, 'backend-engineer', []).paths.includes('builtin:codemode'));
-  assert.ok(config.activeTools('reviewer').includes('codemode'));
+  assert.ok(config.activeTools('architect').includes('codemode'));
   assert.throws(() => parseConfig(TEST_YAML.replace('orchestrator:      { model: medium, tools: [read,', 'orchestrator:      { model: medium, tools: [codemode, read,')), /orchestrator 只能使用/);
 });

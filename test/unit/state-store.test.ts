@@ -46,13 +46,8 @@ async function toInProgress(store: StateStore, flow: string, id: string, run = '
 async function toQueued(store: StateStore, flow: string, id: string, run: string, token: string) {
   await toInProgress(store, flow, id, run, token);
   await store.appendHandoff(flow, id, '完成', `run:${run}`);
-  await store.transitionTask(flow, id, { to: 'review', trigger: 'submit', actor: `run:${run}`,
+  await store.transitionTask(flow, id, { to: 'queued_merge', trigger: 'submit', actor: `run:${run}`,
     facts: { token, diff_files: [`src/server/${id.toLowerCase()}/a.ts`] } });
-  await store.updateTask(flow, id, { lease: lease(`${run}-rev`, `${token}-rev`) }, { actor: 'dispatcher', type: 'dispatch' });
-  await store.transitionTask(flow, id, { to: 'verifying', trigger: 'review_pass', actor: `run:${run}-rev`, facts: { token: `${token}-rev` } });
-  await store.saveEvidence(flow, id, 'test.log', 'ok', 'verify-runner');
-  await store.transitionTask(flow, id, { to: 'queued_merge', trigger: 'verify_pass', actor: 'verify-runner',
-    facts: { verify_results: [{ command: 'test', exit_code: 0 }] } });
 }
 
 test('init 生成骨架且可重复执行', async () => {
@@ -106,13 +101,8 @@ test('完整闭环：pending 到 done，合并队列同步，每次转移都提�
     const headBefore = git('rev-parse', 'HEAD');
     await toInProgress(store, flow.id, 'T-001');
     await store.appendHandoff(flow.id, 'T-001', '做完了 A，下一步无', 'run:r-1');
-    await store.transitionTask(flow.id, 'T-001', { to: 'review', trigger: 'submit', actor: 'run:r-1',
+    await store.transitionTask(flow.id, 'T-001', { to: 'queued_merge', trigger: 'submit', actor: 'run:r-1',
       facts: { token: 'tok', diff_files: ['src/server/t-001/a.ts'] } });
-    await store.updateTask(flow.id, 'T-001', { lease: lease('r-2', 'rtok') }, { actor: 'dispatcher', type: 'dispatch' });
-    await store.transitionTask(flow.id, 'T-001', { to: 'verifying', trigger: 'review_pass', actor: 'run:r-2', facts: { token: 'rtok' } });
-    await store.saveEvidence(flow.id, 'T-001', 'test.log', 'ok', 'verify-runner');
-    await store.transitionTask(flow.id, 'T-001', { to: 'queued_merge', trigger: 'verify_pass', actor: 'verify-runner',
-      facts: { verify_results: [{ command: 'test', exit_code: 0 }] } });
     assert.deepEqual(store.readMergeQueue().queue.map((e) => e.task), ['T-001']);
     await store.transitionTask(flow.id, 'T-001', { to: 'merging', trigger: 'merge_start', actor: 'merge-queue' });
     assert.equal(store.readMergeQueue().merging?.task, 'T-001');
@@ -125,7 +115,7 @@ test('完整闭环：pending 到 done，合并队列同步，每次转移都提�
     assert.equal(store.readState().version, events.at(-1)!.seq);
     assert.equal(store.readState().events_head, events.at(-1)!.hash);
     const commits = Number(git('rev-list', '--count', 'refs/pi-flow/state')) - commitsBefore;
-    assert.ok(commits >= 9, `提交数 ${commits}`);
+    assert.ok(commits >= 6, `提交数 ${commits}`);
     assert.equal(git('rev-parse', 'HEAD'), headBefore, '主分支历史不变');
     assert.equal(git('status', '--porcelain', '--', '.flow'), '');
     assert.deepEqual((await store.verifyIntegrity()).errors, []);
@@ -154,7 +144,7 @@ test('程序可推导的 facts 不采信调用方', async () => {
     await assert.rejects(store.transitionTask(flow.id, 'T-002', { to: 'ready', trigger: 'schedule', actor: 'scheduler',
       facts: { status_of: new Map([['T-001', 'done']]), stage_active: true } }), /T-001/);
     await toInProgress(store, flow.id, 'T-001');
-    await assert.rejects(store.transitionTask(flow.id, 'T-001', { to: 'review', trigger: 'submit', actor: 'run:r-1',
+    await assert.rejects(store.transitionTask(flow.id, 'T-001', { to: 'queued_merge', trigger: 'submit', actor: 'run:r-1',
       facts: { token: 'tok', diff_files: ['src/server/t-001/a.ts'], handoff_written: true } }), /handoff/);
   } finally { cleanup(); }
 });
@@ -298,7 +288,7 @@ test('同一时间只允许一个进行中的流程', async () => {
   const { store, cleanup } = await setup();
   try {
     await store.createFlow({ mode: 'build', title: 'a', stages: ['S0'], base_sha: null });
-    await assert.rejects(store.createFlow({ mode: 'feature', title: 'b', stages: ['F0'], base_sha: null }), /进行中.*\/flow resume/);
+    await assert.rejects(store.createFlow({ mode: 'feature', title: 'b', stages: ['F0'], base_sha: null }), /进行中.*\/flow-resume/);
   } finally { cleanup(); }
 });
 
@@ -315,22 +305,6 @@ test('阶段：agent 不能批准闸门；用户批准后推进到下一阶段',
     assert.equal(f.stage, 'S1');
     assert.equal(f.stage_status, 'active');
     await assert.rejects(store.advanceStage(flow.id, 'engine'), /done/);
-  } finally { cleanup(); }
-});
-
-test('契约在 S1 批准后变为受保护路径', async () => {
-  const { store, cleanup } = await setup();
-  try {
-    const flow = await store.createFlow({ mode: 'build', title: 'a', stages: ['S1', 'S3'], base_sha: null });
-    await store.addTasks(flow.id, [mkTask('T-001', { stage: 'S3', writes: ['docs/**'] })], 'architect');
-    for (const [to, trigger, extra] of [['awaiting_gate', 'submit_gate', {}], ['awaiting_human', 'gate_passed', { needs_human: true }], ['done', 'approve', {}]] as const) {
-      await store.transitionStage(flow.id, { to, trigger, actor: trigger === 'approve' ? 'human' : 'engine', ...extra });
-    }
-    await store.advanceStage(flow.id, 'engine');
-    await toInProgress(store, flow.id, 'T-001');
-    await store.appendHandoff(flow.id, 'T-001', 'x', 'run:r-1');
-    await assert.rejects(store.transitionTask(flow.id, 'T-001', { to: 'review', trigger: 'submit', actor: 'run:r-1',
-      facts: { token: 'tok', diff_files: ['docs/contracts/api.ts'], contracts_locked: false } }), /受保护/);
   } finally { cleanup(); }
 });
 

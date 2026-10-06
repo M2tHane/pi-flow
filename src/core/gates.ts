@@ -10,7 +10,7 @@ import { worktreesRoot, removeWorktree } from './worktree.ts';
 import { evidenceText, runShell } from './verify-runner.ts';
 import { PROPOSAL_STAGES } from '../modes/plan.ts';
 
-/** failed：失败的闸门命令与输出（阶段末审查据此生成修复任务） */
+/** failed：失败的闸门命令与输出（实施阶段据此按日志生成修复任务，见 acceptance.gateFailed） */
 export interface GateOutcome { stage: string; passed: boolean; needsHuman: boolean; reasons: string[]; failed?: { command: string; output: string } }
 
 export function stageDef(config: FlowConfig, mode: 'build' | 'feature', stage: string) {

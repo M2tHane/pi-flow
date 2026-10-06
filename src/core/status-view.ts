@@ -3,7 +3,6 @@
 import type { FlowConfig } from './config.ts';
 import type { StateStore } from './state-store.ts';
 import { isFinished } from './state-store.ts';
-import { isLeadingTest } from './dag.ts';
 import { budgetState, formatBudget } from './cost-control.ts';
 import { activePauses, describePause } from './model-pause.ts';
 import { MAX_GATE_ROUNDS, describeAcceptance } from './acceptance.ts';
@@ -46,7 +45,7 @@ const GOALS: Record<'build' | 'feature' | 'fix', Record<PhaseOrDone, string>> = 
   },
 };
 
-const INFLIGHT = new Set(['in_progress', 'review', 'verifying', 'queued_merge', 'merging']);
+const INFLIGHT = new Set(['in_progress', 'queued_merge', 'merging']);
 
 export function phaseOfStage(config: FlowConfig, mode: 'build' | 'feature', stage: string): Phase {
   const def = config.raw.modes[mode]?.stages.find((s) => s.id === stage);
@@ -77,7 +76,7 @@ export function phasesOf(config: FlowConfig, flow: FlowFile): Phase[] {
 }
 
 const FAILURE_KIND: Record<string, string> = {
-  review_reject: '审查打回', verify_fail: '验证失败', precheck_fail: '审查前验证失败', merge_verify_fail: '合并后验证失败', run_failed: '运行中断', lease_expired: '租约过期',
+  merge_verify_fail: '合并时全量测试失败', run_failed: '运行中断', lease_expired: '租约过期',
 };
 
 /** 任务最近一次失败的类型（来自事件日志） */
@@ -86,13 +85,10 @@ export function lastFailureKind(store: StateStore, flowId: string, taskId: strin
   return ev ? FAILURE_KIND[ev.trigger!]! : null;
 }
 
-/** expectFail：测试必须先失败（fix 的复现测试、先行验收测试） */
-export function taskActivity(t: TaskFile, failureKind: string | null, expectFail: 'repro' | 'leading' | null = null): string {
+export function taskActivity(t: TaskFile, failureKind: string | null): string {
   const working = t.accept_of ? (t.accept_kind === 'confirm' ? '复查中' : '验收中') : t.advocate ? '写意见中'
-    : t.stage_review === 'review' ? '阶段审查中' : t.stage_review === 'confirm' ? '确认修复中' : t.kind === 'analysis' ? '分析中' : t.kind === 'review-fix' ? '修复中' : t.kind === 'doc' ? '撰写中' : '实现中';
+    : t.replan ? '起草计划修订' : t.kind === 'review-fix' ? '修复中' : t.kind === 'merge-fix' ? '解决合并冲突' : t.kind === 'doc' ? '撰写中' : '实现中';
   const base = t.status === 'in_progress' ? (t.lease ? working : '等待重新派发')
-    : t.status === 'review' ? '审查中'
-      : t.status === 'verifying' ? (expectFail === 'repro' ? '确认复现中' : expectFail === 'leading' ? '确认测试先失败' : '验证中')
         : t.status === 'queued_merge' || t.status === 'merging' ? '合入中'
           : t.status === 'ready' ? '待派发'
             : t.status === 'pending' ? '等待前置任务'
@@ -160,7 +156,7 @@ export function actionsNeeded(store: StateStore, config: FlowConfig): Action[] {
   }
   const cand = store.readKnowledge().entries.filter((e) => e.status === 'candidate');
   if (cand.length) {
-    out.push({ key: `knowledge:candidates:${cand.at(-1)!.id}`, text: `${cand.length} 条知识候选待确认（来自审查打回、合并后验证失败）：${cand.slice(-3).map((e) => e.id).join('、')}${cand.length > 3 ? ' 等' : ''}`,
+    out.push({ key: `knowledge:candidates:${cand.at(-1)!.id}`, text: `${cand.length} 条知识候选待确认（来自合并后验证失败）：${cand.slice(-3).map((e) => e.id).join('、')}${cand.length > 3 ? ' 等' : ''}`,
       command: '/flow knowledge 查看；确认 /flow knowledge accept <K-编号>，不要 /flow knowledge retire <K-编号>' });
   }
   return out;
@@ -179,7 +175,13 @@ export function visibleFlows(store: StateStore): FlowFile[] {
 function phaseBar(config: FlowConfig, flow: FlowFile, cur: PhaseOrDone): string {
   const all: PhaseOrDone[] = [...phasesOf(config, flow), 'done'];
   const idx = all.indexOf(cur);
-  return all.map((p, i) => (i < idx ? `${PHASE_LABEL[p]} ✓` : i === idx ? `[${PHASE_LABEL[p]}]` : PHASE_LABEL[p])).join(' → ');
+  // 跳过的阶段（例如无界面时的原型）对应的高层阶段标为"跳过"
+  const mode = flow.mode;
+  const phaseOf = (s: string) => (mode === 'fix' ? null : phaseOfStage(config, mode, s));
+  const skipped = new Set((flow.skip_stages ?? []).map(phaseOf));
+  const kept = new Set(flow.stages.filter((s) => !flow.skip_stages?.includes(s)).map(phaseOf));
+  const label = (p: PhaseOrDone) => (p !== 'done' && skipped.has(p) && !kept.has(p) ? `${PHASE_LABEL[p]}（跳过）` : null);
+  return all.map((p, i) => label(p) ?? (i < idx ? `${PHASE_LABEL[p]} ✓` : i === idx ? `[${PHASE_LABEL[p]}]` : PHASE_LABEL[p])).join(' → ');
 }
 
 export function renderFlow(store: StateStore, config: FlowConfig, flow: FlowFile): string {
@@ -194,8 +196,7 @@ export function renderFlow(store: StateStore, config: FlowConfig, flow: FlowFile
   const active = tasks.filter((t) => INFLIGHT.has(t.status));
   lines.push('');
   lines.push(active.length
-    ? `正在进行：\n${active.map((t) => `- ${t.id} ${short(t.title, 40)}（${t.lease?.role ?? t.role}）${taskActivity(t, t.attempts ? lastFailureKind(store, flow.id, t.id) : null,
-      t.kind !== 'test' ? null : flow.mode === 'fix' ? 'repro' : isLeadingTest(t, tasks) ? 'leading' : null)}`).join('\n')}`
+    ? `正在进行：\n${active.map((t) => `- ${t.id} ${short(t.title, 40)}（${t.lease?.role ?? t.role}）${taskActivity(t, t.attempts ? lastFailureKind(store, flow.id, t.id) : null)}`).join('\n')}`
     : `正在进行：${flow.stage_status === 'awaiting_human' ? '无（等待你审批）' : flow.stage_status === 'awaiting_gate' ? '阶段检查中' : '无'}`);
   // 模块与验收进度（第五轮）
   const mods = tasks.filter((t) => t.needs_acceptance && t.status !== 'cancelled');

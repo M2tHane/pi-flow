@@ -14,7 +14,7 @@ import type { RoleSettingsFile } from '../../src/core/schemas.ts';
 
 const YAML = PROJECT_YAML.replace(/  test:      ".*"/, '  test:      "true"');
 const SETTINGS: RoleSettingsFile = { version: 1, roles: {
-  'backend-engineer': { model: 'f/glm' }, architect: { model: 'f/arch' }, reviewer: { model: 'f/gpt' } } };
+  'backend-engineer': { model: 'f/glm' }, architect: { model: 'f/arch' } } };
 const QUOTA = 'Codex error: You have hit your ChatGPT usage limit (plus plan). Try again in ~120 min.';
 
 const env = (p: Project, engine: Engine): CommandEnv => ({
@@ -29,7 +29,6 @@ async function implement(a: FakeAgent, file: string) {
   const r = await a.call('flow_submit', { summary: file });
   assert.ok(r.ok, r.text);
 }
-const approve = async (a: FakeAgent) => { assert.ok((await a.call('flow_approve', { decision: 'pass', notes: 'ok' })).ok); };
 
 test('额度用完：任务不计失败、不转阻塞；这个模型不再派发，其他模型照常；/flow models resume 后继续并完成', async () => {
   const p = await setupProject({ yaml: YAML, tasks: [
@@ -39,7 +38,6 @@ test('额度用完：任务不计失败、不转阻塞；这个模型不再派�
   try {
     let quotaLeft = true;
     const { engine, launcher, errors } = makeEngine(p, async (role, _n, a) => {
-      if (role === 'reviewer') return approve(a);
       if (role === 'architect') return implement(a, 'docs/guide/intro.md');
       if (quotaLeft) throw new Error(QUOTA);
       return implement(a, 'src/server/t-001/a.ts');
@@ -53,7 +51,7 @@ test('额度用完：任务不计失败、不转阻塞；这个模型不再派�
     assert.equal(t1.attempts, 0, '额度问题不计失败');
     assert.equal(t1.interruptions ?? 0, 0, '也不计中断');
     assert.equal(t1.lease, null);
-    assert.equal(p.store.readTask(p.flowId, 'T-002').status, 'done', '其他模型的角色照常工作（含审查）');
+    assert.equal(p.store.readTask(p.flowId, 'T-002').status, 'done', '其他模型的角色照常工作');
     assert.equal(launcher.launched.filter((s) => s.model === 'f/glm').length, 1, '暂停的模型不再被派发');
     assert.equal(p.store.listRuns().find((r) => r.model === 'f/glm')!.outcome, 'unavailable');
 
@@ -88,7 +86,7 @@ test('额度用完：任务不计失败、不转阻塞；这个模型不再派�
   } finally { p.cleanup(); }
 });
 
-test('限流：审查模型暂停 5 分钟后自动恢复；恢复后又限流则退避加倍；成功后清除记录', async () => {
+test('限流：模型暂停 5 分钟后自动恢复；恢复后又限流则退避加倍；成功后清除记录', async () => {
   // 子进程工具层用真实时钟校验租约：起点取当前时间，之后只往后拨
   const t0 = Date.now();
   const at = (min: number) => new Date(t0 + min * 60_000);
@@ -97,15 +95,15 @@ test('限流：审查模型暂停 5 分钟后自动恢复；恢复后又限流�
   const p = await setupProject({ yaml: YAML, now, tasks: [mkTask('T-001', { verify: [] })] });
   try {
     let limited = 2;
-    const { engine, errors } = makeEngine(p, async (role, _n, a) => {
-      if (role !== 'reviewer') return implement(a, 'src/server/t-001/a.ts');
+    const { engine, errors } = makeEngine(p, async (_role, _n, a) => {
       if (limited-- > 0) throw new Error('429 Too Many Requests: Rate limit reached for requests');
-      return approve(a);
+      return implement(a, 'src/server/t-001/a.ts');
     }, SETTINGS, undefined, { now });
     await engine.next(p.flowId);
     await engine.idle();
     let t = p.store.readTask(p.flowId, 'T-001');
-    assert.equal(t.status, 'review', `${t.blocked_reason} ${JSON.stringify(errors)}`);
+    assert.equal(t.status, 'in_progress', `${t.blocked_reason} ${JSON.stringify(errors)}`);
+    assert.equal(t.lease, null);
     assert.equal(t.attempts, 0);
     let pause = p.store.readModelPauses().pauses[0]!;
     assert.equal(pause.kind, 'unavailable');
@@ -114,7 +112,7 @@ test('限流：审查模型暂停 5 分钟后自动恢复；恢复后又限流�
 
     assert.deepEqual(engine.checkPauses(), [], '未到恢复时间');
     clock = at(6);
-    assert.deepEqual(engine.checkPauses(), ['f/gpt']);
+    assert.deepEqual(engine.checkPauses(), ['f/glm']);
     await engine.idle();
     pause = p.store.readModelPauses().pauses[0]!;
     assert.equal(pause.strikes, 2, '恢复后又限流');
@@ -122,7 +120,7 @@ test('限流：审查模型暂停 5 分钟后自动恢复；恢复后又限流�
     assert.equal(p.store.readTask(p.flowId, 'T-001').attempts, 0);
 
     clock = at(17);
-    assert.deepEqual(engine.checkPauses(), ['f/gpt']);
+    assert.deepEqual(engine.checkPauses(), ['f/glm']);
     await engine.idle();
     assert.deepEqual(errors, []);
     t = p.store.readTask(p.flowId, 'T-001');

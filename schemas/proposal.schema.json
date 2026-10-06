@@ -49,11 +49,8 @@
           },
           "kind": {
             "enum": [
-              "test",
               "impl",
               "doc",
-              "infra",
-              "integration",
               "review-fix",
               "merge-fix",
               "analysis"

@@ -110,11 +110,6 @@ export async function unblockTask(d: StageDeps, flowId: string, taskId: string, 
   const t = d.store.readTask(flowId, taskId);
   if (t.status !== 'blocked') throw new Error(`任务 ${taskId} 当前是 ${t.status}，不是 blocked。`);
   if (answer?.trim()) await d.store.appendHandoff(flowId, taskId, `用户回答：\n${answer.trim()}`, 'human');
-  // 审查中提问的任务：回答后回到审查（审查者能在 handoff 中看到回答），已提交的改动保留
-  if (t.blocked_from === 'review' && t.worktree && t.base_sha) {
-    await d.store.transitionTask(flowId, taskId, { to: 'review', trigger: 'unblock', actor: 'human' });
-    return `已解除 ${taskId} 的阻塞，任务回到审查。`;
-  }
   await d.store.transitionTask(flowId, taskId, { to: 'ready', trigger: 'unblock', actor: 'human', facts: { ...(attempts !== undefined ? { attempts } : {}) } });
   return `已解除 ${taskId} 的阻塞，任务回到 ready${attempts !== undefined ? `（attempts=${attempts}）` : '（attempts 清零）'}。`;
 }
