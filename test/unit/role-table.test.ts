@@ -78,13 +78,31 @@ test('换到不支持当前思考强度的模型时，思考强度回到默认',
   assert.equal(t.rows[0]!.thinking, undefined);
 });
 
-test('列表打开时底部提示换成列表的按键，且不超宽', () => {
-  const t = new RoleTable(rows(), models);
-  assert.match(t.render(120).at(-1)!, /移动.*Enter 修改当前格.*Esc 保存并退出/);
+test('下拉框紧贴当前格展开：在所选行下方、与所选列左对齐；下方放不下时向上展开', () => {
+  const many = Array.from({ length: 12 }, (_, i) => ({ ref: `p/m${i}`, levels: ['off'] as ('off')[] }));
+  const rs = Array.from({ length: 7 }, (_, i): RoleRow => ({ role: `r${i}`, purpose: '职责', defaults: {} }));
+  const strip = (l: string) => l.replace(/\x1b\[[0-9;]*m/g, '');
+  const t = new RoleTable(rs, many);
   t.handleInput(ENTER);
-  const lines = t.render(60);
+  let lines = t.render(100).map(strip);
   assert.match(lines.at(-1)!, /Enter 确认.*Esc 返回/);
-  assert.ok(lines.some((l) => l.includes('选择 architect 的模型')));
+  const top = lines.findIndex((l) => l.includes('┌'));
+  assert.equal(top, 4);                                  // 标题、空行、表头、第一行之后
+  assert.ok(lines.every((l) => textWidth(l) <= 100));
+  assert.ok(lines[top + 1]!.includes('│ 默认'));
+  assert.ok(lines.some((l) => l.includes('↓5')));         // 12+1 项只显示 8 项
+  const col = lines[top]!.indexOf('┌');
+  assert.equal(lines[0]!.includes('┌'), false);
+  assert.ok(col > 0);
+  // 选中接近底部的一行：向上展开，不超出表格底部
+  const t2 = new RoleTable(rs, many.slice(0, 3));
+  for (let i = 0; i < 6; i++) t2.handleInput(DOWN);
+  t2.handleInput(ENTER);
+  lines = t2.render(100).map(strip);
+  const top2 = lines.findIndex((l) => l.includes('┌'));
+  const bottom2 = lines.findIndex((l) => l.includes('└'));
+  assert.ok(bottom2 < lines.findIndex((l) => l.startsWith('→ r6')));
+  assert.ok(top2 > 2);
 });
 
 test('渲染：每行不超过终端宽度，含表头与当前行标记', () => {

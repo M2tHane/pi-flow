@@ -67,6 +67,11 @@ const RESET = '\x1b[0m';
 
 export type TableResult = 'save' | undefined;
 
+/** 下拉框的上/下边框：中间可嵌入"还有 N 项"提示，共 inner 列宽 */
+function mark(label: string, inner: number): string {
+  return label + '─'.repeat(Math.max(0, inner - textWidth(label)));
+}
+
 export class RoleTable {
   readonly rows: RoleRow[];
   row = 0;
@@ -170,39 +175,57 @@ export class RoleTable {
       const cut = Math.min(over, w[i]! - minW[i]!);
       if (cut > 0) { w[i]! -= cut; over -= cut; }
     }
-    const line = (cells: string[], focusRow: boolean, header = false): string => {
-      const parts = cells.map((c, i) => {
-        const text = fit(c, w[i]!);
-        const colIdx = i - 2;
-        if (header) return `${BOLD}${text}${RESET}`;
-        if (focusRow && colIdx >= 0 && COLUMNS[colIdx] === this.col) return `${REVERSE}${text}${RESET}`;
-        if (i === 1) return `${DIM}${text}${RESET}`;
-        return text;
-      });
-      return `${focusRow ? '→ ' : '  '}${parts.join(' '.repeat(gap))}`;
-    };
-    const lines = [`${BOLD}pi-flow：各角色的模型与思考强度${RESET}`, ''];
-    lines.push(line(HEADERS, false, true));
-    body.forEach((b, i) => lines.push(line(b, i === this.row)));
-    lines.push('');
+    const parts = (cells: string[], focusRow: boolean, header = false): string[] => cells.map((c, i) => {
+      const text = fit(c, w[i]!);
+      const colIdx = i - 2;
+      if (header) return `${BOLD}${text}${RESET}`;
+      if (focusRow && colIdx >= 0 && COLUMNS[colIdx] === this.col) return `${REVERSE}${text}${RESET}`;
+      if (i === 1) return `${DIM}${text}${RESET}`;
+      return text;
+    });
+    const sep = ' '.repeat(gap);
+    const cellsOf = [HEADERS, ...body];
+    const rowParts = cellsOf.map((c, i) => parts(c, i - 1 === this.row, i === 0));
+    const prefix = (i: number) => (i - 1 === this.row ? '→ ' : '  ');
+    const lines = [`${BOLD}pi-flow：各角色的模型与思考强度${RESET}`, '', ...rowParts.map((pp, i) => `${prefix(i)}${pp.join(sep)}`)];
+    const FIRST = 2;                                  // 表头所在行号；数据行从 FIRST + 1 起
+
     const p = this.picker;
     if (p) {
       const r = this.rows[this.row]!;
-      const colName = { model: '模型', escalate: '备用模型', thinking: '思考强度' }[this.col];
-      lines.push(`${BOLD}选择 ${r.role} 的${colName}${RESET}`);
-      const VISIBLE = 10;
+      const ci = COLUMNS.indexOf(this.col) + 2;      // 当前列在表格里的列号
+      const x = marker + w.slice(0, ci).reduce((a, b) => a + b, 0) + gap * ci;
+      const VISIBLE = 8;
       const start = Math.min(Math.max(0, p.index - Math.floor(VISIBLE / 2)), Math.max(0, p.options.length - VISIBLE));
       const shown = p.options.slice(start, start + VISIBLE);
-      if (start > 0) lines.push(`${DIM}  ↑ 还有 ${start} 项${RESET}`);
-      shown.forEach((o, i) => {
+      const labels = shown.map((o) => {
         const label = o ?? (r.defaults[this.col] ? `默认（${r.defaults[this.col]}）` : '默认');
-        const mark = this.current(r, this.col)?.toLowerCase() === o?.toLowerCase() ? ' ✓' : '';
-        const text = fit(`${label}${mark}`, Math.max(1, width - 2)).trimEnd();
-        lines.push(start + i === p.index ? `${REVERSE}→ ${text}${RESET}` : `  ${text}`);
+        return `${label}${this.current(r, this.col)?.toLowerCase() === o?.toLowerCase() ? ' ✓' : ''}`;
       });
-      if (start + VISIBLE < p.options.length) lines.push(`${DIM}  ↓ 还有 ${p.options.length - start - VISIBLE} 项${RESET}`);
-      lines.push('');
+      const inner = Math.max(10, Math.min(Math.max(...labels.map(textWidth)) + 3, width - x - 2));
+      const top = `${DIM}┌${mark(start > 0 ? ` ↑${start} ` : '', inner)}┐${RESET}`;
+      const bottom = `${DIM}└${mark(start + VISIBLE < p.options.length ? ` ↓${p.options.length - start - VISIBLE} ` : '', inner)}┘${RESET}`;
+      const box = [top, ...labels.map((l, i) => {
+        const text = fit(` ${l}`, inner);
+        return `${DIM}│${RESET}${start + i === p.index ? `${REVERSE}${text}${RESET}` : text}${DIM}│${RESET}`;
+      }), bottom];
+      // 优先在当前行下方展开；下方放不下而上方放得下时向上展开
+      const rowLine = FIRST + 1 + this.row;           // 当前行在 lines 中的位置
+      const lastRow = FIRST + this.rows.length;
+      const below = lastRow - rowLine;
+      const above = rowLine - FIRST - 1;               // 表头以上不覆盖
+      const up = box.length > below && box.length <= above;
+      const from = up ? rowLine - box.length : rowLine + 1;
+      box.forEach((b, k) => {
+        const at = from + k;
+        const left = at > FIRST && at <= lastRow
+          ? `${prefix(at - FIRST)}${rowParts[at - FIRST]!.slice(0, ci).join(sep)}${sep}`
+          : ' '.repeat(x);
+        const text = `${left}${b}`;
+        if (at < lines.length) lines[at] = text; else lines.push(text);
+      });
     }
+    lines.push('');
     const hint = p ? '↑↓ 选择  Enter 确认  Esc 返回' : '↑↓←→ 移动  Enter 修改当前格  Backspace 恢复默认  Esc 保存并退出';
     lines.push(`${DIM}${fit(hint, width).trimEnd()}${RESET}`);
     return lines;
