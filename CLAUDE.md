@@ -1,7 +1,7 @@
 # pi-flow 项目说明（给 Claude Code）
 
 ## 需求与记录
-- **第五轮见 `docs/HANDOFF-5.md`（精简为讨论 → 原型 → 模块规划 → 按模块实施与验收，保留运行时）**：第 1–11 步已在分支 `round5-simplify` 完成（NOTES 第 119–133 条）；之后吸收 mattpocock/skills：需求由主 agent 直接和用户讨论、术语表、切分规则、tdd、可选的最终代码审查（NOTES 第 134–138 条）。第 12 步真实模型验证（HANDOFF-5 第 9 节）待做。
+- **第五轮见 `docs/HANDOFF-5.md`（精简为讨论 → 原型 → 模块规划 → 按模块实施与验收，保留运行时）**：第 1–11 步已在分支 `round5-simplify` 完成（NOTES 第 119–133 条）；之后吸收 mattpocock/skills：需求由主 agent 直接和用户讨论、术语表、切分规则、tdd、可选的最终代码审查（NOTES 第 134–143 条，含设计规范 DESIGN.md、界面模块对照原型、ask_user 提问；流程图在 `docs/pi-flow.drawio`，流程变化时同步更新）。第 12 步真实模型验证（HANDOFF-5 第 9 节）待做。
 - 第四轮（`docs/HANDOFF-4.md`，阶段末审查等，NOTES 第 101–118 条，实验见 `docs/EXPERIMENTS-4.md`）已被第五轮取代。
 - **下一轮实验方案见 `docs/BENCHMARK-5.md`**（已有大仓库 Homebox 上的多需求并行、故障注入与判定标准；判定标准开跑前定下，不改）。
 - 第三轮（`docs/HANDOFF-3.md`，效率优化 A–D 与后续改动）已完成，见 `NOTES.md` 第 88–100 条。

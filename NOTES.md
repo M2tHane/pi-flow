@@ -228,3 +228,51 @@
 141. 主 agent 的选择题提问用插件 @tian.zuo/pi-ask-user（MIT，已核实 0.2.1：工具 `ask_user`，终端界面弹对话框，无界面返回 no-ui）：模板工具组 `ask`，orchestrator 允许；装在主会话的 pi 里，没装时 `/flow doctor` 与开始流程时提醒，讨论改用文字提问。
 142. `/flow-config` 菜单与 `show` 给每个角色标上做什么；README 以交互菜单为主，`set`/`unset` 保留给没有界面的场景。
 143. 删除 `learn-demo.html`（内容已过时，维护成本高），改为 `docs/pi-flow.drawio`（6 页：流程总览、角色、需求讨论、模块的生命周期、架构与安全、修复与中途变更）；流程变化时同步更新它。
+
+## 真实模型实验
+
+第四轮的完整实验记录（各阶段用时、暴露的问题、之后的优化）见 `docs/EXPERIMENTS-4.md`。
+
+脚本：`scripts/real-build.ts`（pi-flow 全流程，`--desc`/`--desc-file`、`--feature-file`、`--dir` 续跑）、`scripts/baseline-build.ts`（原生 pi 对照）、`node scripts/demo.ts --real-fix`。日志在 `~/pi-flow-runs/`，评测用例与看板需求、隐藏测试也在那里（不进仓库）。pi-flow 一侧：architect、reviewer 用 gpt-6.1-sol（high），实施角色用本地 glm-5.3-flash（low），失败后升级到 gpt。
+
+| 日期 | 项目 | 做法 | 耗时 | token（输入/输出/缓存读） | 结果 |
+|---|---|---|---|---|---|
+| 10-02 | 待办清单（小） | pi-flow | 约 59 分钟 | 738k / 80k / 2.7M | 完成；暴露的问题见第 82 条 |
+| 10-02 | 记账服务（中） | pi-flow（第三轮 A–D 前） | 105 分钟 | — | 7/13，Codex 额度用完空耗，引出第 88 条 |
+| 10-02 | 记账服务 | pi-flow（第三轮全部改动） | 10 小时后叫停 | 1164k / 202k / 28.7M | 8/15；挂起的测试卡死数小时、测试产物卡住提交、Serena 严格模式拖慢 glm、底座测试锁死后续任务，引出第 97 条 |
+| 10-02 | 记账服务 | pi-flow（第 97 条修复后） | **64.5 分钟** | 1588k / 178k / 10.8M（gpt 部分 3.79 美元） | 15/15 合入主分支，65 个测试；审查打回 14 次（多为先行验收测试写错） |
+| 10-02 | 记账服务 | 原生 pi，gpt-6.1-sol high | **9.7 分钟** | 66k / 17k / 355k（0.33 美元） | 25 次工具调用，12 个测试；未用 subagent |
+| 10-02 | 记账服务 | 原生 pi，glm high | 37.4 分钟 | 114k / 28k / 1.07M（本地） | 9 个测试；测试挂住需 1 次人工中断 |
+| 10-03 | 团队看板（大，含变更） | 原生 pi，gpt-6.1-sol high | **21.5 分钟**（17.6 + 变更 3.9） | 82k / 37k / 1.03M（约 0.5 美元） | 隐藏测试基础 39/40（唯一失败的用例超出需求，不计）、变更 6/6 |
+| 10-03 | 团队看板 | pi-flow（第 100 条改动前） | 84 分钟后叫停 | 1738k / 291k / 21.1M（gpt 部分 3.62 美元） | 10/16；审查打回 11 次（7 次先行验收测试写错、3 次底座未达自定的超出需求的契约），2 个阻塞，引出第 100 条 |
+| 10-03 | 团队看板 | pi-flow（第四轮，实施用 glm） | 约 4 小时后停掉（未完成） | — | 卡在功能阶段收尾：glm 原地打转（281 次同一命令）、后台测试死循环留下孤儿进程、阶段审查 27 个问题；引出第 106、107 条 |
+| 10-03 | 团队看板 | pi-flow（第四轮，全部 gpt-6.1-sol high） | **新建 253.6 分钟**；变更停在 F1 | 2209k / 425k / 24.4M（约 11 美元，按 run 记录的单价估算） | 隐藏测试基础 39/40（唯一失败同原生，不计）；变更未完成（F1 architect 三次要求确认契约细节，脚本停止）。规划 42 分钟；阶段审查 S2/S3/S4 各 2/2/0 个问题，一轮修好；修 S3 问题时契约缺口引出 3 次修订（约 1.5 小时） |
+| 10-03 | 团队看板 | pi-flow（第 108–117 条后，全部 gpt-6.1-sol high） | **新建 75.4 分钟 + 变更 62.1 分钟** | 1675k / 257k / 16.4M（约 7.5 美元，按比例估算） | 隐藏测试基础 38/40（多出的一条是 PRD 把登录定为 200、评测要 201，放宽后 39/40）、变更 6/6；规划约 17 分钟、5 个任务、17 次运行、0 次修订，architect 未提问；批量合并未触发。详见 `docs/EXPERIMENTS-4.md` 第 9 节 |
+
+记账服务的 20 个黑盒用例：pi-flow 20/20、原生 gpt 20/20、原生 glm 18/20（接受金额 0；超大请求体断开连接而非 413）。
+
+结论（第四轮复跑后）：去掉逐任务审查后，"审查来回打回"不再出现，阶段审查的问题少且一轮修好，质量与原生持平；但总耗时 4.2 小时，是原生的 12 倍。时间主要花在：函数级契约让规划变长（42 分钟），契约锁定后任何接口缺口都要走"修订 → 改契约 → 再实现"（这次 3 次，约 1.5 小时），以及多角色交接的固定开销。四五千行、需求写清楚的项目，单会话强模型仍然明显更合适。
+
+结论（到第 100 条为止）：需求写清楚、四五千行以内的项目，强模型单会话又快又好；pi-flow 的开销主要来自"先写测试再实现"与"契约超出需求"制造的返工，第 100 条针对这两点。改动后的效果待复跑看板对照。
+
+## 缓存提醒
+
+修改 `agents/`、`rules/`、`skills/` 会改变子进程系统提示的稳定前缀，提供商的提示缓存失效一次；`rules/` 的改动只影响之后 `/flow init` 的新项目。改动时在此追加一行。
+
+- 10-06（第 139–141 条）：designer（设计规范与共用样式）、architect（ui、ui_pages）、implementer（界面按原型与设计规范实现）、acceptor（界面条目怎么验）角色提示；技能 write-prototype（DESIGN.md 结构）、plan-modules（ui、ui_pages）、grilling（ask_user）；工具声明 flow_propose_modules 多了 ui、ui_pages。
+- 10-06（第 134–138 条）：orchestrator（主 agent 直接讨论需求、可读代码）、architect（术语表、切分规则）、implementer（tdd）、acceptor（读术语表）角色提示；新增 reviewer 角色；删除 user-advocate、dev-advocate、analyst。技能新增 grilling、domain-modeling、tdd、code-review，重写 plan-modules、write-requirements（改给主会话用）。工具声明多了 flow_requirements（主会话）、flow_review_report；flow_submit 去掉 prototype 参数。
+- 10-04（第五轮，第 119–129 条）：`agents/`、`skills/`、`rules/` 全部重写。新角色 user-advocate、dev-advocate、analyst、designer、architect（重写）、implementer、acceptor；researcher、orchestrator 修改（含代词中性化）；删除 backend、frontend、db、infra、test-engineer、ui-designer、reviewer、scout、interviewer。技能新增 write-requirements、write-prototype、plan-modules，重写 revise-plan、write-rules，删除 decompose-dag、design-contract、write-prd、write-feature-spec。`rules/` 只剩 global.md（项目规则由规划阶段生成 project.md）。工具声明多了 notes、history、flow_sync、flow_propose_modules、flow_accept、flow_accept_confirm。
+- 10-04（第 118 条）：backend、db、frontend、infra、test-engineer 角色提示（可以适配别的角色已有的测试）；reviewer（核对适配没有削弱测试）；`decompose-dag`（不必为兼容旧测试单独拆任务）。
+- 10-03（第 112–114 条）：architect 角色提示；`decompose-dag`（粒度）；`design-contract`、`write-prd`、`write-feature-spec` 技能；工具参数多了 assumptions。
+- 10-03（第 108、109 条）：architect 与各实施角色、reviewer 角色提示；`design-contract`、`decompose-dag` 技能。
+- 10-03（第 103 条）：reviewer（阶段审查）、orchestrator、backend、frontend、db、infra、test、ui 角色提示（review-fix 只修分到的问题）；`decompose-dag` 技能；工具声明多了 flow_review_report、flow_review_confirm。
+- 10-03（第 101 条）：architect 角色提示；`design-contract`、`decompose-dag` 技能。
+- 10-03（第 100 条）：backend、frontend、db、test、reviewer 角色提示；`rules/testing.md`；`decompose-dag`、`revise-plan`（重写）、`design-contract` 技能。
+- 10-02（第 97 条）：`rules/testing.md` 增加四条。
+- 10-02（第 96 条）：`agents/orchestrator.md`（主会话）。
+- 10-02（第 92 条）：`agents/reviewer.md`。
+- 10-02（第 91 条）：`decompose-dag`。
+- 10-02（第 89、90 条）：`agents/reviewer.md`（多轮审查、tier 改 medium）。
+- 10-02（第 82–85 条）：reviewer、scout、architect 角色提示；`rules/` 全部重写；新增 `write-rules`；codemode 用法。
+- 10-01（第二轮）：test-engineer、reviewer、scout、orchestrator、interviewer 角色提示；`write-handoff`、`decompose-dag`、新增 `revise-plan`；`rules/testing.md`；工具声明多了 flow_learn、flow_replan、flow_revise_plan。
+- 10-01（M8）：scout、researcher、architect 角色提示；技能注入。
