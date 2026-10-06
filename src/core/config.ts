@@ -24,7 +24,7 @@ export const BASH_READONLY = 'bash_readonly';
 /** 只能出现在特定角色上的工具 */
 const ROLE_EXCLUSIVE: Record<string, string> = { flow_accept: 'acceptor', flow_accept_confirm: 'acceptor', flow_review_report: 'reviewer', flow_propose_modules: 'architect', flow_revise_plan: 'architect', flow_replan: 'orchestrator', flow_requirements: 'orchestrator' };
 /** orchestrator 只允许这些工具（第 20 节） */
-const ORCHESTRATOR_ALLOWED = new Set(['read', 'grep', 'find', 'ls', 'flow_status', 'flow_dispatch', 'flow_wait', 'flow_replan', 'flow_requirements', ...MEMORY_TOOLS]);
+const ORCHESTRATOR_ALLOWED = new Set(['read', 'grep', 'find', 'ls', 'ask_user', 'flow_status', 'flow_dispatch', 'flow_wait', 'flow_replan', 'flow_requirements', ...MEMORY_TOOLS]);
 const WRITE_GROUP = 'serena_edit';
 const WEB_GROUP = 'web';
 

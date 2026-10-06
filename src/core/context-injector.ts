@@ -75,7 +75,7 @@ function requirementsNext(flow: FlowFile): string {
   const head = r?.feedback
     ? `需求说明被打回（第 ${r.rounds} 次），意见：${r.feedback}\n带着这些意见继续和用户讨论，改好后重新提交。`
     : `现在是需求讨论：和用户逐轮讨论${what}（用户的描述：${flow.title}）。`;
-  return `${head}\n每轮把能问的问题一次问完，编号并给出你推荐的答案，然后等用户回答；需要的事实自己查（read、grep、find、ls${flow.mode === 'feature' ? '，先了解相关的现有代码' : ''}），决定交给用户。要问到：谁用、核心场景、MVP 范围与验收标准、术语、界面风格、是否需要先看原型。用户确认共识后，按技能 write-requirements 写成需求说明，调用 flow_requirements(content, prototype) 提交${r?.path ? `（写到 ${r.path}）` : ''}；提交后等用户 /flow-approve。不要自己修改代码，也不要调用 flow_dispatch。`;
+  return `${head}\n每轮把能问的问题一次问完（有 ask_user 时用它），编号并给出你推荐的答案，然后等用户回答；需要的事实自己查（read、grep、find、ls${flow.mode === 'feature' ? '，先了解相关的现有代码' : ''}），决定交给用户。要问到：谁用、核心场景、MVP 范围与验收标准、术语、界面风格、是否需要先看原型。用户确认共识后，按技能 write-requirements 写成需求说明，调用 flow_requirements(content, prototype) 提交${r?.path ? `（写到 ${r.path}）` : ''}；提交后等用户 /flow-approve。不要自己修改代码，也不要调用 flow_dispatch。`;
 }
 
 export function turnContext(store: StateStore, maxParallel: number, activeRunCount = 0, config?: FlowConfig, paused?: PausedOf): string {

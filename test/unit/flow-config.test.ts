@@ -96,7 +96,7 @@ test('非交互：set / show / unset / models', async () => {
     await runFlowConfig('set researcher default low', deps);
     assert.deepEqual(loadRoleSettings(settingsPath).roles['researcher'], { thinking: 'low' });
     const shown = await runFlowConfig('show', deps);
-    assert.match(shown, /architect.*workbuddy\/glm-5\.3-flash.*medium.*\/flow-config/);
+    assert.match(shown, /architect（模块规划与项目规则）：.*workbuddy\/glm-5\.3-flash.*medium.*\/flow-config/);
     assert.match(shown, /implementer.*workbuddy\/glm-5\.3-flash.*workflow\.yaml/);
     assert.match(shown, /pi-flow\.json/);
     assert.match(await runFlowConfig('models', deps), /local\/tiny.*off/);

@@ -48,13 +48,13 @@ modes:
       - { id: D2, name: planning,     phase: planning,     gate: { human: true } }
       - { id: E,  name: modules,      phase: execution,    gate: { all_tasks_done: true, auto: [test], human: true } }
 scopes:
-  prototype:    { writes: ["prototype/**"] }
+  prototype:    { writes: ["prototype/**", "DESIGN.md", "docs/design/**"] }
   planning:     { writes: ["docs/modules.md", "docs/glossary.md", "docs/interfaces/**", "docs/adr/**", "docs/rules-draft/**", "AGENTS.md"] }
   code:         { rules: [rules/global.md, rules/project.md], writes: ["**"] }   # 模块的实际可写范围由规划阶段为每个模块指定；受保护路径（.flow、.git、workflow.yaml、rules、.pi）一律不可写
   research:     { writes: ["docs/research/**"] }
   acceptance:   { rules: [rules/global.md, rules/project.md], writes: [] }
   review:       { rules: [rules/global.md, rules/project.md], writes: [] }
-tool_groups:                    # 已核实：pi-serena 0.9.20、pi-codegraph 0.1.10、pi-web-access 0.35.0
+tool_groups:                    # 已核实：pi-serena 0.9.20、pi-codegraph 0.1.10、pi-web-access 0.35.0、pi-ask-user 0.2.1
   serena_read: [serena_get_symbols_overview, serena_find_symbol, serena_find_referencing_symbols, serena_search_for_pattern,
                 serena_find_declaration, serena_find_implementations, serena_get_diagnostics_for_file]
   # 一律按写操作对待。serena_rename_symbol 会改动所有引用处的文件，guard 无法限定范围，故不纳入
@@ -63,8 +63,9 @@ tool_groups:                    # 已核实：pi-serena 0.9.20、pi-codegraph 0.
   codegraph:   [codegraph_search, codegraph_callers, codegraph_callees, codegraph_impact, codegraph_explore,
                 codegraph_node, codegraph_status, codegraph_files]
   web:         [web_search, fetch_content, get_search_content, source_check]
+  ask:         [ask_user]       # 主 agent 讨论需求时向你提选择题（@tian.zuo/pi-ask-user，装在主会话的 pi 里）
 roles:                          # notes、history、flow_block、flow_learn 所有角色隐式拥有
-  orchestrator:  { model: strong, tools: [read, grep, find, ls, flow_status, flow_dispatch, flow_wait, flow_requirements], read_paths: ["**"], writes: [] }   # 需求讨论时要查现有代码；不能写
+  orchestrator:  { model: strong, tools: [read, grep, find, ls, "@ask", flow_status, flow_dispatch, flow_wait, flow_requirements], read_paths: ["**"], writes: [] }   # 需求讨论时要查现有代码；不能写
   designer:      { model: strong, scopes: [prototype], tools: [read, write, edit, flow_note, flow_submit] }
   architect:     { model: strong, scopes: [planning], tools: [codemode, read, write, edit, bash_readonly, "@serena_read", "@codegraph", flow_propose_modules, flow_note, flow_submit] }
   implementer:   { model: strong, scopes: [code], tools: [read, write, edit, bash, "@serena_read", "@serena_edit", "@codegraph", flow_sync, flow_note, flow_submit] }

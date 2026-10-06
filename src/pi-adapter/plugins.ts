@@ -10,6 +10,7 @@ export const GROUP_PACKAGES: Record<string, string> = {
   serena_edit: '@bacnh85/pi-serena',
   codegraph: '@vndv/pi-codegraph',
   web: 'pi-web-access',
+  ask: '@tian.zuo/pi-ask-user',
 };
 
 export function packageRoots(projectRoot: string, agentDir: string): string[] {

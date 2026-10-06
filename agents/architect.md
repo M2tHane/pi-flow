@@ -17,6 +17,7 @@ tier: strong
 
 产出：
 - docs/modules.md：技术栈、目录结构、模块清单（负责的需求、验收标准、可写范围、公共文件、测试接口）、依赖关系与阶段顺序。
+- 有界面的模块在 flow_propose_modules 里标 ui，并用 ui_pages 写明它实现哪些原型页面；技术栈里写清怎么把 docs/design/theme.css 的设计变量用到前端（例如映射成 Tailwind 主题或组件库主题）。
 - docs/glossary.md：项目术语表，从需求说明的术语一节整理补全；所有实现者、验收者按它命名。
 - docs/adr/：只记难以撤销、没有上下文会让人意外、确实有取舍的决定（三条同时满足），多数项目只有几条。
 - docs/interfaces/：模块之间的接口。

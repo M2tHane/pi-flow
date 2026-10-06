@@ -62,6 +62,7 @@ pi-flow 不管理模型账号，只使用你在 Pi 中已经能用的模型：�
 | pi-codegraph | 调用关系与影响面分析 | 0.1.x（0.1.10） | `pi install npm:@vndv/pi-codegraph` | [npm](https://www.npmjs.com/package/@vndv/pi-codegraph) · [GitHub](https://github.com/vndv/pi-codegraph) |
 | codegraph 命令行 | 索引；合并后只跑受影响的测试 | 1.x（1.6.0） | `npm i -g @colbymchenry/codegraph`，项目内 `codegraph init -i` | [npm](https://www.npmjs.com/package/@colbymchenry/codegraph) |
 | pi-web-access | 联网调研（researcher） | 0.35.x（0.35.0） | `pi install npm:pi-web-access` | [npm](https://www.npmjs.com/package/pi-web-access) · [GitHub](https://github.com/nicobailon/pi-web-access) |
+| pi-ask-user | 主 agent 讨论需求时用选择题向你提问（推荐答案在第一个，也可以自己写）；没装时改用文字提问 | 0.2.x（0.2.1） | `pi install npm:@tian.zuo/pi-ask-user` | [npm](https://www.npmjs.com/package/@tian.zuo/pi-ask-user) · [GitHub](https://github.com/TianZuo555/pi-extensions) |
 
 版本不在验证范围时只提醒：pi-flow 只启用配置里列出的工具名，写操作取不到路径就阻断，所以插件改了工具名或参数时，相关工具会失效，但安全检查不会放宽。想用验证过的版本，在安装命令后加 `@版本号`（例如 `pi install npm:@vndv/pi-codegraph@0.1.10`）。子进程启动时如果发现角色配置的工具没有注册，会记一条事件，`/flow doctor` 会提示是哪个角色缺了哪些工具。
 
@@ -90,17 +91,9 @@ pi                          # 正常启动 pi，pi-flow 随之加载
 
 ### 为各角色选择模型：`/flow-config`
 
-在 pi 中输入 `/flow-config` → "设置各角色的模型与思考级别"，依次选择角色、模型（只列出你在 Pi 中已配置可用的模型）、思考级别（只列出该模型支持的级别）。设置保存在 `~/.pi/agent/pi-flow.json`，优先于项目 `workflow.yaml` 中的模型档位。
+所有角色的模型与思考级别（effort）都在 `/flow-config` 里配置：在 pi 中输入 `/flow-config` → "设置各角色的模型与思考级别"，列表里是 workflow.yaml 中的全部角色（主 agent orchestrator、designer、architect、implementer、acceptor、reviewer、researcher），每个角色标着做什么、当前生效的模型与思考级别和来源。依次选择角色、模型（只列出你在 Pi 中已配置可用的模型）、思考级别（只列出该模型支持的级别）；"设置失败后升级用的模型"在同一个菜单里。设置保存在 `~/.pi/agent/pi-flow.json`，优先于项目 `workflow.yaml` 中的模型档位。
 
-没有交互界面时（`pi -p`）用子命令：
-
-```
-/flow-config show                                       查看各角色的模型与来源
-/flow-config models                                     列出可用模型及支持的思考级别
-/flow-config set designer google/gemini-3-pro high      例如原型交给前端审美好的模型
-/flow-config set acceptor default low                   模型用 workflow.yaml 默认，只改思考级别
-/flow-config unset designer | all
-```
+没有交互界面时（`pi -p`、RPC、脚本）可以用子命令：`/flow-config show`、`models`、`set <角色> <provider/model|default> [思考级别|default]`、`unset <角色|all>`、`escalate <角色> <provider/model|default>`。
 
 ---
 
@@ -113,7 +106,7 @@ pi                          # 正常启动 pi，pi-flow 随之加载
 | 阶段 | 内容 | 闸门 |
 |---|---|---|
 | D0 需求 | 主 agent 直接和你逐轮讨论：每轮把能问的问题一次问完，每个问题给出推荐答案；需要的事实（已有代码、技术栈）它自己读代码查，决定交给你。谈清楚后它把需求说明（需求清单与优先级、done-when 验收标准、术语、关键决策、界面风格、范围外）用 `flow_requirements` 提交，程序写入集成分支上的 `docs/requirements.md`，同时记下要不要原型。已经写好需求文档时用 `/flow-build --from <文件>` 跳过讨论（`--no-prototype` 不做原型） | **你批准**；`/flow-reject "<意见>"` 后主 agent 带着意见继续和你讨论、重新提交，可以来回多次 |
-| D1 原型 | designer 按需求里定下的风格写 `prototype/*.html` 与导航页（无框架、无构建，浏览器直接打开）。没有界面或你选择不要时跳过，状态栏显示"原型（跳过）" | **你批准**（或打回修改） |
+| D1 原型 | designer 按需求里定下的风格写 `prototype/*.html` 与导航页（无框架、无构建，浏览器直接打开），同时写设计规范 `DESIGN.md`（设计变量、组件、布局、四种状态怎么呈现）与共用样式 `docs/design/theme.css`（CSS 变量与基础组件，原型页面都引用它）。之后实现界面、加新功能都照这两份做；加功能时只扩展、不改已有的。没有界面或你选择不要时跳过，状态栏显示"原型（跳过）" | **你批准**原型与设计规范（或打回修改） |
 | D2 规划 | architect 写 `docs/modules.md`（模块划分：每个模块是能单独验收的纵向切片，铺垫性重构单独成模块排在前面，每个模块写明测试接口）、`docs/glossary.md`（术语表）、`docs/interfaces/<模块>.md`（只写模块之间的调用）、项目专属规则草案 `docs/rules-draft/project.md`、命令草案与 `AGENTS.md`，然后用 `flow_propose_modules` 提交模块：每个模块一个任务，带可写范围、负责的验收标准、依赖、登记的公共文件（路由注册、菜单等多个模块都要追加的文件）。模块大小跟实现者的模型走：强模型一个模块可以是一块完整的业务功能 | **你批准**；批准时程序把规则草案写成 `rules/project.md`、应用命令草案（`--rules none` 不应用） |
 | E 实施 | 每个模块交给一个 implementer（先写测试再实现，见技能 tdd），在自己的 worktree 里写前端、后端和测试；互不依赖的模块并行。模块完成后合并、独立验收（见下）；开启 `review.final` 时最后再做一次代码审查 | 全部模块验收通过（+ 可选的最终代码审查）+ 全量测试 + **你批准**，随后集成分支合入主分支 |
 
@@ -123,6 +116,8 @@ pi                          # 正常启动 pi，pi-flow 随之加载
 3. **独立验收**：合并后程序派一个 acceptor，在集成分支最新代码上构建、启动、实际调用，按模块负责的验收标准逐条给出"通过 / 未通过 + 证据"（`flow_accept`）。没通过的条目交回 implementer 的会话修复，合并后 acceptor 只复查没通过的条目（`flow_accept_confirm`，不能提新问题）。两轮修复仍不过就列进"需要你处理"：你可以 `/flow replan` 调整，或者确认可以接受后 `/flow accept <任务>` 放行。依赖这个模块的模块等它验收通过才开工。
 4. **最终代码审查（可选，`review.final: true` 开启，默认关闭）**：全部模块验收通过后，程序派一个只读的 reviewer 审查整个流程的改动（`git diff <分叉点>..<集成分支>`，不含原型，不拆分），对照 `rules/`、`AGENTS.md` 与常见坏味道（技能 code-review）逐条给出级别（必须改 / 建议）、依据、文件、位置、问题、期望（`flow_review_report`），写到集成分支的 `docs/review/final.md`。"必须改"自动交给负责的模块修一轮（接着 implementer 的会话，不再复审）；其余的由你挑：`/flow review fix R-3 R-5` 交给模块修，`/flow review done` 都不修。功能是否做到由验收负责，审查只看代码写得好不好。
 5. **阶段闸门**：全部模块验收通过后跑全量测试；失败时程序从日志里找出出错的文件，交给负责的模块修，最多两轮，仍失败就转"需要你处理"（处理后 `/flow gate` 重跑）。
+
+**界面模块**：architect 在模块清单里标出有界面的模块（`ui`）和它实现的原型页面（`ui_pages`）。程序把这些原型页面和 `DESIGN.md`、`docs/design/theme.css` 加进模块的输入，并加两条验收标准："界面按原型实现"（结构、交互、四种状态一致）和"界面遵循 DESIGN.md"（用 theme.css 的变量，映射到项目的技术栈）；acceptor 会逐条对照。
 
 **跨模块接口**：`docs/interfaces/` 在实施中只能**追加**（程序拒绝修改或删除已有内容）；要改已有接口走计划修订。
 
@@ -238,7 +233,7 @@ architect 默认启用 Pi 的 codemode：模型可以写一段脚本并行调用
 | `pi-flow.json` | `~/.pi/agent/` | `/flow-config` | **各角色用哪个模型、思考级别、失败后升级用的模型**。全局，所有项目共用，优先于项目里的模型档位 |
 | `workflow.yaml` | 项目根目录 | `/flow init` 生成，**你修改** | 项目的流程配置，见下表 |
 | `rules/*.md` | 项目根目录 | 你（或批准 architect 起草的草案） | `global.md` 加上规划阶段生成的项目专属 `project.md`，注入给实现者与验收者 |
-| `docs/`、`AGENTS.md` | 项目根目录 | 流程中的各角色 | 需求（`requirements.md`，主 agent 和你讨论后由程序写入）、术语表（`glossary.md`）、模块划分（`modules.md`）、模块之间的接口（`interfaces/`，实施中只能追加）、最终审查（`review/final.md`）；`prototype/` 原型 |
+| `docs/`、`AGENTS.md` | 项目根目录 | 流程中的各角色 | 需求（`requirements.md`，主 agent 和你讨论后由程序写入）、术语表（`glossary.md`）、模块划分（`modules.md`）、模块之间的接口（`interfaces/`，实施中只能追加）、最终审查（`review/final.md`）、共用样式（`design/theme.css`）；`prototype/` 原型；`DESIGN.md` 设计规范 |
 | `.flow/` | 项目根目录 | **只有程序** | 流程状态、任务、运行记录、事件日志；不要手改（会被完整性校验发现） |
 | `<项目>.worktrees/` | 项目目录旁边 | 只有程序 | 每个任务的 worktree、子进程会话留档、临时目录 |
 
@@ -264,8 +259,9 @@ architect 默认启用 Pi 的 codemode：模型可以写一段脚本并行调用
 ```
 workflow.yaml        命令、并发与失败上限、模型档位、阶段、scope 与可写范围、角色与工具（只有你修改）
 rules/               global.md 与规划阶段生成的 project.md（只有你修改，或批准草案时由程序写入）
-docs/                requirements.md、modules.md、interfaces/、adr/、research/、rules-draft/
+docs/                requirements.md、glossary.md、modules.md、interfaces/、design/theme.css、review/final.md、adr/、research/、rules-draft/
 prototype/           原型（D1，可跳过）
+DESIGN.md            设计规范（D1 与原型一起产出，之后的界面都照它做）
 AGENTS.md            项目说明（architect 在规划阶段起草）
 .flow/               运行时状态（程序维护；不进入分支历史，每次状态变化提交到专用引用 refs/pi-flow/state，
                      用 git log refs/pi-flow/state 查看；需要备份时 git push origin refs/pi-flow/state）

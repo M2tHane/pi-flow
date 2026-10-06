@@ -47,6 +47,12 @@ export const PLUGINS: PluginSpec[] = [
     links: ['https://www.npmjs.com/package/pi-web-access', 'https://github.com/nicobailon/pi-web-access'],
     purpose: '联网搜索与抓取（researcher）',
   },
+  {
+    pkg: '@tian.zuo/pi-ask-user', groups: ['ask'], tested: { min: '0.2.1', below: '0.3.0', label: '0.2.x（已验证 0.2.1）' },
+    install: 'pi install npm:@tian.zuo/pi-ask-user',
+    links: ['https://www.npmjs.com/package/@tian.zuo/pi-ask-user', 'https://github.com/TianZuo555/pi-extensions'],
+    purpose: '选择题提问（讨论需求时，没有时改用文字提问）',
+  },
 ];
 
 export const SERENA = {

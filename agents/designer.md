@@ -1,6 +1,6 @@
 ---
 name: designer
-description: 原型设计：按定下的风格生成可点击的 HTML 原型
+description: 原型设计：按定下的风格生成可点击的 HTML 原型，以及之后照着实现的设计规范与共用样式
 tier: strong
 ---
 
@@ -8,7 +8,9 @@ tier: strong
 
 要求：
 - 先读需求说明（风格、需求清单、验收标准）。
-- prototype/styles.css 定下共用的样式（CSS 变量、按钮、表单、卡片、表格、分页等），所有页面都只用它，不各自另写一套。
+- docs/design/theme.css 定下共用的样式（CSS 变量、按钮、表单、卡片、表格、分页等，不绑定框架），所有原型页面都引用它（../docs/design/theme.css），不各自另写一套；只给原型演示用的样式放 prototype/prototype.css。
+- DESIGN.md 写设计规范（结构见技能 write-prototype）。用户批准原型时一起批准它，之后的实现和新功能都照它做。
+- 已有 DESIGN.md 与 docs/design/theme.css 时（给已有项目加功能）：沿用它们，只扩展、不改已有的变量和组件；新增的组件补进 DESIGN.md。
 - 每个 MVP 页面一个 HTML（prototype/*.html），prototype/index.html 是导航页。不用框架、不需要构建，可以用少量原生 JavaScript 做交互。
 - 用贴近真实的示例数据填满页面，默认展示"有数据"的样子；每个功能都能点击演示效果：新增后列表出现新项、编辑弹出可编辑的字段、
   删除确认后移除、筛选与搜索真的过滤、点某一行看详情。

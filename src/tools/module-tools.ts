@@ -8,7 +8,7 @@ import { validateDag, dagReport, formatDagReport } from '../core/dag.ts';
 import { git, gitOk } from '../core/git.ts';
 import { snapshot } from '../core/worktree.ts';
 import { isProtected } from '../core/paths.ts';
-import { EXECUTION_STAGE, PROPOSAL_STAGES } from '../modes/plan.ts';
+import { DESIGN_DOC, EXECUTION_STAGE, PROPOSAL_STAGES, THEME_CSS } from '../modes/plan.ts';
 import { recordAcceptance } from '../core/acceptance.ts';
 import { findingLine, recordReview } from '../core/final-review.ts';
 import { FlowToolError, checkRunOf, type ToolContext, type ToolResult } from './tool-common.ts';
@@ -23,7 +23,9 @@ export const ModuleDef = Type.Object({
   writes: Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: 40, description: '模块的可写范围（目录 glob），前端、后端、测试都包括，例如 backend/app/kb/**、frontend/src/pages/kb/**、backend/tests/kb/**' }),
   shared: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { maxItems: 20, description: '要登记的公共文件（路由注册、菜单、迁移目录、文案等）：可以写，不算进模块之间的互斥' })),
   acceptance: Type.Array(Type.String({ minLength: 1, maxLength: 500 }), { minItems: 1, maxItems: 30, description: '验收标准：每条都能实际运行验证（接口、页面、测试），独立验收者会逐条确认' }),
-  inputs: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { maxItems: 30, description: '要先读的文件（需求说明、原型页面、接口文档等；docs/modules.md、docs/glossary.md、AGENTS.md 会自动加上）' })),
+  inputs: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { maxItems: 30, description: '要先读的文件（需求说明、接口文档等；docs/modules.md、docs/glossary.md、AGENTS.md 会自动加上，原型页面与设计规范按 ui、ui_pages 自动加上）' })),
+  ui: Type.Optional(Type.Boolean({ description: '模块有界面（页面、组件）：自动加上设计规范 DESIGN.md 与共用样式，并多一条验收标准"界面遵循设计规范"' })),
+  ui_pages: Type.Optional(Type.Array(Type.String({ pattern: '^prototype/.+\\.html$' }), { maxItems: 20, description: '模块负责实现的原型页面（prototype/*.html）：自动加进输入，并多一条验收标准"界面按原型实现"；写了就隐含 ui' })),
   depends_on: Type.Optional(Type.Array(Type.Object({
     module: Type.String({ pattern: '^M-[0-9]+$' }),
     reason: Type.String({ minLength: 1, maxLength: 300, description: '为什么必须等它验收通过才能开工' }),
@@ -41,7 +43,18 @@ export function modulesToTasks(ctx: ToolContext, p: Static<typeof ProposeModules
   const ids = new Map(p.modules.map((m, i) => [m.id, `T-${String(i + 1).padStart(3, '0')}`]));
   if (ids.size !== p.modules.length) errors.push('模块编号有重复');
   const verify = ['test'].filter((c) => ctx.config.commands[c]?.trim());
+  // 界面模块：原型页面与设计规范交给实现者，验收时对照（文件以 architect 工作区里的为准）
+  const wt = ctx.store.readTask(ctx.env.flow, ctx.env.task).worktree;
+  const has = (f: string) => !!wt && existsSync(path.join(wt, f));
+  const design = [DESIGN_DOC, THEME_CSS].filter(has);
   const tasks = p.modules.map((m): ProposedTask => {
+    const pages = m.ui_pages ?? [];
+    for (const pg of pages) if (!has(pg)) errors.push(`${m.id}：原型里没有 ${pg}`);
+    const ui = !!m.ui || pages.length > 0;
+    const uiCriteria = [
+      ...(pages.length ? [`界面按原型 ${pages.join('、')} 实现：页面结构、交互与加载、空、错误、无权限四种状态和原型一致`] : []),
+      ...(ui && design.length ? [`界面遵循 ${DESIGN_DOC}：颜色、字号、间距等用 ${THEME_CSS} 中的变量（映射到项目的技术栈），不另写一套`] : []),
+    ];
     for (const w of [...m.writes, ...(m.shared ?? [])]) {
       if (w === '**' || w === '*' || w.startsWith('/') || w.split('/').includes('..')) errors.push(`${m.id}：可写范围 ${w} 不合法（要具体到模块的目录，不能是整个仓库或仓库外）`);
       else if (isProtected(w.replace(/\/\*\*$/, '/x'))) errors.push(`${m.id}：${w} 是受保护路径（.flow、.git、workflow.yaml、rules、.pi）`);
@@ -50,7 +63,7 @@ export function modulesToTasks(ctx: ToolContext, p: Static<typeof ProposeModules
     return {
       id: ids.get(m.id)!, stage: EXECUTION_STAGE, kind: 'impl', title: m.title, role: 'implementer', scopes: ['code'],
       depends_on: (m.depends_on ?? []).filter((d) => ids.has(d.module)).map((d) => ({ task: ids.get(d.module)!, type: 'hard' as const, reason: d.reason })),
-      inputs: [...new Set([...(m.inputs ?? []), 'docs/modules.md', 'docs/glossary.md', 'AGENTS.md'])], writes: [...m.writes], acceptance: [...m.acceptance], verify,
+      inputs: [...new Set([...(m.inputs ?? []), ...pages, ...(ui ? design : []), 'docs/modules.md', 'docs/glossary.md', 'AGENTS.md'])], writes: [...m.writes], acceptance: [...m.acceptance, ...uiCriteria], verify,
       ...(m.shared?.length ? { shared: [...m.shared] } : {}), needs_acceptance: true,
     };
   });

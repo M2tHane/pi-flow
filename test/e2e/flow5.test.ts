@@ -15,7 +15,7 @@ import { nextStep } from '../../src/core/context-injector.ts';
 
 const MODULES = [
   { id: 'M-1', title: '底座：项目骨架与公共组件', writes: ['src/base/**'], shared: ['src/routes.ts'], acceptance: ['服务能启动', '首页能打开'] },
-  { id: 'M-2', title: '待办：增删改查', writes: ['src/todo/**'], shared: ['src/routes.ts'], acceptance: ['可以新增待办'], depends_on: [{ module: 'M-1', reason: '需要底座' }] },
+  { id: 'M-2', title: '待办：增删改查', writes: ['src/todo/**'], shared: ['src/routes.ts'], acceptance: ['可以新增待办'], ui_pages: ['prototype/index.html'], depends_on: [{ module: 'M-1', reason: '需要底座' }] },
   { id: 'M-3', title: '标签：给待办打标签', writes: ['src/tag/**'], shared: ['src/routes.ts'], acceptance: ['可以新增标签'], depends_on: [{ module: 'M-1', reason: '需要底座' }] },
 ];
 
@@ -44,6 +44,7 @@ test('第五轮全流程：主会话提交需求说明（打回后带着意见�
     assert.deepEqual(flow.stages, ['D0', 'D1', 'D2', 'E']);
     const prompts: Record<string, string[]> = {};
     let acceptRound = 0;
+    let designerRuns = 0;
     const script = async (role: string, _nth: number, a: FakeAgent) => {
       const t = p.store.readTask(a.env.flow, a.env.task);
       (prompts[role] ??= []).push(a.spec.prompt);
@@ -64,12 +65,15 @@ test('第五轮全流程：主会话提交需求说明（打回后带着意见�
       }
       assert.ok((await a.call('flow_claim')).ok);
       if (role === 'designer') {
-        await a.call('write', { path: 'prototype/index.html', content: '<html>原型</html>' });
+        await a.call('write', { path: 'prototype/index.html', content: '<html><link href="../docs/design/theme.css">原型</html>' });
+        await a.call('write', { path: 'docs/design/theme.css', content: ':root { --color-primary: #1d4ed8; }\n' });
+        // 第一次漏写设计规范：原型阶段的检查不通过，designer 接着原会话补上
+        if (designerRuns++ > 0) await a.call('write', { path: 'DESIGN.md', content: '# 设计规范\n主色 --color-primary\n' });
       } else if (role === 'architect') {
         await a.call('write', { path: 'docs/modules.md', content: '# 模块\n' });
         await a.call('write', { path: 'docs/rules-draft/project.md', content: '# 项目规则\n- 用 SQLite\n' });
-        const bad = await a.call('flow_propose_modules', { modules: [{ id: 'M-1', title: 'x', writes: ['**'], acceptance: ['a'] }] });
-        assert.ok(!bad.ok && /不合法/.test(bad.text), bad.text);
+        const bad = await a.call('flow_propose_modules', { modules: [{ id: 'M-1', title: 'x', writes: ['**'], acceptance: ['a'], ui_pages: ['prototype/nope.html'] }] });
+        assert.ok(!bad.ok && /不合法/.test(bad.text) && /原型里没有 prototype\/nope\.html/.test(bad.text), bad.text);
         const r = await a.call('flow_propose_modules', { modules: MODULES, assumptions: ['标签不区分大小写'] });
         assert.ok(r.ok, r.text);
       } else if (role === 'implementer' && t.kind === 'merge-fix') {
@@ -126,6 +130,11 @@ test('第五轮全流程：主会话提交需求说明（打回后带着意见�
       if (stage === 'D1') {
         await assert.rejects(flowRequirements(p.dir, p.store, engine, { content: '# 改需求', prototype: true }), /需求讨论（D0）已结束/);
         assert.match(p.git('show', `${flow.integration_branch}:docs/requirements.md`), /第 2 版[\s\S]*标签有颜色/);
+        const d1 = p.store.listTasks(flow.id).filter((x) => x.stage === 'D1');
+        assert.equal(d1.length, 2);
+        assert.equal(d1[1]!.fork_from_task, d1[0]!.id);
+        assert.match(p.store.readHandoff(flow.id, d1[1]!.id), /原型阶段必须写出 DESIGN\.md/);
+        assert.match(p.git('show', `${flow.integration_branch}:DESIGN.md`), /主色/);
       }
       await runFlowCommand(stage === 'E' ? 'approve --yes' : 'approve', env);
     }, async () => {
@@ -147,6 +156,11 @@ test('第五轮全流程：主会话提交需求说明（打回后带着意见�
     const a = p.store.readAcceptance(flow.id, base.id)!;
     assert.equal(a.status, 'accepted');
     assert.equal(a.round, 1);
+    // 界面模块：原型页面与设计规范自动加进输入，验收多两条（验收者逐条确认）
+    const todo = mods.find((t) => t.title.startsWith('待办'))!;
+    assert.ok(['prototype/index.html', 'DESIGN.md', 'docs/design/theme.css'].every((f) => todo.inputs.includes(f)), todo.inputs.join());
+    assert.match(todo.acceptance.slice(1).join('\n'), /^界面按原型 prototype\/index\.html 实现[\s\S]*\n界面遵循 DESIGN\.md/);
+    assert.ok(!base.inputs.includes('DESIGN.md'), '没有界面的模块不加设计规范');
     const fix = tasks.find((t) => t.id === a.fix_tasks[0])!;
     assert.equal(fix.kind, 'review-fix');
     assert.equal(fix.fork_from_task, base.id);

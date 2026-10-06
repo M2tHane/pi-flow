@@ -47,7 +47,7 @@ test('工具组展开；bash_readonly 映射为 bash 并标记只读', () => {
   assert.ok(rt.includes('bash') && rt.includes('serena_find_symbol') && rt.includes('codegraph_impact') && rt.includes('flow_submit') && rt.includes('flow_block') && rt.includes('notes') && rt.includes('history'));
   // orchestrator：需求讨论时读代码（read、grep、find、ls），隐式拥有 flow_requirements，没有写工具
   const ot = real.activeTools('orchestrator');
-  assert.ok(ot.includes('grep') && ot.includes('flow_requirements') && ot.includes('flow_replan'));
+  assert.ok(ot.includes('grep') && ot.includes('ask_user') && ot.includes('flow_requirements') && ot.includes('flow_replan'));
   assert.ok(!ot.some((t) => real.toolKind(t) === 'write'));
   assert.deepEqual(real.roles['orchestrator']!.readPaths, ['**']);
   assert.ok(real.activeTools('acceptor').includes('flow_accept') && !real.activeTools('acceptor').some((t) => real.toolKind(t) === 'write'));
@@ -85,7 +85,7 @@ test('角色的 writes 不能手写为与 scopes 不一致', () => {
 });
 
 test('越权配置被拒：orchestrator 有写工具、无 writes 的角色有写工具、验收与模块清单工具给了别的角色', () => {
-  assert.match(errorsOf(REAL_TEMPLATE_YAML.replace('tools: [read, grep, find, ls, flow_status', 'tools: [read, bash, grep, find, ls, flow_status')).join(), /orchestrator.*bash/);
+  assert.match(errorsOf(REAL_TEMPLATE_YAML.replace('tools: [read, grep, find, ls, "@ask", flow_status', 'tools: [read, bash, grep, find, ls, "@ask", flow_status')).join(), /orchestrator.*bash/);
   const acc = 'tools: [read, bash, "@serena_read", "@codegraph", flow_accept, flow_accept_confirm]';
   const des = 'tools: [read, write, edit, flow_note, flow_submit]';
   assert.ok(REAL_TEMPLATE_YAML.includes(acc) && REAL_TEMPLATE_YAML.includes(des));

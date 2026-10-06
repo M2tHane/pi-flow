@@ -77,6 +77,13 @@ function roles(deps: FlowConfigDeps): string[] {
   return Object.keys(deps.config.roles);
 }
 
+/** 角色做什么（菜单与 show 中显示，方便选模型） */
+const ROLE_PURPOSE: Record<string, string> = {
+  orchestrator: '主 agent：和你对话、讨论需求', designer: '原型与设计规范', architect: '模块规划与项目规则', implementer: '模块实现',
+  acceptor: '独立验收', reviewer: '最终代码审查（review.final 开启时）', researcher: '查资料',
+};
+const roleLabel = (r: string) => (ROLE_PURPOSE[r] ? `${r}（${ROLE_PURPOSE[r]}）` : r);
+
 function findModel(deps: FlowConfigDeps, ref: string): ModelOption | undefined {
   const lower = ref.toLowerCase();
   return deps.models.find((m) => m.ref.toLowerCase() === lower);
@@ -104,8 +111,7 @@ function describeRole(deps: FlowConfigDeps, role: string): string {
 }
 
 function describeAll(deps: FlowConfigDeps): string {
-  const width = Math.max(...roles(deps).map((r) => r.length));
-  const lines = roles(deps).map((r) => `  ${r.padEnd(width)}  ${describeRole(deps, r)}`);
+  const lines = roles(deps).map((r) => `  ${roleLabel(r)}：${describeRole(deps, r)}`);
   return [`角色模型设置（保存于 ${deps.settingsPath}，优先于 workflow.yaml）：`, ...lines].join('\n');
 }
 
@@ -200,7 +206,7 @@ async function interactive(deps: FlowConfigDeps, ui: UiPort): Promise<string> {
 
 async function editEscalation(deps: FlowConfigDeps, ui: UiPort): Promise<void> {
   for (;;) {
-    const labels = roles(deps).map((r) => `${r} · ${describeRole(deps, r)}`);
+    const labels = roles(deps).map((r) => `${roleLabel(r)} · ${describeRole(deps, r)}`);
     const pick = await ui.select('选择角色：同一任务失败多次后改用哪个模型', [DONE, ...labels]);
     if (!pick || pick === DONE) return;
     const role = roles(deps)[labels.indexOf(pick)];
@@ -216,7 +222,7 @@ async function editEscalation(deps: FlowConfigDeps, ui: UiPort): Promise<void> {
 
 async function editRoles(deps: FlowConfigDeps, ui: UiPort): Promise<void> {
   for (;;) {
-    const labels = roles(deps).map((r) => `${r} · ${describeRole(deps, r)}`);
+    const labels = roles(deps).map((r) => `${roleLabel(r)} · ${describeRole(deps, r)}`);
     const pick = await ui.select('选择角色（设置后回到此列表，可继续修改其他角色）', [DONE, ...labels]);
     if (!pick || pick === DONE) return;
     const role = roles(deps)[labels.indexOf(pick)];

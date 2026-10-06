@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { parseConfig } from '../../src/core/config.ts';
 import { checkDependencies, compareVersions, inRange, PI_REQUIREMENT } from '../../src/core/dependencies.ts';
-import { TEST_YAML } from '../helpers/config.ts';
+import { REAL_TEMPLATE_YAML, TEST_YAML } from '../helpers/config.ts';
 
 const config = parseConfig(TEST_YAML);
 const probe = { serena: () => true, serenaVersion: () => '1.7.0', codegraphVersion: () => '1.6.0' };
@@ -48,5 +48,9 @@ test('依赖检查：Pi 过低报错、超出验证范围提醒；插件按角�
     // 没有角色用到的插件不检查
     const noWeb = parseConfig(TEST_YAML.replace('tools: [read, write, "@web", flow_note, flow_submit]', 'tools: [read, write, flow_note, flow_submit]'));
     assert.equal(checkDependencies({ config: noWeb, packageRoots: [root], probe }).find((i) => i.item === 'pi-web-access'), undefined);
+    // 主 agent 的选择题提问插件：模板里 orchestrator 用到，没装时提醒（不影响开始）
+    const ask = by(checkDependencies({ config: parseConfig(REAL_TEMPLATE_YAML), packageRoots: [root], probe }), '@tian.zuo/pi-ask-user');
+    assert.equal(ask.level, 'warn');
+    assert.match(ask.detail, /未安装：orchestrator .*pi install npm:@tian\.zuo\/pi-ask-user/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
