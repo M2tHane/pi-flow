@@ -49,11 +49,8 @@
           },
           "kind": {
             "enum": [
-              "test",
               "impl",
               "doc",
-              "infra",
-              "integration",
               "review-fix",
               "merge-fix",
               "analysis"
@@ -131,6 +128,15 @@
             "items": {
               "type": "string"
             }
+          },
+          "shared": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "needs_acceptance": {
+            "type": "boolean"
           }
         },
         "additionalProperties": false

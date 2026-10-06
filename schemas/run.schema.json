@@ -207,22 +207,6 @@
     "escalated": {
       "type": "boolean"
     },
-    "review_mode": {
-      "anyOf": [
-        {
-          "type": "string",
-          "const": "full"
-        },
-        {
-          "type": "string",
-          "const": "light"
-        },
-        {
-          "type": "string",
-          "const": "strong"
-        }
-      ]
-    },
     "turns": {
       "type": "integer",
       "minimum": 0

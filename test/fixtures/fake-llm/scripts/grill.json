@@ -1,0 +1,6 @@
+{ "steps": [
+  { "text": "❓ **Q1 · 谁用**：只有你自己用吗？\n\n➡️ 推荐：只给自己用，不做多人协作" },
+  { "tool_calls": [ { "name": "grep", "arguments": { "pattern": "todo", "path": "." } } ] },
+  { "tool_calls": [ { "name": "flow_requirements", "arguments": { "content": "# 待办应用需求说明\n\n## 需求清单\n- R1（MVP）新建待办。done-when：新建后列表多一条\n\n## 术语\n- 待办：一条要做的事\n\n## 界面风格\n无界面（命令行）\n\n## 范围外\n- 多人协作\n", "prototype": false } } ] },
+  { "text": "需求说明已提交，请审阅后 /flow-approve" }
+] }

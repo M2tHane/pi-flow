@@ -88,7 +88,7 @@ export async function resume(d: ResumeDeps, decide?: (q: ResumeDecision) => Prom
   for (const t of store.listTasks(flowId)) {
     if (!t.lease || active.has(t.lease.run_id)) continue;
     const expired = now().getTime() >= Date.parse(t.lease.expires_at);
-    if (t.status === 'review' || !expired) {
+    if (!expired) {
       // 会话中断不是 subagent 的错：只记中断次数，不消耗失败预算
       const next = await store.transitionTask(flowId, t.id, { to: t.status, trigger: 'run_interrupted', actor: 'resume',
         facts: { reason: `会话中断，run ${t.lease.run_id} 已终止${expired ? '且租约过期' : ''}` } });
@@ -138,7 +138,7 @@ async function expireToReady(d: ResumeDeps, flowId: string, t: TaskFile): Promis
 /** resume brief：当前流程与阶段、ready 与进行中的任务、相关 handoff 的最近内容、最近 10 条事件、等待用户处理的事项 */
 export function resumeBrief(store: StateStore, flowId: string, actions: string[], pending: ResumeDecision[]): string {
   const tasks = store.listTasks(flowId);
-  const inflight = tasks.filter((t) => ['in_progress', 'review', 'verifying', 'queued_merge', 'merging'].includes(t.status));
+  const inflight = tasks.filter((t) => ['in_progress', 'queued_merge', 'merging'].includes(t.status));
   const handoffs = inflight.map((t) => {
     const h = store.readHandoff(flowId, t.id).trim();
     return h ? `### ${t.id}（${t.status}）\n${h.slice(-800)}` : '';
@@ -149,7 +149,7 @@ export function resumeBrief(store: StateStore, flowId: string, actions: string[]
     '# pi-flow 恢复摘要',
     statusText(store, null, flowId),
     actions.length ? `## 本次恢复操作\n${actions.map((a) => `- ${a}`).join('\n')}` : '## 本次恢复操作\n- 无需处理',
-    pending.length ? `## 需要用户决定\n${pending.map((q) => `- ${q.task}：租约已过期，worktree 有 ${q.changes.length} 处未提交改动。继续（保留改动重新派发）或丢弃？执行 /flow resume 并选择。`).join('\n')}` : '',
+    pending.length ? `## 需要用户决定\n${pending.map((q) => `- ${q.task}：租约已过期，worktree 有 ${q.changes.length} 处未提交改动。继续（保留改动重新派发）或丢弃？执行 /flow-resume 并选择。`).join('\n')}` : '',
     handoffs.length ? `## 进行中任务的 handoff（最近部分）\n${handoffs.join('\n\n')}` : '',
     `## 最近事件\n${events.join('\n')}`,
   ].filter(Boolean).join('\n\n');

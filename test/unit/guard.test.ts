@@ -11,7 +11,10 @@ import { TEST_YAML } from '../helpers/config.ts';
 // 额外加一个可写 ** 的角色，用来验证受保护路径对"任何 writes"都只读
 const YAML = TEST_YAML
   .replace('infra:      {', 'everything: { writes: ["**"] }\n  infra:      {')
-  .replace('  reviewer:', '  chaos:             { model: medium, scopes: [everything], tools: [read, find, grep, write, edit, bash, "@serena_edit"] }\n  reviewer:');
+  // chaos：可写 **；reviewer、scout：只读角色（bash 只读白名单），用来验证只读角色的约束
+  + '  chaos:             { model: medium, scopes: [everything], tools: [read, find, grep, write, edit, bash, "@serena_edit"] }\n'
+  + '  reviewer:          { model: medium, scopes: [], tools: [codemode, read, bash_readonly, "@serena_read", "@codegraph"], writes: [] }\n'
+  + '  scout:             { model: cheap,  scopes: [], tools: [codemode, read, bash_readonly, "@serena_read", "@codegraph", flow_note, flow_submit], writes: [] }\n';
 const config = parseConfig(YAML);
 
 let base: string, main: string, wt: string;
@@ -31,7 +34,7 @@ after(() => rmSync(base, { recursive: true, force: true }));
 
 const ctx = (role: string, over: Partial<GuardContext> = {}): GuardContext => {
   const inMain = role === 'orchestrator';
-  return { config, role, cwd: inMain ? main : wt, workspaceRoot: inMain ? main : wt, mainRoot: main, contractsLocked: true, ...over };
+  return { config, role, cwd: inMain ? main : wt, workspaceRoot: inMain ? main : wt, mainRoot: main, ...over };
 };
 const call = (toolName: string, input: Record<string, unknown>) => ({ toolName, input });
 const bash = (command: string) => call('bash', { command });
@@ -114,11 +117,11 @@ test('实施角色：writes 白名单', () => {
 test('受保护路径对所有角色只读（即使 writes 覆盖）', () => {
   const c = ctx('chaos');
   for (const p of ['.flow/state.json', '.git/config', 'workflow.yaml', 'rules/backend.md', '.pi/settings.json',
-    'docs/contracts/api.ts', '.FLOW/state.json', 'src/server/evil/state.json', '@.flow/x', `file://${wt}/.flow/x`]) {
+    '.FLOW/state.json', 'src/server/evil/state.json', '@.flow/x', `file://${wt}/.flow/x`]) {
     blocked(checkToolCall(call('write', { path: p, content: '' }), c), 'protected', /只读/);
   }
   blocked(checkToolCall(call('serena_replace_content', { relative_path: '.flow/tasks/T-001.json' }), c), 'protected');
-  allowed(checkToolCall(call('write', { path: 'docs/contracts/api.ts', content: '' }), ctx('chaos', { contractsLocked: false })));
+  allowed(checkToolCall(call('write', { path: 'docs/contracts/api.ts', content: '' }), c));
   allowed(checkToolCall(call('write', { path: 'anything/else.ts', content: '' }), c));
 });
 
@@ -261,13 +264,13 @@ test('同一命令中字面量赋值的变量会被代入后校验；含命令�
   blocked(checkToolCall(bash('rm -rf $UNKNOWN/x'), c), 'bash');
 });
 
-test('阶段审查的修复任务可以写契约（不受角色可写范围限制），其他路径照旧；没有该标记时契约不可写', () => {
-  const fix = ctx('backend-engineer', { contractsLocked: false, contractAdditions: true, writes: ['src/server/a.ts'] });
-  allowed(checkToolCall(call('write', { path: 'docs/contracts/web.md', content: '' }), fix));
-  allowed(checkToolCall(call('write', { path: 'src/server/a.ts', content: '' }), fix));
-  blocked(checkToolCall(call('write', { path: 'docs/PRD.md', content: '' }), fix), 'write_paths');
-  blocked(checkToolCall(call('write', { path: 'workflow.yaml', content: '' }), fix));
-  blocked(checkToolCall(call('write', { path: 'docs/contracts/web.md', content: '' }), ctx('backend-engineer', { contractsLocked: false, writes: ['src/server/a.ts'] })), 'write_paths');
+test('实现类任务可以在接口文档里追加（不受任务可写范围限制），其他路径照旧；没有该标记时不可写', () => {
+  const impl = ctx('backend-engineer', { interfaceAdditions: true, writes: ['src/server/a.ts'] });
+  allowed(checkToolCall(call('write', { path: 'docs/interfaces/web.md', content: '' }), impl));
+  allowed(checkToolCall(call('write', { path: 'src/server/a.ts', content: '' }), impl));
+  blocked(checkToolCall(call('write', { path: 'docs/requirements.md', content: '' }), impl), 'write_paths');
+  blocked(checkToolCall(call('write', { path: 'workflow.yaml', content: '' }), impl));
+  blocked(checkToolCall(call('write', { path: 'docs/interfaces/web.md', content: '' }), ctx('backend-engineer', { writes: ['src/server/a.ts'] })), 'write_paths');
 });
 
 test('禁止后台运行：单独的 & 被拦下，&& 与 2>&1 不受影响；setsid、disown 被拦下', () => {

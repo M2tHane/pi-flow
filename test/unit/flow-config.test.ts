@@ -7,9 +7,9 @@ import { splitArgs } from '../../src/commands/args.ts';
 import { runFlowConfig, type UiPort, type ModelOption } from '../../src/commands/flow-config.ts';
 import { loadRoleSettings } from '../../src/core/role-settings.ts';
 import { parseConfig } from '../../src/core/config.ts';
-import { TEMPLATE_YAML } from '../helpers/config.ts';
+import { REAL_TEMPLATE_YAML } from '../helpers/config.ts';
 
-const config = parseConfig(TEMPLATE_YAML.replace('medium: "<provider/model>"', 'medium: "workbuddy/glm-5.3-flash"'));
+const config = parseConfig(REAL_TEMPLATE_YAML.replace('strong: "<provider/model>"', 'strong: "workbuddy/glm-5.3-flash"'));
 const models: ModelOption[] = [
   { ref: 'workbuddy/glm-5.3-flash', name: 'GLM 5.3 Flash', levels: ['off', 'minimal', 'low', 'medium', 'high'] },
   { ref: 'openai-codex/gpt-5.5', name: 'GPT-5.5', levels: ['off', 'low', 'medium', 'high', 'xhigh'] },
@@ -55,31 +55,31 @@ test('交互：为角色选择模型与思考级别并保存；可连续设置�
     const { ui, seen } = fakeUi([
       starts('设置各角色'),
       starts('architect'), starts('workbuddy/glm-5.3-flash'), starts('high'),
-      starts('reviewer'), starts('openai-codex/gpt-5.5'), starts('xhigh'),
+      starts('designer'), starts('openai-codex/gpt-5.5'), starts('xhigh'),
       starts('完成'),
       starts('完成'),
     ]);
     await runFlowConfig('', { ui, models, config, settingsPath });
     const s = loadRoleSettings(settingsPath);
     assert.deepEqual(s.roles['architect'], { model: 'workbuddy/glm-5.3-flash', thinking: 'high' });
-    assert.deepEqual(s.roles['reviewer'], { model: 'openai-codex/gpt-5.5', thinking: 'xhigh' });
+    assert.deepEqual(s.roles['designer'], { model: 'openai-codex/gpt-5.5', thinking: 'xhigh' });
     // 思考级别只列出该模型支持的
     const thinkingMenu = seen.find((x) => x.title.includes('architect') && x.title.includes('思考'))!;
     assert.ok(!thinkingMenu.options.some((o) => o.startsWith('xhigh')));
     // 角色菜单显示当前设置
     const roleMenus = seen.filter((x) => x.title.includes('选择角色'));
     assert.ok(roleMenus.at(-1)!.options.some((o) => o.startsWith('architect') && o.includes('workbuddy/glm-5.3-flash') && o.includes('high')));
-    assert.ok(roleMenus[0]!.options.some((o) => o.startsWith('backend-engineer') && o.includes('workflow.yaml')));
+    assert.ok(roleMenus[0]!.options.some((o) => o.startsWith('implementer') && o.includes('workflow.yaml')));
   } finally { cleanup(); }
 });
 
 test('交互：选择"使用默认"会清除覆盖；取消不写文件', async () => {
   const { settingsPath, cleanup } = env();
   try {
-    await runFlowConfig('set scout local/tiny off', { ui: null, models, config, settingsPath });
-    const { ui } = fakeUi([starts('设置各角色'), starts('scout'), starts('使用 workflow.yaml'), starts('使用默认'), starts('完成'), starts('完成')]);
+    await runFlowConfig('set designer local/tiny off', { ui: null, models, config, settingsPath });
+    const { ui } = fakeUi([starts('设置各角色'), starts('designer'), starts('使用 workflow.yaml'), starts('使用默认'), starts('完成'), starts('完成')]);
     await runFlowConfig('', { ui, models, config, settingsPath });
-    assert.equal(loadRoleSettings(settingsPath).roles['scout'], undefined);
+    assert.equal(loadRoleSettings(settingsPath).roles['designer'], undefined);
 
     const { ui: ui2 } = fakeUi([starts('设置各角色'), starts('architect'), () => undefined]);
     await runFlowConfig('', { ui: ui2, models, config, settingsPath });
@@ -96,8 +96,8 @@ test('非交互：set / show / unset / models', async () => {
     await runFlowConfig('set researcher default low', deps);
     assert.deepEqual(loadRoleSettings(settingsPath).roles['researcher'], { thinking: 'low' });
     const shown = await runFlowConfig('show', deps);
-    assert.match(shown, /architect.*workbuddy\/glm-5\.3-flash.*medium.*\/flow-config/);
-    assert.match(shown, /backend-engineer.*workbuddy\/glm-5\.3-flash.*workflow\.yaml/);
+    assert.match(shown, /architect（模块规划与项目规则）：.*workbuddy\/glm-5\.3-flash.*medium.*\/flow-config/);
+    assert.match(shown, /implementer.*workbuddy\/glm-5\.3-flash.*workflow\.yaml/);
     assert.match(shown, /pi-flow\.json/);
     assert.match(await runFlowConfig('models', deps), /local\/tiny.*off/);
     await runFlowConfig('unset architect', deps);

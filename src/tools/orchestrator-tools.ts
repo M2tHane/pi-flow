@@ -1,5 +1,5 @@
 // orchestrator 的工具：flow_status（只读）、flow_dispatch（只收 ready 任务，非阻塞）、flow_wait（等待变化，返回精简摘要）。
-import { allIssues, describeStageReview } from '../core/stage-review.ts';
+import { describeAcceptance, failedOf } from '../core/acceptance.ts';
 import { activePauses, describePause } from '../core/model-pause.ts';
 import { Type, type Static } from 'typebox';
 import type { StateStore } from '../core/state-store.ts';
@@ -7,9 +7,11 @@ import type { Engine } from '../core/dispatcher.ts';
 import { TASK_STATUSES, type TaskFile } from '../core/schemas.ts';
 import { FlowToolError, type ToolResult } from './subagent-tools.ts';
 import { proposalSummary } from '../core/stages.ts';
+import { PROPOSAL_STAGES } from '../modes/plan.ts';
 import type { FlowConfig } from '../core/config.ts';
 import { RevisionError, formatRevision, openReplan, startReplan } from '../core/revision.ts';
 import { actionsNeeded } from '../core/status-view.ts';
+import { RequirementsError, submitRequirements } from '../core/requirements.ts';
 
 export const DispatchParams = Type.Object({ task_id: Type.String({ pattern: '^T-[0-9]{3,}$' }) });
 export const WaitParams = Type.Object({
@@ -21,7 +23,7 @@ export const ReplanParams = Type.Object({
   reason: Type.String({ minLength: 1, maxLength: 2000, description: '用户提出的修订要求，尽量用用户的原话：要加什么、改什么、为什么' }),
 });
 
-/** 转达用户的修订要求：生成修订任务并派给 architect；修订需要用户 /flow approve 才生效 */
+/** 转达用户的修订要求：生成修订任务并派给 architect；修订需要用户 /flow-approve 才生效 */
 export async function flowReplan(root: string, store: StateStore, config: FlowConfig, engine: Engine, p: Static<typeof ReplanParams>): Promise<ToolResult> {
   const flowId = activeFlowId(store);
   let id: string;
@@ -32,13 +34,39 @@ export async function flowReplan(root: string, store: StateStore, config: FlowCo
     throw e;
   }
   await engine.promote(flowId);
-  const after = 'architect 提交修订后，请用户查看并执行 /flow approve 批准（或 /flow reject "<意见>"）。';
+  const after = 'architect 提交修订后，请用户查看并执行 /flow-approve 批准（或 /flow-reject "<意见>"）。';
   try {
     const d = await engine.dispatch(flowId, id);
     return { text: `已生成修订任务 ${id} 并派给 ${d.role}（run ${d.run_id}）。${after}用 flow_wait 等待。`, details: { task: id, run_id: d.run_id } };
   } catch (e) {
     return { text: `已生成修订任务 ${id}，暂时无法派发（${(e as Error).message}），名额空出后用 flow_dispatch(${id}) 派发。${after}`, details: { task: id } };
   }
+}
+
+export const RequirementsParams = Type.Object({
+  content: Type.String({ minLength: 1, description: '完整的需求说明（Markdown，结构见技能 write-requirements）' }),
+  prototype: Type.Boolean({ description: '是否需要原型阶段：有界面且用户想先看原型为 true；没有界面或只改后端为 false' }),
+});
+
+/** 需求讨论（D0）：用户确认共识后提交需求说明；程序提交到集成分支并执行阶段闸门，之后等用户审批 */
+export async function flowRequirements(root: string, store: StateStore, engine: Engine, p: Static<typeof RequirementsParams>): Promise<ToolResult> {
+  const flowId = activeFlowId(store);
+  let r: { path: string; sha: string | null };
+  try {
+    r = await submitRequirements(root, store, flowId, p.content, p.prototype, 'orchestrator');
+  } catch (e) {
+    if (e instanceof RequirementsError) throw new FlowToolError(e.message);
+    throw e;
+  }
+  await engine.pump(flowId);
+  await engine.idle();
+  const f = store.readFlow(flowId);
+  const proto = p.prototype ? '接下来做原型' : '跳过原型，直接进入规划';
+  if (f.stage_status === 'awaiting_human') {
+    return { text: `已提交需求说明 ${r.path}${r.sha ? '' : '（内容没有变化）'}，${proto}。请用户查看后执行 /flow-approve，或 /flow-reject "<意见>" 打回；你只能等待。`, details: { path: r.path } };
+  }
+  const reason = f.requirements?.feedback;
+  return { text: `已提交需求说明 ${r.path}，阶段 ${f.stage}（${f.stage_status}）${!f.requirements?.submitted && reason ? `。检查未通过：${reason}，请修改后重新提交` : ''}。`, details: { path: r.path } };
 }
 
 export function activeFlowId(store: StateStore): string {
@@ -70,19 +98,15 @@ export function statusText(store: StateStore, engine: Engine | null, flowId: str
   const failing = tasks.filter((t) => t.last_failure && !['blocked', 'done', 'cancelled'].includes(t.status));
   if (failing.length) lines.push(`最近失败：\n${failing.map((t) => `- ${t.id}（第 ${t.attempts} 次）：${one(t.last_failure!)}`).join('\n')}`);
   if (flow.stage_status === 'awaiting_human') {
-    lines.push(`等待用户：阶段 ${flow.stage} 的闸门待批准 → /flow approve（或 /flow reject "<意见>"）`);
+    lines.push(`等待用户：阶段 ${flow.stage} 的闸门待批准 → /flow-approve（或 /flow-reject "<意见>"）`);
     const p = proposalSummary(store, flowId);
-    if (p && ['S1', 'F1'].includes(flow.stage)) lines.push(p);
+    if (p && PROPOSAL_STAGES.has(flow.stage)) lines.push(p);
   }
   const rev = openReplan(store, flowId)?.revision;
-  if (rev) lines.push(`等待用户：计划修订待批准 → /flow approve（或 /flow reject "<意见>"）\n${formatRevision(rev)}`);
-  const sr = flow.mode !== 'fix' ? store.readStageReview(flowId, flow.stage) : null;
-  if (sr && sr.status !== 'done') {
-    const answer = (id: string) => { const c = sr.batches.flatMap((b) => b.confirm).find((x) => x.id === id); return c ? (c.resolved ? ' ✓已解决' : ` ✗未解决${c.note ? `：${one(c.note, 80)}` : ''}`) : ''; };
-    const issues = allIssues(sr);
-    lines.push(`阶段末审查（${sr.status}）：${describeStageReview(sr)}${issues.length ? `\n${issues.map((i) => `- ${i.id}［${i.module}］${one(i.location, 60)}：${one(i.problem, 120)}${answer(i.id)}`).join('\n')}` : ''}`);
-    if (sr.status === 'needs_human') lines.push(`全量测试失败日志：.flow/flows/${flowId}/evidence/stage-${flow.stage}/`);
-  }
+  if (rev) lines.push(`等待用户：计划修订待批准 → /flow-approve（或 /flow-reject "<意见>"）\n${formatRevision(rev)}`);
+  // 模块验收（第五轮）：进行中与需要用户处理的
+  const accepts = store.listAcceptances(flowId).filter((a) => a.status !== 'accepted');
+  if (accepts.length) lines.push(`模块验收：\n${accepts.map((a) => `- ${a.task}：${describeAcceptance(a)}${failedOf(a).length ? `\n${failedOf(a).map((c) => `  · ${c.id} ${one(c.text, 80)}：${one(a.results.find((r) => r.id === c.id)?.evidence ?? '', 120)}`).join('\n')}` : ''}`).join('\n')}`);
   const gateFail = [...store.readEvents()].reverse().find((e) => e.flow === flowId && e.type === 'gate_result');
   if (gateFail && gateFail.to === 'active' && flow.stage_status === 'active') lines.push(`阶段闸门未通过：${one(gateFail.reason ?? '', 300)}（修复后执行 /flow gate 重跑）`);
   return lines.join('\n');
@@ -107,7 +131,7 @@ export async function flowDispatch(store: StateStore, engine: Engine, p: Static<
 
 /**
  * 等待值得告诉用户的变化（第三轮后续 5）：任务完成、阻塞或取消，出现需要用户处理的事，阶段或流程状态变化，
- * 关闭自动派发时出现可派发的任务，或者引擎已无事可做。审查、验证、合并等中间步骤不唤醒 orchestrator。
+ * 关闭自动派发时出现可派发的任务，或者引擎已无事可做。合并、验收等中间步骤不唤醒 orchestrator。
  * 给了 task_id 时只等这个任务的状态变化。
  */
 export async function flowWait(store: StateStore, engine: Engine, p: Static<typeof WaitParams>, config?: FlowConfig): Promise<ToolResult> {

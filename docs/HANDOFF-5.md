@@ -4,6 +4,18 @@
 > 设计参考了 my-work-flow 的 `/supie-dev`（保留需求辩论、原型、独立验收；不要契约钉死、逐任务双审查、按层拆角色、HTML 报告）和 `@llblab/pi-state-flow`（借鉴"结构化笔记原样放回上下文"的做法，不直接使用）。
 > **保留 pi-flow 的运行时**：状态与事件、租约与恢复、越界拦截、合并队列、多模型调度。这部分是原生 Pi 和提示词工作流都没有的硬保证。
 
+> **完成情况（2026-10-05）**：第 8 节第 1–11 步已在分支 `round5-simplify` 完成，记在 `NOTES.md` 第 119–133 条；第 12 步（第 9 节的真实模型验证）未做。与本文不同的地方：
+> - 原型由 designer 角色负责（可单独配置模型，例如前端审美好的模型）。
+> - `test-adjust.ts` 保留（第 6 节原定删除）：模块的可写范围有限，接口变化仍会让别的模块已有的测试失败（NOTES 第 130 条）。
+> - 未做：`/flow-status --detail` 按模块显示 notes 的 current 与 todo（第 3.1 节）；workflow.yaml 里的全局 `shared_files` 列表（第 4 节），公共文件只能由 D2 按模块登记。
+> - 命令按用户的要求是 `/flow-approve`、`/flow-reject "<意见>"`、`/flow-add "<需求>"`、`/flow-resume`、`/flow-status --detail`；验收人工放行是 `/flow accept <任务>`。
+>
+> **之后的改动（2026-10-06，吸收 mattpocock/skills，MIT；NOTES 第 134–143 条）**：
+> - 原型阶段与原型一起产出设计规范 `DESIGN.md` 与共用样式 `docs/design/theme.css`；界面模块（`ui`、`ui_pages`）自动拿到原型与设计规范，验收对照。主 agent 可用 @tian.zuo/pi-ask-user 的 `ask_user` 提选择题。learn-demo.html 删除，改为 `docs/pi-flow.drawio`。
+> - 需求讨论（D0）改为**主 agent 直接和用户逐轮讨论**（技能 grilling、write-requirements），用 `flow_requirements` 提交，程序写入需求说明；不再有 user-advocate、dev-advocate、analyst（下文第 1、2、7 节的 D0 描述已被取代）。`/flow-build --from <文件>` 跳过讨论。
+> - architect 多写术语表 `docs/glossary.md`（技能 domain-modeling）；模块切分规则改为纵向切片、铺垫性重构排前、每个模块写测试接口（技能 plan-modules）；implementer 用技能 tdd。
+> - 可选的最终代码审查（`review.final`，默认关）：模块都验收后一个 reviewer 审查整个流程的改动，必须改自动修一轮，建议由用户 `/flow review fix` 挑选。
+
 ## 0. 用户已定的决定
 
 1. 需求先讨论：双视角辩论**一轮**，用户看过结果后再提意见完善，可以来回多次。
@@ -166,7 +178,7 @@
 | N7 | 独立验收 | 模块合并后派 acceptor：在集成分支上构建、启动、实际调用，按验收标准逐条给出 `{id, passed, evidence}`；不通过的交给实现者会话修复（fork），合并后只复查没通过的条目；两轮仍不过转"需要你处理"。依赖它的模块等验收通过才开工。复用第四轮阶段审查的机制 |
 | N8 | 运行中追加（`/flow add`） | 子进程启动方式从 `pi --mode json -p` 改为 `pi --mode rpc`，追加需求用 steer 送到正在运行的会话，同时写进该任务 notes 的 `goal`；没有运行中的任务时，由 architect 判断归哪个模块或新增模块 |
 | N9 | 合并检查钩子 | workflow.yaml 的 `commands.merge_check`（可选），合并验证时和全量测试一起跑，例如 Alembic"只能有一个 head"。程序里不写死任何框架 |
-| N10 | 状态视图与文档 | 高层阶段改为"需求 → 原型 → 规划 → 实施 → 完成"，实施阶段按模块显示进度（来自 notes）与验收结果；README、NOTES、CLAUDE.md、learn-demo 同步 |
+| N10 | 状态视图与文档 | 高层阶段改为"需求 → 原型 → 规划 → 实施 → 完成"，实施阶段按模块显示进度（来自 notes）与验收结果；README、NOTES、CLAUDE.md、learn-demo 同步（learn-demo 后来删除，改为 `docs/pi-flow.drawio`） |
 
 ## 8. 提交顺序
 

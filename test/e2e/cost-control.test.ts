@@ -1,4 +1,4 @@
-// 第二轮 H、I 验收：按风险审查、审查并发上限；失败后升级模型；流程预算。
+// 第二轮 H、I 验收：失败后升级模型；关键底座；流程预算。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
@@ -11,8 +11,8 @@ import { actionsNeeded } from '../../src/core/status-view.ts';
 import { nextStep } from '../../src/core/context-injector.ts';
 
 const MODELS = (yaml: string) => yaml
-  .replace(/  test:      ".*"/, '  test:      "true"')
-  .replace(/models:[\s\S]*?\nreview:/, 'models:\n  strong: "f/strong"\n  medium: "f/medium"\n  cheap:  "f/cheap"\nreview:');
+  .replace(/  test:      ".*"/, '  test:      "! grep -rqs FAIL src/server"')
+  .replace(/models:[\s\S]*?\ntesting:/, 'models:\n  strong: "f/strong"\n  medium: "f/medium"\n  cheap:  "f/cheap"\ntesting:');
 const SETTINGS = { version: 1 as const, roles: {} };
 const env = (p: Project, engine: ReturnType<typeof makeEngine>['engine']): CommandEnv => ({
   root: p.dir, packageRoot: path.join(import.meta.dirname, '../..'), ui: null,
@@ -27,76 +27,13 @@ async function implement(a: FakeAgent, file: string, content = 'x\n') {
   assert.ok(r.ok, r.text);
 }
 
-test('按风险审查：文档任务用便宜模型审查，普通代码任务用审查者的中等模型，大改动用强模型；skip 模式下低风险免审查；审查并发受限', async () => {
-  const p = await setupProject({ yaml: MODELS(PROJECT_YAML).replace('  max_parallel: 2               # 同时进行的审查数', '  max_parallel: 1               # 同时进行的审查数'), tasks: [
-    mkTask('T-001', { kind: 'doc', role: 'architect', scopes: ['docs'], writes: ['docs/guide/**'], verify: [] }),
-    mkTask('T-002', { verify: [] }),
-    mkTask('T-003', { verify: [], writes: ['src/server/t-003/**'] }),
-  ] });
-  try {
-    let reviewing = 0;
-    let maxReviewing = 0;
-    const { engine, launcher, errors } = makeEngine(p, async (role, _n, a) => {
-      if (role === 'reviewer') {
-        reviewing++; maxReviewing = Math.max(maxReviewing, reviewing);
-        await new Promise((r) => setTimeout(r, 50));
-        reviewing--;
-        assert.ok((await a.call('flow_approve', { decision: 'pass', notes: 'ok' })).ok);
-        return;
-      }
-      const t = p.store.readTask(p.flowId, a.env.task);
-      return implement(a, t.id === 'T-001' ? 'docs/guide/intro.md' : `src/server/${t.id.toLowerCase()}/a.ts`, t.id === 'T-003' ? 'x\n'.repeat(450) : 'x\n');
-    }, SETTINGS);
-    await engine.next(p.flowId);
-    await engine.idle();
-    await engine.next(p.flowId);
-    await engine.idle();
-    assert.deepEqual(errors, []);
-    for (const id of ['T-001', 'T-002', 'T-003']) assert.equal(p.store.readTask(p.flowId, id).status, 'done', id);
-    const reviews = p.store.listRuns().filter((r) => r.role === 'reviewer');
-    const byTask = Object.fromEntries(reviews.map((r) => [r.task, r]));
-    assert.equal(byTask['T-001']!.model, 'f/cheap');
-    assert.equal(byTask['T-001']!.review_mode, 'light');
-    assert.equal(byTask['T-002']!.model, 'f/medium', '模板中 reviewer 默认是中等档');
-    assert.equal(byTask['T-002']!.review_mode, 'full');
-    assert.equal(byTask['T-003']!.model, 'f/strong', '改动超过 400 行算高风险');
-    assert.equal(byTask['T-003']!.review_mode, 'strong');
-    assert.equal(maxReviewing, 1, '审查并发不超过 review.max_parallel');
-    assert.equal(launcher.launched.filter((s) => s.env['PI_FLOW_ROLE'] === 'reviewer' && s.env['PI_FLOW_TASK'] === 'T-001')[0]!.model, 'f/cheap');
-  } finally { p.cleanup(); }
-
-  const q = await setupProject({ yaml: MODELS(PROJECT_YAML).replace('    mode: cheap ', '    mode: skip  '), tasks: [
-    mkTask('T-001', { kind: 'doc', role: 'architect', scopes: ['docs'], writes: ['docs/guide/**'], verify: [] }),
-  ] });
-  try {
-    const { engine } = makeEngine(q, async (role, _n, a) => {
-      assert.notEqual(role, 'reviewer', '低风险任务不应派审查');
-      return implement(a, 'docs/guide/intro.md');
-    }, SETTINGS);
-    await engine.next(q.flowId);
-    await engine.idle();
-    assert.equal(q.store.readTask(q.flowId, 'T-001').status, 'done');
-    const skip = q.store.readEvents().find((e) => e.trigger === 'review_skip');
-    assert.equal(skip?.actor, 'engine');
-    assert.match(skip?.reason ?? '', /免审查/);
-    // 只有引擎能免审查
-    await assert.rejects(q.store.transitionTask(q.flowId, 'T-001', { to: 'verifying', trigger: 'review_skip', actor: 'run:r-x', facts: { low_risk: true, reason: 'x' } }), /非法转移|只有引擎/);
-  } finally { q.cleanup(); }
-});
-
 test('失败后升级模型：第 2 次失败后的派发使用升级模型并记录；超预算暂停派发新任务、提示用户，提高预算后继续', async () => {
-  const p = await setupProject({ yaml: MODELS(PROJECT_YAML), tasks: [mkTask('T-001', { verify: [] }),
+  const p = await setupProject({ yaml: MODELS(PROJECT_YAML), tasks: [mkTask('T-001', { verify: ['test'] }),
     mkTask('T-002', { verify: [], writes: ['src/server/t-002/**'], deps: [{ task: 'T-001', type: 'hard', reason: '需要 T-001' }] })] });
   try {
-    const { engine, errors, launcher } = makeEngine(p, async (role, nth, a) => {
-      if (role === 'reviewer') {
-        if (a.env.task === 'T-001' && nth <= 2) {
-          assert.ok((await a.call('flow_approve', { decision: 'reject', issues: [{ location: 'a.ts:1', problem: '不对', expected: '改对' }] })).ok);
-        } else assert.ok((await a.call('flow_approve', { decision: 'pass', notes: 'ok' })).ok);
-        return;
-      }
-      return implement(a, `src/server/${a.env.task.toLowerCase()}/a.ts`);
-    }, SETTINGS);
+    const { engine, errors } = makeEngine(p, async (_role, nth, a) =>
+      // T-001 前两次提交的代码让合并时的全量测试失败
+      implement(a, `src/server/${a.env.task.toLowerCase()}/a.ts`, a.env.task === 'T-001' && nth <= 2 ? 'FAIL\n' : 'x\n'), SETTINGS);
     // 预算：只够 T-001 的几次运行
     await p.store.setFlowBudget(p.flowId, { tokens: 1500 });
     await engine.next(p.flowId);
@@ -105,19 +42,7 @@ test('失败后升级模型：第 2 次失败后的派发使用升级模型并�
     const impl = p.store.listRuns().filter((r) => r.task === 'T-001' && r.role === 'backend-engineer');
     assert.deepEqual(impl.map((r) => [r.model, !!r.escalated]), [['f/medium', false], ['f/medium', false], ['f/strong', true]]);
     assert.equal(p.store.readTask(p.flowId, 'T-001').status, 'done');
-    assert.deepEqual(p.store.readKnowledge().entries, [], '默认不把审查打回提炼为知识候选');
-    // 第三轮 B：第二轮起审查提示附上上次打回的问题与之后的改动，要求只核对上次的问题
-    const reviews = launcher.launched.filter((s) => s.env['PI_FLOW_ROLE'] === 'reviewer' && s.env['PI_FLOW_TASK'] === 'T-001').map((s) => s.prompt);
-    assert.equal(reviews.length, 3);
-    assert.doesNotMatch(reviews[0]!, /轮审查/);
-    assert.match(reviews[1]!, /## 第 2 轮审查：先核对上次打回的问题[\s\S]*a\.ts:1：不对；期望：改对[\s\S]*git diff [0-9a-f]{40} HEAD[\s\S]*只为两类问题打回/);
-    assert.match(reviews[2]!, /## 第 3 轮审查/);
-    assert.doesNotMatch(reviews[2]!, /审查轮次上限/, '默认不设上限');
-    // 第三轮后续 4：审查提示直接附 diff（第二轮起是上次审查之后的改动）；run 记录轮数，成本统计显示平均轮数
-    assert.match(reviews[0]!, /## 本任务的全部改动（已附 diff[\s\S]*```diff[\s\S]*src\/server\/t-001\/a\.ts/);
-    assert.match(reviews[1]!, /## 上次审查（[0-9a-f]{12}）之后的改动（已附 diff/);
-    assert.ok(p.store.listRuns().every((r) => typeof r.turns === 'number'));
-    assert.match(await runFlowCommand('status --cost', env(p, engine)), /## 按角色[\s\S]*reviewer：\d+ 次运行[^\n]*平均 [\d.]+ 轮/);
+    assert.match(await runFlowCommand('status --cost', env(p, engine)), /## 按角色[\s\S]*backend-engineer：\d+ 次运行[^\n]*平均 [\d.]+ 轮/);
 
     // 超预算：不再派发新任务；提示用户；orchestrator 只能报告
     assert.deepEqual(await engine.next(p.flowId), []);
@@ -136,10 +61,7 @@ test('关键底座：被至少 3 个任务硬依赖的实施任务第一次就�
   for (const [yaml, expected] of [[MODELS(PROJECT_YAML), 'f/strong'], [MODELS(PROJECT_YAML).replace('critical_fanout: 3 ', 'critical_fanout: 0 '), 'f/medium']] as const) {
     const p = await setupProject({ yaml, tasks: [mkTask('T-001', { verify: [] }), ...deps] });
     try {
-      const { engine, launcher } = makeEngine(p, async (role, _n, a) => {
-        if (role === 'reviewer') { assert.ok((await a.call('flow_approve', { decision: 'pass', notes: 'ok' })).ok); return; }
-        return implement(a, `src/server/${a.env.task.toLowerCase()}/a.ts`);
-      }, SETTINGS);
+      const { engine, launcher } = makeEngine(p, async (_role, _n, a) => implement(a, `src/server/${a.env.task.toLowerCase()}/a.ts`), SETTINGS);
       await engine.next(p.flowId);
       await engine.idle();
       const first = launcher.launched.find((s) => s.env['PI_FLOW_TASK'] === 'T-001' && s.env['PI_FLOW_ROLE'] === 'backend-engineer')!;

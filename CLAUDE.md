@@ -1,8 +1,8 @@
 # pi-flow 项目说明（给 Claude Code）
 
 ## 需求与记录
-- **下一步的工作见 `docs/HANDOFF-5.md`（第五轮：精简为讨论 → 原型 → 模块规划 → 按模块实施与验收，保留运行时）**，待用户确认后开始。
-- 第四轮的工作见 `docs/HANDOFF-4.md`（第四轮：去掉逐任务审查，改为阶段末审查一次、只修首轮问题），开始前先完整阅读。** 第 1–3 项已完成（NOTES 第 101–105 条）；复跑看板的结果与之后的优化（第 106–117 条）、第三次复跑的验证见 `docs/EXPERIMENTS-4.md`，待办在其第 10 节。
+- **第五轮见 `docs/HANDOFF-5.md`（精简为讨论 → 原型 → 模块规划 → 按模块实施与验收，保留运行时）**：第 1–11 步已在分支 `round5-simplify` 完成（NOTES 第 119–133 条）；之后吸收 mattpocock/skills：需求由主 agent 直接和用户讨论、术语表、切分规则、tdd、可选的最终代码审查（NOTES 第 134–143 条，含设计规范 DESIGN.md、界面模块对照原型、ask_user 提问；流程图在 `docs/pi-flow.drawio`，流程变化时同步更新）。第 12 步真实模型验证（HANDOFF-5 第 9 节）待做。
+- 第四轮（`docs/HANDOFF-4.md`，阶段末审查等，NOTES 第 101–118 条，实验见 `docs/EXPERIMENTS-4.md`）已被第五轮取代。
 - **下一轮实验方案见 `docs/BENCHMARK-5.md`**（已有大仓库 Homebox 上的多需求并行、故障注入与判定标准；判定标准开跑前定下，不改）。
 - 第三轮（`docs/HANDOFF-3.md`，效率优化 A–D 与后续改动）已完成，见 `NOTES.md` 第 88–100 条。
 - 第二轮优化（`docs/HANDOFF.md`，A–L）已完成，完成情况见该文档第 0 节与 `NOTES.md` 第 69–87 条。
@@ -12,7 +12,7 @@
 
 ## 结构
 - `src/core/`：业务逻辑，不依赖 Pi。`state-store.ts` 是 `.flow/` 唯一的读写入口；`state-machine.ts` 是转移表（不在表中的转移一律拒绝）；`dispatcher.ts` 是引擎（派发与程序步骤 pump）。
-- `src/modes/`：各模式的阶段计划（`plan.ts`）与 fix 流程（`fix.ts`）。
+- `src/modes/`：各模式的阶段计划（`plan.ts`）与 fix 流程（`fix.ts`）。独立验收与实施阶段闸门修复在 `src/core/acceptance.ts`，notes 与 history 在 `src/core/notes.ts`、`history.ts`。
 - `src/tools/`：`flow_*` 工具的业务实现；`src/commands/`：斜杠命令的业务实现。
 - `src/pi-adapter/`：**唯一**可以调用 Pi API 的目录。`extension.ts` 是主会话扩展，`subagent.ts` 是子进程扩展（含 guard，必须最后加载），`pi-api.d.ts` 是已核实 API 的最小类型声明。
 - `agents/`、`rules/`、`skills/`、`prompts/`、`templates/`：角色提示、规则、技能、提示模板、项目骨架模板。
@@ -20,9 +20,9 @@
 
 ## 约定
 - 状态只能由程序写；agent 只通过 `flow_*` 工具提交申请。约束靠移除能力与程序校验，不靠提示词。
-- 测试不得依赖真实 LLM：单元测试 + `test/fixtures/fake-subagent`（进程内脚本）+ `test/fixtures/fake-llm`（真实 pi 子进程配合本地假模型）。真实模型冒烟用 `node scripts/demo.ts --real-fix`，不进自动化测试。
+- 测试不得依赖真实 LLM（运行时机制测试用的旧按层角色在 `test/fixtures/agents/` 与 `test/fixtures/workflow-legacy.yaml`）：单元测试 + `test/fixtures/fake-subagent`（进程内脚本）+ `test/fixtures/fake-llm`（真实 pi 子进程配合本地假模型）。真实模型冒烟用 `node scripts/demo.ts --real-fix`，不进自动化测试。
 - 改动后运行 `npm run typecheck` 与 `npm test`（约 5 分钟；端到端测试需要本机有 pi）。
 - 代码只用可擦除的 TypeScript 语法（Node 原生类型剥离运行）：不用参数属性、enum、namespace。
-- 标识符、文件名用英文；面向用户的提示、错误信息、文档用中文。用户界面只呈现高层阶段（需求 → 规划 → 实施 → 验收 → 完成），底层阶段与任务 DAG 留在 `--detail`。
+- 标识符、文件名用英文；面向用户的提示、错误信息、文档用中文。用户界面只呈现高层阶段（需求 → 原型 → 规划 → 实施 → 完成），底层阶段与任务 DAG 留在 `--detail`。
 - 修改 `agents/`、`rules/`、`skills/` 会让子进程系统提示的稳定前缀变化，在 `NOTES.md` 的"缓存提醒"中记一笔，并在汇报中提醒用户。
 - 真实模型测试用 `Workbuddy/glm-5.3-flash`（本地服务 `localhost:7863`，需用户先启动；只支持 low/high/xhigh 思考级别）。不读取、不打印任何密钥。

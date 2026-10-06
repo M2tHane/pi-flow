@@ -5,7 +5,7 @@ import type { FlowConfig } from '../core/config.ts';
 import {
   loadRoleSettings, resolveRoleModel, saveRoleSettings, setEscalation, setRole, unsetRole, type RoleSetting,
 } from '../core/role-settings.ts';
-import { escalationModel, strongReviewModel } from '../core/cost-control.ts';
+import { escalationModel } from '../core/cost-control.ts';
 import { splitArgs } from './args.ts';
 
 export interface UiPort {
@@ -43,14 +43,14 @@ const USAGE = [
   '  /flow-config models                  列出可用模型及其支持的思考级别',
   '  /flow-config set <角色> <provider/model|default> [思考级别|default]',
   '  /flow-config unset <角色|all>        清除设置，回到 workflow.yaml 默认',
-  '  /flow-config escalate <角色> <provider/model|default>   同一任务失败多次后改用的模型（default：workflow.yaml 或上一档）；对 reviewer 是高风险任务审查用的模型',
+  '  /flow-config escalate <角色> <provider/model|default>   同一任务失败多次后改用的模型（default：workflow.yaml 或上一档）',
   `思考级别：${THINKING_LEVELS.join('、')}`,
 ].join('\n');
 
 const MENU_SET = '设置各角色的模型与思考级别';
 const MENU_SHOW = '查看当前设置';
 const MENU_CLEAR = '清除所有角色设置';
-const MENU_ESCALATE = '设置失败后升级用的模型（reviewer：高风险审查用的模型）';
+const MENU_ESCALATE = '设置失败后升级用的模型';
 const DONE = '完成';
 const USE_WORKFLOW = '使用 workflow.yaml 默认';
 const USE_DEFAULT = '使用默认';
@@ -77,6 +77,13 @@ function roles(deps: FlowConfigDeps): string[] {
   return Object.keys(deps.config.roles);
 }
 
+/** 角色做什么（菜单与 show 中显示，方便选模型） */
+const ROLE_PURPOSE: Record<string, string> = {
+  orchestrator: '主 agent：和你对话、讨论需求', designer: '原型与设计规范', architect: '模块规划与项目规则', implementer: '模块实现',
+  acceptor: '独立验收', reviewer: '最终代码审查（review.final 开启时）', researcher: '查资料',
+};
+const roleLabel = (r: string) => (ROLE_PURPOSE[r] ? `${r}（${ROLE_PURPOSE[r]}）` : r);
+
 function findModel(deps: FlowConfigDeps, ref: string): ModelOption | undefined {
   const lower = ref.toLowerCase();
   return deps.models.find((m) => m.ref.toLowerCase() === lower);
@@ -99,18 +106,12 @@ function describeRole(deps: FlowConfigDeps, role: string): string {
   const thinkingText = r.thinking
     ? `思考 ${r.thinking}${r.thinkingSource === 'flow-config' ? '（/flow-config）' : '（workflow.yaml）'}`
     : '思考 默认';
-  // reviewer 不做失败升级；它的升级模型用于高风险任务的审查
-  if (role === 'reviewer') {
-    const strong = r.model ? strongReviewModel(deps.config, settings, role, r.model) : null;
-    return `${modelText}${unavailable} · ${thinkingText}${strong ? ` · 高风险审查用 ${strong}` : ''}`;
-  }
   const esc = r.model ? escalationModel(deps.config, settings, role, r.model) : null;
   return `${modelText}${unavailable} · ${thinkingText}${esc ? ` · 失败后升级 ${esc}` : ''}`;
 }
 
 function describeAll(deps: FlowConfigDeps): string {
-  const width = Math.max(...roles(deps).map((r) => r.length));
-  const lines = roles(deps).map((r) => `  ${r.padEnd(width)}  ${describeRole(deps, r)}`);
+  const lines = roles(deps).map((r) => `  ${roleLabel(r)}：${describeRole(deps, r)}`);
   return [`角色模型设置（保存于 ${deps.settingsPath}，优先于 workflow.yaml）：`, ...lines].join('\n');
 }
 
@@ -205,13 +206,13 @@ async function interactive(deps: FlowConfigDeps, ui: UiPort): Promise<string> {
 
 async function editEscalation(deps: FlowConfigDeps, ui: UiPort): Promise<void> {
   for (;;) {
-    const labels = roles(deps).map((r) => `${r} · ${describeRole(deps, r)}`);
-    const pick = await ui.select('选择角色：同一任务失败多次后改用哪个模型（reviewer：高风险任务审查用哪个模型）', [DONE, ...labels]);
+    const labels = roles(deps).map((r) => `${roleLabel(r)} · ${describeRole(deps, r)}`);
+    const pick = await ui.select('选择角色：同一任务失败多次后改用哪个模型', [DONE, ...labels]);
     if (!pick || pick === DONE) return;
     const role = roles(deps)[labels.indexOf(pick)];
     if (!role) return;
     const modelLabels = deps.models.map((m) => `${m.ref}  ${m.name}`);
-    const modelPick = await ui.select(role === 'reviewer' ? 'reviewer：高风险任务审查用的模型' : `${role}：失败后升级用的模型`, [USE_WORKFLOW, ...modelLabels]);
+    const modelPick = await ui.select(`${role}：失败后升级用的模型`, [USE_WORKFLOW, ...modelLabels]);
     if (!modelPick) continue;
     const model = modelPick === USE_WORKFLOW ? undefined : deps.models[modelLabels.indexOf(modelPick)]?.ref;
     saveRoleSettings(deps.settingsPath, setEscalation(loadRoleSettings(deps.settingsPath), role, model), deps.now?.());
@@ -221,7 +222,7 @@ async function editEscalation(deps: FlowConfigDeps, ui: UiPort): Promise<void> {
 
 async function editRoles(deps: FlowConfigDeps, ui: UiPort): Promise<void> {
   for (;;) {
-    const labels = roles(deps).map((r) => `${r} · ${describeRole(deps, r)}`);
+    const labels = roles(deps).map((r) => `${roleLabel(r)} · ${describeRole(deps, r)}`);
     const pick = await ui.select('选择角色（设置后回到此列表，可继续修改其他角色）', [DONE, ...labels]);
     if (!pick || pick === DONE) return;
     const role = roles(deps)[labels.indexOf(pick)];

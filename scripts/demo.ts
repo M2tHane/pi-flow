@@ -1,5 +1,5 @@
 // 演示项目的端到端脚本。
-//   node scripts/demo.ts             用本地假模型跑完 build 流程 S0→S5（真实 pi 进程，不需要模型服务）
+//   node scripts/demo.ts             用本地假模型跑完 build 流程：需求 → 规划 → 模块实施与验收 → 合入主分支（真实 pi 进程，不需要模型服务）
 //   node scripts/demo.ts --real-fix  用你在 /flow-config 中为各角色设置的真实模型跑一次 /flow-fix
 //   --keep                           保留演示目录（默认结束后删除）
 import { spawn, execFileSync } from 'node:child_process';
@@ -47,23 +47,23 @@ async function fakeBuild(): Promise<void> {
   try {
     console.log(`演示目录：${dir}`);
     sh(dir, 'git', ['init', '-q', '-b', 'main']);
-    writeFileSync(path.join(agentDir, 'pi-flow.json'), JSON.stringify({ version: 1, roles: {
-      architect: { model: 'fakellm/demo-architect' }, reviewer: { model: 'fakellm/demo-review' },
-      'infra-engineer': { model: 'fakellm/demo-infra' }, 'test-engineer': { model: 'fakellm/demo-test' },
-      'backend-engineer': { model: 'fakellm/demo-backend' } } }));
+    writeFileSync(path.join(agentDir, 'pi-flow.json'), JSON.stringify({ version: 1, roles: Object.fromEntries(
+      ['architect', 'implementer', 'acceptor'].map((r) => [r, { model: `fakellm/demo-${r}` }])) }));
 
     step('/flow init，然后把命令换成演示项目能跑的版本');
     await pi(dir, ['/flow init'], env, extra);
-    writeWorkflowCommands(dir, { install: 'true', typecheck: 'true', lint: 'true', test: 'node --test', test_affected: 'node --test {files}', e2e: 'node --test' });
+    writeWorkflowCommands(dir, { install: 'true', typecheck: 'true', lint: 'true', test: 'node --test', e2e: 'node --test' });
 
-    step('/flow-build：创建流程，architect 撰写 PRD');
-    await pi(dir, ['/flow-build --direct "做一个待办应用"'], env, extra);
+    step('/flow-build --from：用写好的需求文档开始（演示不跑主会话的需求讨论；无界面，跳过原型）');
+    const req = path.join(agentDir, 'requirements.md');
+    writeFileSync(req, '# 待办应用\n\n## 需求清单\n- R1（MVP）添加与列出待办。done-when：add 之后 list 能看到它\n\n## 界面风格\n无界面\n');
+    await pi(dir, [`/flow-build --from ${req} --no-prototype`], env, extra);
     const store = new StateStore(dir);
     for (let i = 0; i < 20 && store.readState().active_flow; i++) {
       const f = store.readFlow(store.readState().active_flow!);
       if (f.stage_status === 'awaiting_human') {
-        step(`阶段 ${f.stage} 等待批准 → /flow approve${f.stage === f.stages.at(-1) ? ' --yes（合入主分支）' : ''}`);
-        await pi(dir, [f.stage === f.stages.at(-1) ? '/flow approve --yes' : '/flow approve'], env, extra);
+        step(`阶段 ${f.stage} 等待批准 → /flow-approve${f.stage === f.stages.at(-1) ? ' --yes（合入主分支）' : ''}`);
+        await pi(dir, [f.stage === f.stages.at(-1) ? '/flow-approve --yes' : '/flow-approve'], env, extra);
       } else {
         step(`阶段 ${f.stage}（${f.stage_status}）→ /flow next`);
         await pi(dir, ['/flow next'], env, extra);
@@ -71,7 +71,8 @@ async function fakeBuild(): Promise<void> {
     }
     step('结果');
     console.log(sh(dir, 'git', ['log', '--oneline', '--first-parent', 'main']).split('\n').filter((l) => !l.includes('flow-state:')).join('\n'));
-    console.log(`\nmain 上的实现：\n${sh(dir, 'git', ['show', 'main:src/server/todo/index.mjs'])}`);
+    console.log(`\nmain 上的实现：\n${sh(dir, 'git', ['show', 'main:src/todo/index.mjs'])}`);
+    console.log(`\n项目规则（规划阶段批准时应用）：\n${readFileSync(path.join(dir, 'rules/project.md'), 'utf8')}`);
     console.log(`\n测试：${sh(dir, 'node', ['--test', '--test-reporter=tap']).split('\n').filter((l) => /^# (pass|fail)/.test(l)).join('，')}`);
     console.log(`\n${formatRow(costReport(store).total)}`);
     const integrity = await store.verifyIntegrity();
@@ -99,7 +100,7 @@ async function realFix(): Promise<void> {
 
     step('/flow init');
     await pi(dir, ['/flow init'], {});
-    writeWorkflowCommands(dir, { install: 'true', typecheck: 'true', lint: 'true', test: 'node --test', test_affected: 'node --test {files}', e2e: 'true' });
+    writeWorkflowCommands(dir, { install: 'true', typecheck: 'true', lint: 'true', test: 'node --test', e2e: 'true' });
 
     step('/flow-fix（真实模型）');
     const started = Date.now();

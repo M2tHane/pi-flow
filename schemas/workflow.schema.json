@@ -130,10 +130,10 @@
                   },
                   "phase": {
                     "enum": [
-                      "discovery",
+                      "requirements",
+                      "prototype",
                       "planning",
-                      "execution",
-                      "acceptance"
+                      "execution"
                     ]
                   },
                   "gate": {
@@ -188,10 +188,10 @@
                   },
                   "phase": {
                     "enum": [
-                      "discovery",
+                      "requirements",
+                      "prototype",
                       "planning",
-                      "execution",
-                      "acceptance"
+                      "execution"
                     ]
                   },
                   "gate": {
@@ -328,116 +328,6 @@
         }
       }
     },
-    "review": {
-      "type": "object",
-      "properties": {
-        "per_task": {
-          "type": "boolean"
-        },
-        "stage_end": {
-          "type": "boolean"
-        },
-        "test_stages": {
-          "anyOf": [
-            {
-              "type": "string",
-              "const": "skip"
-            },
-            {
-              "type": "string",
-              "const": "light"
-            },
-            {
-              "type": "string",
-              "const": "strong"
-            }
-          ]
-        },
-        "max_parallel": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "low_risk": {
-          "type": "object",
-          "properties": {
-            "enabled": {
-              "type": "boolean"
-            },
-            "mode": {
-              "anyOf": [
-                {
-                  "type": "string",
-                  "const": "cheap"
-                },
-                {
-                  "type": "string",
-                  "const": "skip"
-                }
-              ]
-            },
-            "model": {
-              "type": "string",
-              "minLength": 1
-            },
-            "max_files": {
-              "type": "integer",
-              "minimum": 1
-            },
-            "max_lines": {
-              "type": "integer",
-              "minimum": 1
-            },
-            "paths": {
-              "type": "array",
-              "items": {
-                "type": "string",
-                "minLength": 1
-              }
-            },
-            "exclude": {
-              "type": "array",
-              "items": {
-                "type": "string",
-                "minLength": 1
-              }
-            }
-          },
-          "additionalProperties": false
-        },
-        "high_risk": {
-          "type": "object",
-          "properties": {
-            "enabled": {
-              "type": "boolean"
-            },
-            "model": {
-              "type": "string",
-              "minLength": 1
-            },
-            "max_lines": {
-              "type": "integer",
-              "minimum": 1
-            },
-            "paths": {
-              "type": "array",
-              "items": {
-                "type": "string",
-                "minLength": 1
-              }
-            }
-          },
-          "additionalProperties": false
-        },
-        "verify_first": {
-          "type": "boolean"
-        },
-        "max_rounds": {
-          "type": "integer",
-          "minimum": 1
-        }
-      },
-      "additionalProperties": false
-    },
     "escalation": {
       "type": "object",
       "properties": {
@@ -458,9 +348,6 @@
     "testing": {
       "type": "object",
       "properties": {
-        "leading_tests": {
-          "type": "boolean"
-        },
         "adjust_tests": {
           "type": "boolean"
         }
@@ -472,6 +359,26 @@
       "properties": {
         "auto_candidates": {
           "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "review": {
+      "type": "object",
+      "properties": {
+        "final": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "context": {
+      "type": "object",
+      "properties": {
+        "compact_at": {
+          "type": "number",
+          "minimum": 0.3,
+          "maximum": 0.95
         }
       },
       "additionalProperties": false

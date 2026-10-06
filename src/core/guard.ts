@@ -7,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { minimatch } from 'minimatch';
 import { BUILTIN_READ_TOOLS, BUILTIN_WRITE_TOOLS, type FlowConfig, type ResolvedRole } from './config.ts';
-import { CONTRACTS_PATH, globsOverlap, isProtected, matchesAny, protectedGlobs } from './paths.ts';
+import { INTERFACES_PATH, globsOverlap, isProtected, matchesAny, protectedGlobs } from './paths.ts';
 import { parseShell, type SimpleCommand, type Word } from './shell.ts';
 
 export type GuardRule = 'tool_whitelist' | 'read_paths' | 'write_paths' | 'protected' | 'bash' | 'sensitive';
@@ -24,11 +24,10 @@ export interface GuardContext {
   workspaceRoot: string;
   /** 主工作区（项目根）。与 workspaceRoot 不同时，主工作区整体不可写 */
   mainRoot: string;
-  contractsLocked: boolean;
   /** 任务 writes（merge-fix 为冲突文件列表）；与角色 writes 同时生效 */
   writes?: string[];
-  /** 阶段审查的修复任务（第四轮）：可以在契约中补充缺失的条目（只能新增，提交时由程序检查），不受角色可写范围限制 */
-  contractAdditions?: boolean;
+  /** 实现类任务（第五轮）：可以在模块之间的接口文档（docs/interfaces/）里追加（只能新增，提交时由程序检查），不受任务可写范围限制 */
+  interfaceAdditions?: boolean;
   /** 可以修改的已有测试文件（testing.adjust_tests，第四轮后续）：基线上已有、writes 之外；新增删除由 flow_submit 拒绝 */
   adjustableTests?: readonly string[];
   /** 本 run 的临时目录（项目与 worktree 之外）：可以 cd、写入、删除、移动 */
@@ -105,7 +104,7 @@ class Evaluator {
         ? `你是调度者，不能直接修改代码。请调用 flow_dispatch(${this.ctx.readyTaskId}) 交给对应 subagent。`
         : '你是调度者，不能直接修改代码。任务由程序派发给对应 subagent，用 flow_wait 等待结果。';
     }
-    if (this.role.name === 'reviewer') return '你是只读审查者，不能修改任何文件；请通过 flow_approve（阶段审查用 flow_review_report、flow_review_confirm）提交结论。';
+    if (this.role.name === 'acceptor') return '你是独立验收者，不能修改仓库里的文件（临时文件放在临时目录）；结论用 flow_accept（复查用 flow_accept_confirm）提交。';
     if (this.isReadonlyRole) return `你是只读角色（${this.role.name}），不能修改任何文件；结论请写进 flow_note 并 flow_submit。`;
     return `你是 ${this.role.name}，只能修改本任务 writes 内的文件；确需越界时调用 flow_block 说明原因，不要换一种方式再试。`;
   }
@@ -141,13 +140,13 @@ class Evaluator {
     if (a.area === 'outside') return deny('write_paths', `只能写当前 worktree 内的文件，${a.abs} 在其外。${this.hint()}`);
     const writes = this.effectiveWrites();
     const inTask = (matchesAny(a.rel, writes) && matchesAny(a.rel, this.role.writes))
-      || (!!this.ctx.contractAdditions && matchesAny(a.rel.toLowerCase(), [CONTRACTS_PATH]))
+      || (!!this.ctx.interfaceAdditions && matchesAny(a.rel.toLowerCase(), [INTERFACES_PATH]))
       || (this.ctx.adjustableTests?.includes(a.rel) ?? false);
     if (!inTask) {
       return deny('write_paths', `${a.rel} 不在本任务可写范围内（${writes.join(', ') || '无'}）。${tool} 被阻断。${this.hint()}`);
     }
-    if (isProtectedNocase(a.rel, this.ctx.contractsLocked)) {
-      return deny('protected', `${a.rel} 是受保护路径，对所有 agent 只读（${protectedGlobs({ contractsLocked: this.ctx.contractsLocked }).join('、')}）。`);
+    if (isProtectedNocase(a.rel)) {
+      return deny('protected', `${a.rel} 是受保护路径，对所有 agent 只读（${protectedGlobs().join('、')}）。`);
     }
     return ok;
   }
@@ -162,7 +161,8 @@ class Evaluator {
     const allowed = this.role.readPaths;
     if (!allowed) return ok;
     const a = this.classify(this.resolveToolPath(rawPath ?? '.'));
-    if (a.area !== 'workspace' || !matchesAny(a.rel, allowed)) {
+    // 工作区根目录（grep、find、ls 不给路径时）：只有 read_paths 含 ** 时允许
+    if (a.area !== 'workspace' || !matchesAny(a.rel === '.' ? '' : a.rel, allowed)) {
       return deny('read_paths', `${this.role.name} 只能读取 ${allowed.join('、')}，${a.rel} 不在其中。${this.hint()}`);
     }
     return ok;
@@ -330,7 +330,7 @@ class BashChecker {
       if (this.readonly) return deny('bash', `只读角色不能重定向输出到文件（${t.text}）。${this.ev.hint()}`);
       const a = this.ev.classify(realpathDeep(path.resolve(cwd, target)));
       if (a.area === 'main') return deny('bash', `不能写主工作区（${a.rel}）。${this.ev.hint()}`);
-      if (a.area === 'workspace' && isProtectedNocase(a.rel, this.ev.ctx.contractsLocked)) {
+      if (a.area === 'workspace' && isProtectedNocase(a.rel)) {
         return deny('protected', `${a.rel} 是受保护路径，对所有 agent 只读。`);
       }
     }
@@ -354,7 +354,7 @@ class BashChecker {
       if (!matchesAny(a.rel, writes) || !matchesAny(a.rel, this.ev.role.writes)) {
         return deny('bash', `${name} 只能作用于本任务 writes 内的文件（${writes.join(', ') || '无'}），${a.rel} 不在其中。${scratchHint}`);
       }
-      if (isProtectedNocase(a.rel, this.ev.ctx.contractsLocked)) return deny('protected', `${a.rel} 是受保护路径，对所有 agent 只读。`);
+      if (isProtectedNocase(a.rel)) return deny('protected', `${a.rel} 是受保护路径，对所有 agent 只读。`);
     }
     return ok;
   }
@@ -444,7 +444,7 @@ class BashChecker {
         const t = args[k + 1];
         if (!t) continue;
         const area = this.ev.classify(realpathDeep(path.resolve(cwd, t.text)));
-        if (t.dynamic || area.area === 'main' || (area.area === 'workspace' && isProtectedNocase(area.rel, this.ev.ctx.contractsLocked))) {
+        if (t.dynamic || area.area === 'main' || (area.area === 'workspace' && isProtectedNocase(area.rel))) {
           return deny('bash', `find ${a} 的目标不允许：${t.text}`);
         }
       }
@@ -522,8 +522,8 @@ function extractPaths(input: Record<string, unknown>, keys: readonly string[]): 
   return out;
 }
 
-function isProtectedNocase(rel: string, contractsLocked: boolean): boolean {
-  return isProtected(rel.toLowerCase(), { contractsLocked });
+function isProtectedNocase(rel: string): boolean {
+  return isProtected(rel.toLowerCase());
 }
 
 function isSensitiveRel(rel: string): boolean {

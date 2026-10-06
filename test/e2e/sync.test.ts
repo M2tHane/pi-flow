@@ -29,7 +29,6 @@ async function twoStageFlow(p: Project) {
   return flow.id;
 }
 
-const approve = async (a: FakeAgent) => { assert.ok((await a.call('flow_approve', { decision: 'pass', notes: 'ok' })).ok); };
 async function implement(a: FakeAgent, files: Record<string, string>) {
   assert.ok((await a.call('flow_claim')).ok);
   for (const [f, c] of Object.entries(files)) assert.ok((await a.call('write', { path: f, content: c })).ok, f);
@@ -54,8 +53,7 @@ test('阶段边界同步主分支：无冲突直接合入；writes 内冲突生�
     ], 'architect');
     const integ = p.store.readFlow(flowId).integration_branch;
     let mergeFixSaw = '';
-    const { engine, errors } = makeEngine({ ...p, flowId }, async (role, _n, a) => {
-      if (role === 'reviewer') return approve(a);
+    const { engine, errors } = makeEngine({ ...p, flowId }, async (_role, _n, a) => {
       if (a.env.task === 'T-001') {
         // 实施期间用户在主分支上改了两处：一处与本任务无关，一处正是本任务写的文件
         commitOnMain(p, { 'docs/notes.md': '用户的笔记\n', 'src/server/t-001/a.ts': 'main 上的版本\n' }, '用户在 main 上的提交');
@@ -102,26 +100,25 @@ test('阶段边界同步主分支：无冲突直接合入；writes 内冲突生�
   } finally { p.cleanup(); }
 });
 
-test('同步冲突涉及契约：暂停派发新任务，提示用户处理；用户合并后 /flow sync 恢复', async () => {
-  const p = await setupProject({ files: { 'docs/contracts/api.md': 'v0\n' } });
+test('同步冲突涉及受保护文件（rules/）：暂停派发新任务，提示用户处理；用户合并后 /flow sync 恢复', async () => {
+  const p = await setupProject();
   try {
     const flowId = await twoStageFlow(p);
     const integ = p.store.readFlow(flowId).integration_branch;
     await p.store.addTasks(flowId, [mkTask('T-001', { stage: 'S3', verify: [] }), mkTask('T-002', { stage: 'S3', verify: [] })], 'architect');
-    const { engine } = makeEngine({ ...p, flowId }, async (role, _n, a) => {
-      if (role === 'reviewer') return approve(a);
+    const { engine } = makeEngine({ ...p, flowId }, async (_role, _n, a) => {
       return implement(a, { [`src/server/${a.env.task.toLowerCase()}/a.ts`]: 'x\n' });
     });
-    // 契约在集成分支与主分支上被各自修改
+    // 规则文件在集成分支与主分支上被各自修改（agent 不能写 rules/，只能交给用户）
     const wt = path.join(p.dir, '..', `${path.basename(p.dir)}-integ`);
     p.git('worktree', 'add', '-q', wt, integ);
-    writeFileSync(path.join(wt, 'docs/contracts/api.md'), 'integ\n');
-    p.git('-C', wt, 'commit', '-q', '-am', '集成分支改契约');
+    writeFileSync(path.join(wt, 'rules/backend.md'), 'integ\n');
+    p.git('-C', wt, 'commit', '-q', '-am', '集成分支改规则');
     p.git('worktree', 'remove', '--force', wt);
-    commitOnMain(p, { 'docs/contracts/api.md': 'main\n' }, '主分支改契约');
+    commitOnMain(p, { 'rules/backend.md': 'main\n' }, '主分支改规则');
 
     const e = env({ ...p, flowId }, engine);
-    assert.match(await runFlowCommand('sync', e), /同步冲突，需要你处理：冲突涉及契约或受保护文件：docs\/contracts\/api\.md/);
+    assert.match(await runFlowCommand('sync', e), /同步冲突，需要你处理：冲突涉及受保护文件：rules\/backend\.md/);
     assert.equal(p.store.readFlow(flowId).sync?.status, 'conflict');
     assert.deepEqual(await engine.next(flowId), [], '冲突未处理前不派发新任务');
     assert.ok(actionsNeeded(p.store, p.config).some((x) => /同步进集成分支时冲突/.test(x.text) && /\/flow sync/.test(x.command)));
@@ -130,7 +127,7 @@ test('同步冲突涉及契约：暂停派发新任务，提示用户处理；�
     // 用户手动合并
     p.git('worktree', 'add', '-q', wt, integ);
     try { p.git('-C', wt, 'merge', '-q', 'main'); } catch { /* 预期冲突 */ }
-    writeFileSync(path.join(wt, 'docs/contracts/api.md'), 'merged\n');
+    writeFileSync(path.join(wt, 'rules/backend.md'), 'merged\n');
     p.git('-C', wt, 'add', '-A');
     p.git('-C', wt, 'commit', '-q', '--no-edit');
     p.git('worktree', 'remove', '--force', wt);

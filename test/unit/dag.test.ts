@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { validateDag, computeReady, dagStats, mutexPairs, conflictsWith, remainingPath, type DagCatalog,
-  isLeadingTest, carrierOf, carriedTestOf, normalizeLeadingTests, dagReport, serialHeads, leadingTestErrors } from '../../src/core/dag.ts';
+  dagReport, serialHeads } from '../../src/core/dag.ts';
 import { mkTask, hard, soft } from '../helpers/tasks.ts';
 
 const catalog: DagCatalog = {
@@ -21,7 +21,7 @@ const catalog: DagCatalog = {
 
 test('合法 DAG 通过校验', () => {
   const tasks = [
-    mkTask('T-001', { kind: 'test', role: 'test-engineer', scopes: ['acceptance'], writes: ['tests/acceptance/a/**'] }),
+    mkTask('T-001', { kind: 'impl', role: 'test-engineer', scopes: ['acceptance'], writes: ['tests/acceptance/a/**'] }),
     mkTask('T-002', { deps: [hard('T-001', '先有验收测试')] }),
   ];
   const r = validateDag(tasks, catalog);
@@ -43,23 +43,6 @@ test('检出引用不存在的依赖与重复 id', () => {
 test('检出缺 reason 的硬依赖', () => {
   const r = validateDag([mkTask('T-001'), mkTask('T-002', { deps: [{ task: 'T-001', type: 'hard' }] })], catalog);
   assert.ok(r.errors.some((e) => e.includes('reason')));
-});
-
-test('检出缺 integration 的软依赖；有 integration 时通过', () => {
-  const base = [
-    mkTask('T-001'),
-    mkTask('T-002', { role: 'frontend-engineer', scopes: ['frontend'], writes: ['src/web/x/**'], deps: [soft('T-001')] }),
-  ];
-  const r1 = validateDag(base, catalog);
-  assert.ok(r1.errors.some((e) => e.includes('integration')), r1.errors.join('\n'));
-
-  const onlyOneSide = [...base, mkTask('T-003', { kind: 'integration', role: 'test-engineer', scopes: ['acceptance'],
-    writes: ['tests/e2e/x/**'], deps: [hard('T-001', '联调')] })];
-  assert.ok(validateDag(onlyOneSide, catalog).errors.some((e) => e.includes('integration')));
-
-  const ok = [...base, mkTask('T-003', { kind: 'integration', role: 'test-engineer', scopes: ['acceptance'],
-    writes: ['tests/e2e/x/**'], deps: [hard('T-001', '联调'), hard('T-002', '联调')] })];
-  assert.deepEqual(validateDag(ok, catalog).errors, []);
 });
 
 test('检出非法角色、scope、命令与越出 scope 的 writes', () => {
@@ -147,13 +130,6 @@ test('DAG 报告：同一阶段开头连续两层只能串行时提醒；关键�
   assert.ok(dagReport(longPath).warnings.some((w) => /关键路径 3 \/ 任务数 5/.test(w)));
 });
 
-test('默认不用先行验收测试：被实现任务硬依赖的测试任务报错；联调测试依赖实现、实现自带测试都可以', () => {
-  const lead = [mkTask('T-001', { kind: 'test' }), mkTask('T-002', { deps: [hard('T-001')] })];
-  assert.match(leadingTestErrors(lead).join(), /T-001：本项目不用"先行验收测试"（T-002 硬依赖/);
-  const ok = [mkTask('T-001', { writes: ['src/server/a/**', 'tests/server/a/**'] }), mkTask('T-002', { kind: 'integration', deps: [hard('T-001')] }), mkTask('T-003', { kind: 'test', deps: [hard('T-001')] })];
-  assert.deepEqual(leadingTestErrors(ok), []);
-});
-
 test('互斥由 writes 重叠自动推导', () => {
   const a = mkTask('T-001', { writes: ['src/server/**'] });
   const b = mkTask('T-002', { writes: ['src/server/export/**'] });
@@ -163,40 +139,3 @@ test('互斥由 writes 重叠自动推导', () => {
   assert.equal(conflictsWith(a, c), false);
 });
 
-test('先行验收测试：有非 test 任务硬依赖才算；承载者是不依赖其他依赖方的那个', () => {
-  const t1 = mkTask('T-001', { kind: 'test', role: 'test-engineer', scopes: ['acceptance'], writes: ['tests/acceptance/a/**'] });
-  const e2e = mkTask('T-009', { kind: 'test', role: 'test-engineer', scopes: ['acceptance'], deps: [hard('T-003')] });
-  // T-003 依赖 T-004，所以承载者是 T-004（若选 T-003，T-004 改为依赖 T-003 会成环）
-  const tasks = [t1, mkTask('T-003', { deps: [hard('T-001'), hard('T-004')] }), mkTask('T-004', { deps: [hard('T-001')] }), e2e];
-  assert.equal(isLeadingTest(t1, tasks), true);
-  assert.equal(isLeadingTest(e2e, tasks), false, '没有下游实现任务的测试照常合入');
-  assert.equal(carrierOf(t1, tasks), 'T-004');
-  assert.equal(carriedTestOf(tasks[2]!, tasks)?.id, 'T-001');
-  assert.equal(carriedTestOf(tasks[1]!, tasks), undefined);
-});
-
-test('规范化先行验收测试：其余依赖方改为硬依赖承载者；多承载、缺 verify 报错', () => {
-  const test1 = mkTask('T-001', { kind: 'test', role: 'test-engineer', scopes: ['acceptance'], writes: ['tests/acceptance/a/**'] });
-  const r = normalizeLeadingTests([test1, mkTask('T-002', { deps: [hard('T-001')] }), mkTask('T-003', { deps: [hard('T-001'), soft('T-002')] })]);
-  assert.deepEqual(r.errors, []);
-  assert.deepEqual(r.tasks[2]!.depends_on, [{ task: 'T-002', type: 'hard', reason: '验收测试 T-001 随 T-002 一并合入' }]);
-  assert.equal(r.notes.length, 1);
-  assert.deepEqual(normalizeLeadingTests(r.tasks).notes, [], '规范化结果再规范化不变');
-
-  const bad = normalizeLeadingTests([
-    { ...test1, verify: [] },
-    mkTask('T-002', { kind: 'test', role: 'test-engineer', scopes: ['acceptance'], writes: ['tests/acceptance/b/**'] }),
-    mkTask('T-003', { deps: [hard('T-001'), hard('T-002')] }),
-  ]);
-  assert.ok(bad.errors.some((e) => e.startsWith('T-001：先行验收测试必须有 verify')), bad.errors.join('\n'));
-  assert.ok(bad.errors.some((e) => e.includes('T-003 同时承载多个先行验收测试（T-001、T-002）')), bad.errors.join('\n'));
-});
-
-test('只有实现类任务（impl、infra）硬依赖的测试才是先行验收测试；integration 依赖回归测试只表示先后', () => {
-  const reg = mkTask('T-001', { kind: 'test', role: 'test-engineer', scopes: ['acceptance'] });
-  const integ = mkTask('T-002', { kind: 'integration', role: 'test-engineer', scopes: ['acceptance'], deps: [hard('T-001')] });
-  assert.equal(isLeadingTest(reg, [reg, integ]), false);
-  const infra = mkTask('T-003', { kind: 'infra', deps: [hard('T-001')] });
-  assert.equal(isLeadingTest(reg, [reg, integ, infra]), true);
-  assert.equal(carrierOf(reg, [reg, integ, infra]), 'T-003');
-});

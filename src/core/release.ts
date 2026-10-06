@@ -19,7 +19,7 @@ export async function mergeToMain(root: string, store: StateStore, config: FlowC
   let temp: string | null = null;
   if (current === main) {
     const dirty = [...dirtyFiles(root)];
-    if (dirty.length) throw new Error(`主工作区有未提交的改动，无法合入 ${main}：${dirty.slice(0, 10).join('、')}。请先提交或暂存后再执行 /flow approve。`);
+    if (dirty.length) throw new Error(`主工作区有未提交的改动，无法合入 ${main}：${dirty.slice(0, 10).join('、')}。请先提交或暂存后再执行 /flow-approve。`);
   } else {
     temp = path.join(worktreesRoot(root), `${flowId}-release`);
     mkdirSync(path.dirname(temp), { recursive: true });
@@ -37,7 +37,7 @@ export async function mergeToMain(root: string, store: StateStore, config: FlowC
     } catch {
       const conflicts = git(dir, ['diff', '--name-only', '--diff-filter=U']).split('\n').filter(Boolean);
       gitOk(dir, ['merge', '--abort']);
-      throw new Error(`合入 ${main} 时冲突：${conflicts.join('、') || '（未知）'}。主分支在流程期间被修改过；请人工合并 ${integ} 后再执行 /flow approve。`);
+      throw new Error(`合入 ${main} 时冲突：${conflicts.join('、') || '（未知）'}。主分支在流程期间被修改过；请人工合并 ${integ} 后再执行 /flow-approve。`);
     }
     const sha = git(dir, ['rev-parse', 'HEAD']).trim();
     await store.recordEvent({ flow: flowId, actor: 'human', type: 'merge', evidence: sha, data: { from: integ, to: main } });

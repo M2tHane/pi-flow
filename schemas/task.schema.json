@@ -39,11 +39,8 @@
     },
     "kind": {
       "enum": [
-        "test",
         "impl",
         "doc",
-        "infra",
-        "integration",
         "review-fix",
         "merge-fix",
         "analysis"
@@ -124,8 +121,6 @@
         "pending",
         "ready",
         "in_progress",
-        "review",
-        "verifying",
         "queued_merge",
         "merging",
         "done",
@@ -240,20 +235,6 @@
         }
       ]
     },
-    "blocked_from": {
-      "enum": [
-        "pending",
-        "ready",
-        "in_progress",
-        "review",
-        "verifying",
-        "queued_merge",
-        "merging",
-        "done",
-        "blocked",
-        "cancelled"
-      ]
-    },
     "last_failure": {
       "anyOf": [
         {
@@ -267,45 +248,6 @@
     "replan": {
       "type": "string",
       "minLength": 1
-    },
-    "contract_change": {
-      "type": "boolean"
-    },
-    "findings": {
-      "type": "object",
-      "required": [
-        "location",
-        "root_cause",
-        "impact_files",
-        "suggested_role",
-        "contract_change",
-        "estimated_files"
-      ],
-      "properties": {
-        "location": {
-          "type": "string"
-        },
-        "root_cause": {
-          "type": "string"
-        },
-        "impact_files": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "suggested_role": {
-          "type": "string"
-        },
-        "contract_change": {
-          "type": "boolean"
-        },
-        "estimated_files": {
-          "type": "integer",
-          "minimum": 0
-        }
-      },
-      "additionalProperties": false
     },
     "merge_fix_for": {
       "type": "string",
@@ -321,25 +263,6 @@
       "type": "string",
       "minLength": 1
     },
-    "stage_review": {
-      "anyOf": [
-        {
-          "type": "string",
-          "const": "review"
-        },
-        {
-          "type": "string",
-          "const": "confirm"
-        }
-      ]
-    },
-    "review_issues": {
-      "type": "array",
-      "items": {
-        "type": "string",
-        "pattern": "^R-[0-9]+$"
-      }
-    },
     "fork_from_task": {
       "type": "string",
       "pattern": "^T-[0-9]{3,}$"
@@ -349,6 +272,37 @@
       "items": {
         "type": "string"
       }
+    },
+    "shared": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "needs_acceptance": {
+      "type": "boolean"
+    },
+    "accepted": {
+      "type": "boolean"
+    },
+    "accept_of": {
+      "type": "string",
+      "pattern": "^T-[0-9]{3,}$"
+    },
+    "accept_kind": {
+      "anyOf": [
+        {
+          "type": "string",
+          "const": "check"
+        },
+        {
+          "type": "string",
+          "const": "confirm"
+        }
+      ]
+    },
+    "final_review": {
+      "type": "boolean"
     },
     "created_by": {
       "type": "string",

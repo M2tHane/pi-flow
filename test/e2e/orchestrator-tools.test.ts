@@ -9,14 +9,14 @@ import { setupProject, PROJECT_YAML } from '../helpers/project.ts';
 import { parseConfig } from '../../src/core/config.ts';
 import { nextStep } from '../../src/core/context-injector.ts';
 import { mkTask, hard } from '../helpers/tasks.ts';
+import { AGENTS } from '../helpers/engine.ts';
 
 test('flow_dispatch / flow_wait / flow_status', async () => {
   const p = await setupProject({ tasks: [mkTask('T-001', { verify: ['test'] }), mkTask('T-002', { deps: [hard('T-001')] })] });
   try {
     let release!: () => void;
     const gate = new Promise<void>((r) => { release = r; });
-    const launcher = new FakeLauncher(p.store, p.config, (spec) => async (a) => {
-      if (spec.env['PI_FLOW_ROLE'] === 'reviewer') { await a.call('flow_approve', { decision: 'pass' }); return; }
+    const launcher = new FakeLauncher(p.store, p.config, () => async (a) => {
       await gate; // 让实施 run 挂起，验证 dispatch 非阻塞
       await a.call('flow_claim');
       await a.call('write', { path: 'src/server/t-001/a.ts', content: 'ok' });
@@ -24,8 +24,8 @@ test('flow_dispatch / flow_wait / flow_status', async () => {
       await a.call('flow_submit', { summary: 's' });
     });
     const engine = new Engine({ root: p.dir, store: p.store, config: p.config, launcher,
-      roleSettings: () => ({ version: 1, roles: { 'backend-engineer': { model: 'fake/m' }, reviewer: { model: 'fake/r' } } }),
-      packageAgentsDir: path.join(import.meta.dirname, '../../agents'), subagentExtension: 'sub.ts' });
+      roleSettings: () => ({ version: 1, roles: { 'backend-engineer': { model: 'fake/m' } } }),
+      packageAgentsDir: AGENTS, subagentExtension: 'sub.ts' });
 
     await assert.rejects(flowDispatch(p.store, engine, { task_id: 'T-002' }), /只接受 ready.*T-001/);
     await assert.rejects(flowDispatch(p.store, engine, { task_id: 'T-099' }), /不存在/);
@@ -57,16 +57,15 @@ test('自动派发：ready 任务由引擎派发，依赖完成后接着派发�
     const config = parseConfig(yaml);
     assert.equal(config.limits.auto_dispatch, true);
     let dispatchCalls = 0;
-    const launcher = new FakeLauncher(p.store, config, (spec) => async (a) => {
-      if (spec.env['PI_FLOW_ROLE'] === 'reviewer') { await a.call('flow_approve', { decision: 'pass' }); return; }
+    const launcher = new FakeLauncher(p.store, config, () => async (a) => {
       await a.call('flow_claim');
       await a.call('write', { path: `src/server/${a.env.task.toLowerCase()}/a.ts`, content: 'ok' });
       await a.call('flow_note', { text: 'n' });
       await a.call('flow_submit', { summary: 's' });
     });
     const engine = new Engine({ root: p.dir, store: p.store, config, launcher,
-      roleSettings: () => ({ version: 1, roles: { 'backend-engineer': { model: 'fake/m' }, reviewer: { model: 'fake/r' } } }),
-      packageAgentsDir: path.join(import.meta.dirname, '../../agents'), subagentExtension: 'sub.ts' });
+      roleSettings: () => ({ version: 1, roles: { 'backend-engineer': { model: 'fake/m' } } }),
+      packageAgentsDir: AGENTS, subagentExtension: 'sub.ts' });
     const origDispatch = engine.dispatch.bind(engine);
     engine.dispatch = (f, t) => { dispatchCalls++; return origDispatch(f, t); };
 
@@ -79,10 +78,10 @@ test('自动派发：ready 任务由引擎派发，依赖完成后接着派发�
     const waiting = flowWait(p.store, engine, { timeout_s: 60 }, config);
     await engine.pump(p.flowId);
     const first = await waiting;
-    assert.match(first.text, /T-001：ready → done|T-001：.*→ done/, '中间的审查、验证、合并不唤醒，只报告完成');
+    assert.match(first.text, /T-001：ready → done|T-001：.*→ done/, '中间的合并不唤醒，只报告完成');
     await engine.idle();
     assert.equal(p.store.readTask(p.flowId, 'T-002').status, 'done');
-    assert.ok(dispatchCalls >= 4, '实施与审查都由引擎派发');
+    assert.equal(dispatchCalls, 2, '两个任务都由引擎派发');
     // 程序空闲时立即返回，不会一直等
     const t0 = Date.now();
     await flowWait(p.store, engine, { timeout_s: 60 }, config);

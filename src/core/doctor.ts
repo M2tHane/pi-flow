@@ -22,14 +22,14 @@ export async function doctor(root: string, store: StateStore, opts: { fix?: bool
   if (!existsSync(path.join(root, '.flow', 'state.json'))) {
     return { errors: ['尚未初始化：执行 /flow init'], warnings, fixed, preflight: formatPreflight(preflight({ root, ...opts.preflight })) };
   }
-  if (existsSync(path.join(root, '.flow', 'tx.json'))) warnings.push('存在未完成的事务日志 tx.json：执行 /flow resume 重放');
+  if (existsSync(path.join(root, '.flow', 'tx.json'))) warnings.push('存在未完成的事务日志 tx.json：执行 /flow-resume 重放');
   const integrity = await store.verifyIntegrity();
   errors.push(...integrity.errors.filter((e) => !e.includes('tx.json')).map((e) => `完整性：${e}`));
 
   const lock = readEngineLock(root);
   if (lock && lock.pid !== process.pid) {
     if (processAlive(lock.pid)) warnings.push(`另一个 pi 会话（pid ${lock.pid}）正在运行引擎`);
-    else warnings.push(`引擎锁属于已退出的进程 ${lock.pid}，下次 /flow resume 会接管`);
+    else warnings.push(`引擎锁属于已退出的进程 ${lock.pid}，下次 /flow-resume 会接管`);
   }
 
   const flowIds = store.listFlows();
@@ -40,7 +40,7 @@ export async function doctor(root: string, store: StateStore, opts: { fix?: bool
       if (IN_FLIGHT.includes(t.status) && t.status !== 'merging' && t.worktree && !existsSync(t.worktree)) {
         errors.push(`${flowId}/${t.id}（${t.status}）的 worktree 不存在：${t.worktree}`);
       }
-      if (t.lease && now >= Date.parse(t.lease.expires_at)) warnings.push(`${flowId}/${t.id} 的租约已过期（run ${t.lease.run_id}）：执行 /flow resume`);
+      if (t.lease && now >= Date.parse(t.lease.expires_at)) warnings.push(`${flowId}/${t.id} 的租约已过期（run ${t.lease.run_id}）：执行 /flow-resume`);
     }
   }
 
@@ -52,7 +52,7 @@ export async function doctor(root: string, store: StateStore, opts: { fix?: bool
   if (mq.merging) {
     const t = safeTask(store, mq.merging.flow, mq.merging.task);
     if (t?.status !== 'merging') errors.push(`合并名额被 ${mq.merging.task} 占用，但其状态是 ${t?.status ?? '不存在'}`);
-    else warnings.push(`${mq.merging.task} 正在合并；如果没有会话在运行，执行 /flow resume 回滚到队首`);
+    else warnings.push(`${mq.merging.task} 正在合并；如果没有会话在运行，执行 /flow-resume 回滚到队首`);
   }
   for (const s of mq.suspended ?? []) {
     if (safeTask(store, s.flow, s.task)?.status !== 'merging') errors.push(`挂起的合并 ${s.task} 状态不是 merging`);
@@ -66,7 +66,7 @@ export async function doctor(root: string, store: StateStore, opts: { fix?: bool
 
   for (const r of store.listRuns()) {
     if (!r.ended_at && r.pid && processAlive(r.pid) && !(lock && processAlive(lock.pid))) {
-      warnings.push(`残留子进程：run ${r.run_id}（pid ${r.pid}），执行 /flow resume 清理`);
+      warnings.push(`残留子进程：run ${r.run_id}（pid ${r.pid}），执行 /flow-resume 清理`);
     }
   }
 

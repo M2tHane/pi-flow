@@ -1,21 +1,20 @@
-// 组装子进程提示：稳定内容（角色提示、规则）进系统提示，动态内容（任务、handoff、打回意见）进用户消息。
-// 顺序固定：角色提示 → global 规则 → scope 规则 → 技能 → 项目知识 → 任务说明与输入 → 上游 handoff → handoff → 打回意见，
-// 以便命中提供商的提示缓存（项目知识按编号只追加，放在系统提示末尾，新增条目只影响其后的部分）。
+// 组装子进程提示：稳定内容（角色提示、规则、技能、项目知识）进系统提示，动态内容（任务、上游与本任务的 handoff、上次没通过的原因）进用户消息。
+// 顺序固定，以便命中提供商的提示缓存（项目知识按编号只追加，放在系统提示末尾）。结构化笔记不在这里：由子进程扩展在每次请求时放在消息末尾。
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import type { FlowConfig } from './config.ts';
 import type { AgentDef } from './agents.ts';
-import type { StageIssue, TaskFile } from './schemas.ts';
+import type { TaskFile } from './schemas.ts';
 
 export interface RuleFile { path: string; content: string }
 
 export const GLOBAL_RULES = 'rules/global.md';
 const HANDOFF_TAIL = 6000;
-/** 每个上游任务的 handoff 取最近部分的字数，以及所有上游合计的上限 */
-export const UPSTREAM_TAIL = 800;
-export const UPSTREAM_TOTAL = 4000;
+/** 每个上游任务的 handoff 取最近部分的字数，以及所有上游合计的上限（需求汇总者要读两份完整意见，取得较大） */
+export const UPSTREAM_TAIL = 8000;
+export const UPSTREAM_TOTAL = 16000;
 
-/** global.md 加上任务 scopes 对应的规则文件（按 scope 顺序去重）；路径相对项目根。 */
+/** global.md 加上任务 scopes 对应的规则文件（按 scope 顺序去重）；路径相对项目根。缺失的文件跳过（例如规划阶段之前还没有 rules/project.md） */
 export function ruleFilesFor(config: FlowConfig, projectRoot: string, scopes: readonly string[]): { rules: RuleFile[]; missing: string[] } {
   const wanted = [GLOBAL_RULES, ...scopes.flatMap((s) => config.raw.scopes[s]?.rules ?? [])];
   const rules: RuleFile[] = [];
@@ -28,41 +27,6 @@ export function ruleFilesFor(config: FlowConfig, projectRoot: string, scopes: re
   return { rules, missing };
 }
 
-/** 上一轮审查打回的问题（第三轮 B） */
-export interface PreviousReview {
-  /** 本轮是第几轮审查（≥ 2） */
-  round: number;
-  /** 上次打回的问题清单 */
-  issues: string;
-  /** 上次被审查的提交 */
-  head?: string;
-  /** 上次审查之后的改动（diff --stat） */
-  sinceDiff?: string;
-  /** 审查轮次上限（review.max_rounds） */
-  maxRounds?: number;
-}
-
-/** 阶段末审查（第四轮）的提示材料 */
-export interface AssembleStageReview {
-  kind: 'review' | 'confirm';
-  /** 本阶段第一次合并前的集成分支提交 */
-  baseSha: string | null;
-  /** baseSha..HEAD 的 diff --stat */
-  diffStat?: string | undefined;
-  /** 确认：清单上的问题 */
-  issues?: StageIssue[];
-  /** 确认：修复开始时的提交与之后的改动 */
-  fixBase?: string | null;
-  fixDiffStat?: string | undefined;
-  /** 修改了可写范围外已有测试的任务（testing.adjust_tests）：审查时核对没有削弱 */
-  testAdjustments?: { task: string; files: string[] }[];
-}
-
-/** 适配已有测试的核对要求（逐任务审查与阶段审查共用） */
-export function testAdjustmentSection(list: { task: string; files: string[] }[], verdict: string): string {
-  return `## 修改了别的角色已有测试的改动\n${list.map((x) => `- ${x.task}：${x.files.join('、')}`).join('\n')}\n这些测试不在任务的可写范围内，是为适配按契约变化的接口而改的。逐个用 git diff 核对：只能是跟着接口调整（例如精确对象断言加上新字段）；删除用例、去掉断言、把精确断言放宽成只看状态码、跳过测试，都算削弱测试，${verdict}。`;
-}
-
 export interface AssembleInput {
   agent: AgentDef;
   rules: RuleFile[];
@@ -71,37 +35,24 @@ export interface AssembleInput {
   task: TaskFile;
   flowId: string;
   handoff: string;
-  /** stage：阶段末审查与确认（只读，提交问题清单或逐条确认） */
-  mode: 'impl' | 'review' | 'stage';
-  stageReview?: AssembleStageReview;
+  /** impl：需要提交改动或结论的任务；accept：独立验收（逐条验收或只复查没通过的条目） */
+  mode: 'impl' | 'accept' | 'review';
+  /** 独立验收：check 逐条验收全部条目；confirm 只复查上次没通过的条目 */
+  accept?: { kind: 'check' | 'confirm'; items: { id: string; text: string; last?: string }[] };
   commands: Record<string, string>;
-  /** 审查模式：base_sha..HEAD 的 diff --stat */
-  diffStat?: string;
-  /** 实施模式：worktree 中本任务之前的运行留下的改动（git status 与相对 base_sha 的 diff --stat） */
+  /** worktree 中本任务之前的运行留下的改动（git status 与相对 base_sha 的 diff --stat） */
   existingWork?: string;
-  /** 本任务承载的先行验收测试（已在分支中，不属于本任务的 diff） */
-  carriedTest?: { id: string; title: string; writes: readonly string[] };
-  /** 本任务是先行验收测试：实现尚不存在，verify 应当失败 */
-  leadingTest?: boolean;
   /** 适用于本任务的项目知识（已格式化，按编号排序） */
   knowledge?: string[];
-  /** 本任务验证输出（evidence）所在目录（审查时可读） */
-  evidenceDir?: string;
-  /** 本 run 的临时目录（实施类角色） */
+  /** 本 run 的临时目录 */
   scratchDir?: string;
-  /** 审查设计任务时：architect 在提案中列出的超出需求的设计（undefined 表示不是设计任务或还没有提案） */
-  proposalExtras?: string[];
-  /** 审查模式：直接附上的 diff（有上一轮审查时是上次审查之后的改动，否则是全部改动）；太大时不给 */
-  inlineDiff?: string;
-  /** 拆任务时（S1/F1、计划修订）：各实施角色用的模型，决定任务粒度；strong 表示与 architect 同档（强模型） */
+  /** 规划模块时（D2、计划修订）：实现者用的模型，决定模块大小；strong 表示与 architect 同档（强模型） */
   implModels?: { role: string; model: string; strong: boolean }[];
-  /** 实施模式：对话接在另一个任务（写过这些代码的任务）的最后一次运行之后 */
+  /** 对话接在另一个任务（写过这些代码的任务，例如验收修复接着模块的实现者）的最后一次运行之后 */
   priorTask?: { id: string; title: string; run: string };
-  /** 实施模式：接着上一次运行（run）的对话继续，只给简短的续做说明 */
+  /** 接着本任务上一次运行（run）的对话继续，只给简短的续做说明 */
   continuation?: { run: string };
-  /** 审查模式：上一轮审查打回的问题；有时本轮只核对这些问题 */
-  previousReview?: PreviousReview;
-  /** 本任务依赖的上游任务（硬依赖与软依赖）及其 handoff */
+  /** 本任务依赖的上游任务及其 handoff（需求汇总者从这里读两方意见） */
   upstream?: { id: string; title: string; type: 'hard' | 'soft'; status: string; handoff: string }[];
 }
 
@@ -124,63 +75,19 @@ export function upstreamSection(ups: NonNullable<AssembleInput['upstream']>): st
     used += body.length;
     blocks.push(`### ${u.id}「${u.title}」（${u.type === 'hard' ? '硬依赖' : '软依赖'}，${u.status}）\n${body}`);
   }
-  return blocks.length ? `## 上游任务的 handoff（摘要，仅保留最近部分）\n上游任务留下的进展、约定与踩过的坑；需要细节时读取对应文件。\n\n${blocks.join('\n\n')}` : '';
+  return blocks.length ? `## 上游任务的 handoff\n上游任务留下的意见、进展与约定；内容太长时只保留最近部分，需要细节时读取对应文件。\n\n${blocks.join('\n\n')}` : '';
 }
 
 export interface AssembledPrompt { system: string; user: string }
 
 const list = (xs: readonly string[], empty = '（无）') => (xs.length ? xs.map((x) => `- ${x}`).join('\n') : empty);
 
-/** 第二轮起的审查：先逐条核对上次的问题，只为没解决的问题或新改动引入的明确缺陷打回 */
-export function previousReviewSection(pr: PreviousReview): string {
-  const last = pr.maxRounds !== undefined && pr.round >= pr.maxRounds;
-  return [
-    `## 第 ${pr.round} 轮审查：先核对上次打回的问题`,
-    `上次审查打回的问题：\n${pr.issues.trim() || '（无记录）'}`,
-    ...(pr.head ? [`上次审查的提交：${pr.head}。之后的改动用 \`git diff ${pr.head} HEAD\` 查看：\n\n\`\`\`\n${(pr.sinceDiff ?? '（无法取得）').trim()}\n\`\`\``] : []),
-    [
-      '本轮要求：',
-      '1. 先逐条核对上面的问题是否已解决，在结论中逐条写明"已解决"或"未解决（原因）"。',
-      '2. 只为两类问题打回：上次的问题没有解决；本轮新改动引入的明确缺陷（不满足验收标准或明确的错误）。',
-      '3. 不要提出新的改进建议，也不要挑上次已审过、本轮没有改动的代码；这些写在 pass 的 notes 里。',
-      '4. 验收标准本身无法满足时，用 flow_block 交给用户，不要再提高要求。',
-      ...(last ? [`5. 已到审查轮次上限（${pr.maxRounds} 轮）：上次的问题已基本解决、只剩建议类问题时通过，把剩余建议写进 notes。`] : []),
-    ].join('\n'),
-  ].join('\n\n');
-}
-
-/** 阶段末审查的材料：本阶段的改动范围；确认时附清单与修复后的改动 */
-export function stageReviewSections(s: AssembleStageReview): string[] {
-  const base = s.baseSha ? s.baseSha.slice(0, 12) : null;
-  const out = [base
-    ? `## 本阶段的改动\n本阶段第一次合并前的集成分支提交：${s.baseSha}。工作区是集成分支最新代码；用 \`git diff ${base} HEAD -- <路径>\` 查看某个模块的改动。\n\n\`\`\`\n${(s.diffStat ?? '（无法取得）').trim()}\n\`\`\``
-    : '## 本阶段的改动\n工作区是集成分支最新代码；本阶段各任务的可写范围见 handoff。'];
-  if (s.kind === 'review') {
-    out.push([
-      '## 阶段审查的要求',
-      '1. 按模块读本阶段的代码（实现与测试），对照 docs/contracts/ 中的契约、ARCHITECTURE.md、上面的规则和 handoff 中各任务的验收标准。',
-      '2. 只提这几类问题：违反契约（函数名、参数、返回值、错误、接口与契约不符）；违反规则（引用条目）；不满足验收标准；明确的缺陷（错误的逻辑、遗漏的错误处理、测试没有真正验证行为）。',
-      '3. 不提风格偏好、命名喜好、"可以更好"的重构；这些不是问题。',
-      '4. 每条问题写明 module（模块名）、location（文件:行）、problem、expected（期望的修改）、files（修复要改的文件，具体路径，只涉及一个模块）。程序按模块把问题分给负责的角色并行修复，修复者只能改 files 里的文件。',
-      '5. 这是本阶段唯一一次提出问题的机会：之后的确认只能核对这份清单，不能补充新问题。所以要一次看全，但不要为了凑数提问题。',
-    ].join('\n'));
-    if (s.testAdjustments?.length) out.push(testAdjustmentSection(s.testAdjustments, '作为问题提出（files 写这个测试文件）'));
-  } else {
-    const issues = s.issues ?? [];
-    if (s.testAdjustments?.length) out.push(testAdjustmentSection(s.testAdjustments, '把对应问题判为未解决并在 note 里说明'));
-    out.push(`## 待确认的问题\n${issues.length ? issues.map((x) => `- ${x.id}［${x.module}］${x.location}：${x.problem}；期望：${x.expected}（文件：${x.files.join('、')}）`).join('\n') : '（无）'}`);
-    if (s.fixBase) out.push(`## 修复开始后的改动\n用 \`git diff ${s.fixBase.slice(0, 12)} HEAD -- <文件>\` 查看。\n\n\`\`\`\n${(s.fixDiffStat ?? '（无法取得）').trim() || '（没有改动）'}\n\`\`\``);
-    out.push('## 确认的要求\n只核对上面每条问题是否已按"期望"解决。不要提出新问题，也不要因为别处的代码打回；清单之外的发现写在 note 里也不会被处理。');
-  }
-  return out;
-}
-
 /** 返工时接着上一次的对话：任务说明、上游与 handoff 都已在对话里，只说明这次为什么回来、新的临时目录与开始方式 */
 export function continuationPrompt(i: AssembleInput): string {
   const t = i.task;
   return [
     `# 继续任务 ${i.flowId}/${t.id}：${t.title}`,
-    `这是同一任务的新一次运行，接着上面的对话继续（上次运行 ${i.continuation!.run}）。工作区保留着你上次提交的代码。`,
+    `这是同一任务的新一次运行，接着上面的对话继续（上次运行 ${i.continuation!.run}）。工作区保留着你上次的代码与本地提交。`,
     `## 上次提交后没有通过的原因（请先处理）\n${t.last_failure ?? '（无记录）'}`,
     ...(i.scratchDir ? [`## 临时目录\n本次运行的临时目录换成了 \`${i.scratchDir}\`（上次的已删除）。`] : []),
     '开始：本次运行的身份已更换，先调用 flow_claim；按上面的原因修改，然后 flow_note 写 handoff 并 flow_submit。',
@@ -199,64 +106,48 @@ export function assemblePrompt(i: AssembleInput): AssembledPrompt {
 
   const t = i.task;
   const verify = t.verify.map((c) => `${c}：\`${i.commands[c] ?? '（未定义）'}\``);
+  const writes = [...(t.conflict_files ?? t.writes), ...(t.conflict_files ? [] : (t.shared ?? []).map((x) => `${x}（登记的公共文件：可以改，其他模块也可能改，只做必要的追加）`))];
   const parts = [
     `# 任务 ${i.flowId}/${t.id}：${t.title}`,
     `类型：${t.kind}　阶段：${t.stage}　角色：${t.role}`,
     `## 验收标准\n${list(t.acceptance)}`,
     `## 输入文件\n${list(t.inputs)}`,
-    `## 可写范围（writes）\n${list(t.conflict_files ?? t.writes)}`,
-    `## verify 命令\n${list(verify)}`,
+    `## 可写范围（writes）\n${list(writes, '（只读）')}`,
+    ...(verify.length ? [`## 全量测试命令\n${list(verify)}\n合并时程序会在集成分支最新代码上跑全量 typecheck、lint、test。`] : []),
   ];
-  if (i.leadingTest) {
-    parts.push(i.mode === 'review'
-      ? '## 先行验收测试\n这是先于实现写好的验收测试。程序会运行 verify 并要求它失败（默认在派审查前已确认）；请重点检查断言是否真正覆盖验收标准，有没有用跳过、条件判断或捕获异常让测试在没有实现时通过。'
-      : '## 先行验收测试\n实现还不存在，本任务的测试此时应当失败。提交后程序会运行 verify 并**要求失败**，通过的测试会被打回。不要用跳过、条件判断或捕获异常让测试在没有实现时通过；自检时确认测试因"实现缺失"而失败，而不是因为测试本身写错。');
-  }
-  if (i.carriedTest) {
-    const ct = i.carriedTest;
-    parts.push(`## 已在分支中的验收测试\n${ct.id}「${ct.title}」写的验收测试已在本任务的基线中（${ct.writes.join('、')}），实现前它们失败。${i.mode === 'review' ? '它们不在待审查的 diff 中，但会随本任务一并合入；请确认实现确实让这些测试通过。' : '本任务完成后它们必须通过；不得修改这些测试，它们会随本任务一并合入。'}`);
-  }
-  if (i.mode === 'review') {
-    parts.push(`## 待审查的改动\n基线提交 base_sha：${t.base_sha ?? '（未知）'}\n用 \`git diff ${t.base_sha ?? '<base_sha>'} HEAD\` 查看完整改动。${i.evidenceDir ? `verify 输出在 \`${i.evidenceDir}\`（precheck-*.log 是派审查前对这份代码的验证）。` : ''}\n\n\`\`\`\n${(i.diffStat ?? '').trim() || '（无）'}\n\`\`\``);
-  }
-  if (i.mode === 'review' && t.test_adjustments?.length) parts.push(testAdjustmentSection([{ task: t.id, files: t.test_adjustments }], '按缺陷打回'));
   if (i.implModels?.length) {
     const strong = i.implModels.filter((m) => m.strong).length;
-    parts.push(`## 实施角色的模型（决定任务粒度，见技能 decompose-dag）\n${i.implModels.map((m) => `- ${m.role}：${m.model}${m.strong ? '（强模型）' : ''}`).join('\n')}\n${strong === i.implModels.length ? '实施角色都是强模型：按模块或按层拆大任务，任务数越少越好。' : strong ? '部分实施角色是强模型：给它们大任务，给其他角色小任务。' : '实施角色不是强模型：任务要小（一次会话能完成）。'}`);
+    parts.push(`## 实现者的模型（决定模块大小，见技能 plan-modules）\n${i.implModels.map((m) => `- ${m.role}：${m.model}${m.strong ? '（强模型）' : ''}`).join('\n')}\n${strong === i.implModels.length ? '实现者是强模型：模块可以大一些（一块完整的业务功能，含前后端与测试）。' : '实现者不是强模型：模块要小一些（一次会话能完成）。'}`);
   }
-  if (i.mode === 'impl' && i.priorTask) {
-    parts.push(`## 接着你之前的对话\n上面的对话是你完成 ${i.priorTask.id}「${i.priorTask.title}」时的过程（run ${i.priorTask.run}），你熟悉这些代码，不必从头重读。那个任务已经合入；现在是一个新任务、新的 worktree（集成分支最新代码，可能包含别人之后的改动），文件路径与可写范围以本次说明为准。先调用 flow_claim。`);
+  if (i.priorTask) {
+    parts.push(`## 接着你之前的对话\n上面的对话是你完成 ${i.priorTask.id}「${i.priorTask.title}」时的过程（run ${i.priorTask.run}），你熟悉这些代码，不必从头重读。那个任务已经合入；现在是一个新任务、新的 worktree（集成分支最新代码，可能包含别人之后的改动），文件路径与可写范围以本次说明为准。`);
   }
-  if (i.mode === 'impl' && i.scratchDir) {
-    parts.push(`## 临时目录\n需要做临时实验（建临时文件、跑一次性脚本）时放在 \`${i.scratchDir}\`：可以 cd 进去，可以建、删、移动文件，本次运行结束后自动删除。不要在 worktree 里建临时文件：worktree 中只能写、删除、移动本任务 writes 内的文件，writes 之外的改动会让提交被拒。`);
+  if (i.scratchDir) {
+    parts.push(`## 临时目录\n需要做临时实验、放运行产生的文件（数据库、日志、构建产物）时用 \`${i.scratchDir}\`：可以 cd 进去，可以建、删、移动文件，本次运行结束后自动删除。不要在 worktree 里留下临时文件。`);
   }
-  if (i.mode === 'impl' && i.existingWork?.trim()) {
-    parts.push(`## 工作区已有的改动\n这些改动是本任务之前的运行留下的（会话中断或被打回前的工作），还没有合入集成分支。先用 \`git status\` 与 \`git diff ${t.base_sha ?? '<base_sha>'}\` 检查，再决定继续完善还是重写；不要无故丢弃仍然有用的部分。\n\n\`\`\`\n${i.existingWork.trim()}\n\`\`\``);
+  if (i.existingWork?.trim()) {
+    parts.push(`## 工作区已有的改动\n这些改动是本任务之前的运行留下的（会话中断或被退回前的工作），还没有合入集成分支。先用 \`git status\`、\`git log\` 与 \`git diff ${t.base_sha ?? '<base_sha>'}\` 检查，再决定继续完善还是重写；不要无故丢弃仍然有用的部分。\n\n\`\`\`\n${i.existingWork.trim()}\n\`\`\``);
   }
-  const up = i.mode === 'impl' && i.upstream?.length ? upstreamSection(i.upstream) : '';
+  const up = i.upstream?.length ? upstreamSection(i.upstream) : '';
   if (up) parts.push(up);
   if (i.handoff.trim()) {
     const h = i.handoff.trim();
     parts.push(`## handoff 笔记${h.length > HANDOFF_TAIL ? '（仅保留最近部分）' : ''}\n${h.slice(-HANDOFF_TAIL)}`);
   }
-  const pr = i.mode === 'review' ? i.previousReview : undefined;
-  if (pr) parts.push(previousReviewSection(pr));
-  else if (t.last_failure) parts.push(`## 上次未通过的原因（请先处理）\n${t.last_failure}`);
-  if (i.mode === 'review' && i.proposalExtras) {
-    parts.push(`## architect 申报的超出需求的设计（extras）\n${i.proposalExtras.length ? i.proposalExtras.map((x) => `- ${x}`).join('\n') : '（没有申报：文档应当只覆盖需求）'}\n文档中超出需求、又不在上面列表里的设计，按缺陷打回。`);
+  if (t.last_failure) parts.push(`## 上次未通过的原因（请先处理）\n${t.last_failure}`);
+  if (i.mode === 'accept' && i.accept) {
+    parts.push(`## ${i.accept.kind === 'check' ? '逐条验收' : '只复查这些条目'}\n${i.accept.items.map((x) => `- ${x.id} ${x.text}${x.last ? `\n  上次结论：${x.last}` : ''}`).join('\n')}`);
+    parts.push(`## 验收的要求\n1. 在当前工作区（集成分支最新代码）上构建并实际运行：启动服务、调用接口、打开页面、跑相关测试。临时文件、数据库、日志放在临时目录${i.scratchDir ? ` \`${i.scratchDir}\`` : ''}，不要改仓库里的文件。\n2. 每个条目给出 passed（true/false）与证据：运行的命令、请求与响应、看到的结果。没法验证的条目判为未通过并写明原因。\n3. 只看这些条目是否做到，不提风格偏好和重构建议。`);
+    parts.push(i.accept.kind === 'check'
+      ? '开始：构建并运行，逐条验收，最后调用 flow_accept 一次提交全部条目的结论。'
+      : '开始：只复查上面的条目，最后调用 flow_accept_confirm 提交结论；只能回答这些编号，不能提出新问题。');
+    return { system, user: parts.join('\n\n') };
   }
-  if (i.mode === 'review' && i.inlineDiff !== undefined) {
-    const what = pr?.head ? `上次审查（${pr.head.slice(0, 12)}）之后的改动` : '本任务的全部改动';
-    parts.push(`## ${what}（已附 diff，不必再运行 git diff）\n${i.inlineDiff.trim() ? `\`\`\`diff\n${i.inlineDiff.trim()}\n\`\`\`` : '（没有改动）'}`);
+  if (i.mode === 'review') {
+    parts.push('开始：用任务说明里的 git diff 命令查看改动，按技能 code-review 逐个文件审查，最后调用 flow_review_report 一次提交全部问题（没有问题提交空列表）。不要修改仓库里的文件。');
+    return { system, user: parts.join('\n\n') };
   }
-  if (i.mode === 'stage' && i.stageReview) parts.push(...stageReviewSections(i.stageReview));
-  parts.push(i.mode === 'stage'
-    ? (i.stageReview?.kind === 'confirm'
-      ? '开始：逐条核对上面的问题，最后调用 flow_review_confirm：每个编号回答 resolved（true/false），未解决的在 note 里写原因。只能回答这些编号，不能提出新问题。'
-      : '开始：通读本阶段改动涉及的全部模块，最后调用 flow_review_report 一次提交问题清单（没有问题就提交空清单）。')
-    : i.mode === 'review'
-    ? '开始：审查上述改动，最后调用 flow_approve 给出结论。'
-    : '开始：先调用 flow_claim，然后按工作流程完成任务，最后 flow_note 写 handoff 并 flow_submit。');
-  if (i.mode === 'impl' && i.continuation) return { system, user: continuationPrompt(i) };
+  parts.push('开始：先调用 flow_claim，然后按工作流程完成任务，最后 flow_note 写 handoff 并 flow_submit。');
+  if (i.continuation) return { system, user: continuationPrompt(i) };
   return { system, user: parts.join('\n\n') };
 }

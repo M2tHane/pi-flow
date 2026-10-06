@@ -1,22 +1,12 @@
-{ "variants": [
-  { "match": "撰写 PRD", "steps": [
-    { "tool_calls": [ { "name": "flow_claim", "arguments": {} } ] },
-    { "tool_calls": [ { "name": "write", "arguments": { "path": "docs/PRD.md", "content": "# 待办应用 PRD\n\n## 背景与目标\n个人待办管理。\n\n## 功能范围\n- 新建待办：输入标题，返回待办对象。\n\n## 非目标\n- 不做多人协作\n- 不做提醒\n\n## 验收标准\n- createTodo('买牛奶') 返回 { title: '买牛奶', done: false }\n" } } ] },
-    { "tool_calls": [ { "name": "flow_note", "arguments": { "text": "PRD 初稿；假设单用户、无持久化" } } ] },
-    { "tool_calls": [ { "name": "flow_submit", "arguments": { "summary": "撰写 PRD" } } ] },
-    { "text": "完成" }
-  ] },
-  { "match": "架构", "steps": [
-    { "tool_calls": [ { "name": "flow_claim", "arguments": {} } ] },
-    { "tool_calls": [ { "name": "write", "arguments": { "path": "docs/ARCHITECTURE.md", "content": "# 架构\n\n- src/server/todo：待办逻辑\n- 依赖方向：server → shared\n" } } ] },
-    { "tool_calls": [ { "name": "write", "arguments": { "path": "docs/contracts/todo.md", "content": "# 契约\n\ncreateTodo(title: string): { title: string; done: boolean }\n" } } ] },
-    { "tool_calls": [ { "name": "flow_propose_tasks", "arguments": { "tasks": [
-      { "id": "T-001", "stage": "S2", "kind": "infra", "title": "项目脚手架", "role": "infra-engineer", "scopes": ["infra"], "depends_on": [], "inputs": [], "writes": ["package.json"], "acceptance": ["package.json 声明 type=module 与 test 脚本"], "verify": ["typecheck"] },
-      { "id": "T-002", "stage": "S3", "kind": "test", "title": "新建待办的验收测试", "role": "test-engineer", "scopes": ["acceptance"], "depends_on": [], "inputs": ["docs/contracts/todo.md"], "writes": ["tests/acceptance/todo/**"], "acceptance": ["覆盖 createTodo 的验收标准"], "verify": ["test"] },
-      { "id": "T-003", "stage": "S3", "kind": "impl", "title": "实现 createTodo", "role": "backend-engineer", "scopes": ["backend"], "depends_on": [ { "task": "T-002", "type": "hard", "reason": "先有验收测试" } ], "inputs": ["docs/contracts/todo.md"], "writes": ["src/server/todo/**"], "acceptance": ["验收测试通过"], "verify": ["test"] }
-    ] } } ] },
-    { "tool_calls": [ { "name": "flow_note", "arguments": { "text": "架构与契约完成，DAG 已提交" } } ] },
-    { "tool_calls": [ { "name": "flow_submit", "arguments": { "summary": "架构、契约与任务 DAG" } } ] },
-    { "text": "完成" }
-  ] }
+{ "steps": [
+  { "tool_calls": [ { "name": "flow_claim", "arguments": {} } ] },
+  { "tool_calls": [ { "name": "write", "arguments": { "path": "docs/modules.md", "content": "# 模块\n\n## M-1 待办\n- 范围：src/todo/**、tests/todo/**\n- 接口：add(title) 返回待办；list() 返回全部待办\n" } } ] },
+  { "tool_calls": [ { "name": "write", "arguments": { "path": "docs/rules-draft/project.md", "content": "# 项目规则\n\n1. 纯 ESM（.mjs），不引入第三方依赖。\n2. 测试用 node:test，放在 tests/<模块>/ 下。\n" } } ] },
+  { "tool_calls": [ { "name": "write", "arguments": { "path": "AGENTS.md", "content": "# 待办应用\n\n- 测试：node --test\n- 模块划分见 docs/modules.md\n" } } ] },
+  { "tool_calls": [ { "name": "flow_propose_modules", "arguments": { "modules": [
+    { "id": "M-1", "title": "待办：新建与列出", "writes": ["src/todo/**", "tests/todo/**"], "inputs": ["docs/requirements.md"],
+      "acceptance": ["add('买菜') 后 list() 包含一条未完成的“买菜”"] } ] } } ] },
+  { "tool_calls": [ { "name": "flow_note", "arguments": { "text": "一个模块；项目规则草案在 docs/rules-draft/project.md" } } ] },
+  { "tool_calls": [ { "name": "flow_submit", "arguments": { "summary": "模块清单与项目规则" } } ] },
+  { "text": "完成" }
 ] }

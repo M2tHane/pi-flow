@@ -1,46 +1,47 @@
-// 引擎：派发（建 worktree、颁发 token、取得租约、组装提示、拉起子进程）与程序步骤（审查派发、verify、重新派发）。
+// 引擎：派发（建 worktree、颁发 token、取得租约、组装提示、拉起子进程）与程序步骤（推进阶段、验收、合并、重新派发）。
 // 调度与推进全部由代码决定；LLM 只通过 flow_* 工具提交申请。
 import { randomBytes } from 'node:crypto';
 import { mkdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { FlowConfig } from './config.ts';
 import type { StateStore } from './state-store.ts';
-import type { RoleSettingsFile, RunFile, TaskFile, ThinkingLevel } from './schemas.ts';
+import type { RoleSettingsFile, TaskFile, ThinkingLevel } from './schemas.ts';
 import type { RunOutcome, SubagentHandle, SubagentLauncher, SubagentSpec } from './launcher.ts';
 import { hashToken, isSettled } from './state-machine.ts';
 import { resolveRoleModel } from './role-settings.ts';
 import { loadAgent } from './agents.ts';
-import { assemblePrompt, ruleFilesFor, type AssembleStageReview, type PreviousReview } from './prompt-assembler.ts';
+import { assemblePrompt, ruleFilesFor } from './prompt-assembler.ts';
 import { formatEntry, selectKnowledge } from './knowledge.ts';
 import { findSessionFile, sessionDirOf } from './session-log.ts';
+import { seedTaskNotes } from './notes.ts';
+import { taskNotesRel } from './state-store.ts';
 import { heldByRevision } from './revision.ts';
-import { assessRisk, budgetState, diffNumstat, escalationModel, escalationPolicy, hardFanout, resolveModelRef, reviewPolicy, strongReviewModel } from './cost-control.ts';
-import { carriedTestOf, computeReady, isLeadingTest } from './dag.ts';
+import { budgetState, escalationModel, escalationPolicy, hardFanout, resolveModelRef } from './cost-control.ts';
+import { computeReady } from './dag.ts';
 import { selectDispatchable } from './scheduler.ts';
 import { createTaskWorktree, ensureLocalExcludes, scratchDir, worktreePath as worktreePathOf, worktreesRoot } from './worktree.ts';
-import { precheckOf, runPrecheck, runVerify } from './verify-runner.ts';
 import { git } from './git.ts';
 import { RUN_ENV_KEYS } from '../tools/subagent-tools.ts';
 import { MergeQueue, type MergeHooks, type MergeResult, type SyncResult } from './merge-queue.ts';
 import { runStageGate, gateFailedWithoutChange, type GateOutcome } from './gates.ts';
 import { ensureStageTasks } from './stages.ts';
-import { batchOfTask, stageGateFailed, stageGatePassed, stageReviewStep, testStageMode } from './stage-review.ts';
-import { PROPOSAL_STAGES, STAGE_SKILLS } from '../modes/plan.ts';
+import { REQUIREMENTS_STAGE, reopenRequirements } from './requirements.ts';
+import { finalReviewStep } from './final-review.ts';
+import { acceptanceStep, allAccepted, failedOf, gateFailed } from './acceptance.ts';
+import { DESIGN_STAGES } from '../modes/plan.ts';
+import { PROPOSAL_STAGES, skillsFor } from '../modes/plan.ts';
 import { fixStep } from '../modes/fix.ts';
 import { existsSync, readFileSync } from 'node:fs';
 import { killStrays } from './strays.ts';
 import { activePause, classifyUnavailable, clearPause, describePause, pauseActive, recordPause } from './model-pause.ts';
 import type { ModelPause } from './schemas.ts';
 
-export const REVIEWER_ROLE = 'reviewer';
 const tasksHas = (store: StateStore, flowId: string, id: string) => { try { store.readTask(flowId, id); return true; } catch { return false; } };
 /**
  * 会话文件超过这个大小就不再接着（上下文太长，每轮重发的成本超过重新读代码）。
  * 真实冒烟：一次 175 轮的实施会话约 0.5 MB，接着它返工的两次运行缓存读合计上千万 token；1.5 MB → 400 KB。
  */
 export const MAX_FORK_BYTES = 400_000;
-/** diff 不超过这么多字符时直接放进审查提示 */
-export const INLINE_DIFF_MAX = 20_000;
 
 export class DispatchError extends Error {
   constructor(message: string) {
@@ -80,33 +81,12 @@ export interface Dispatched { run_id: string; task: string; role: string; model:
 
 interface ActiveRun { flow: string; task: string; role: string; handle: SubagentHandle }
 
-/** 一次派发会用的角色与模型（审查分级、失败升级之后） */
-type ReviewMode = NonNullable<RunFile['review_mode']>;
-interface ModelPlan { role: string; model: string; thinking: ThinkingLevel | null; reviewMode?: ReviewMode; escalated: boolean }
-
-/**
- * 上一次审查打回的问题（第三轮 B）：最近一次审查结论是打回时返回，供下一轮审查先逐条核对。
- * round 是本轮的轮次（连续打回次数 + 1）；sinceDiff 是上次被审查的提交到 HEAD 的 diff --stat。
- */
-export function previousReviewOf(store: StateStore, flowId: string, task: TaskFile, maxRounds?: number): PreviousReview | null {
-  const evs = store.readEvents().filter((e) => e.flow === flowId && e.task === task.id && e.type === 'transition'
-    && (e.trigger === 'review_reject' || e.trigger === 'review_pass' || e.trigger === 'review_skip'));
-  const last = evs.at(-1);
-  if (last?.trigger !== 'review_reject') return null;
-  let rejects = 0;
-  for (let i = evs.length - 1; i >= 0 && evs[i]!.trigger === 'review_reject'; i--) rejects++;
-  const head = typeof last.data?.['reviewed_head'] === 'string' ? last.data['reviewed_head'] : null;
-  let sinceDiff: string | undefined;
-  if (head && task.worktree) {
-    try { sinceDiff = git(task.worktree, ['diff', '--stat', head, 'HEAD']).trim() || '（上次审查之后没有新的改动）'; } catch { /* 提交已不存在（worktree 重建） */ }
-  }
-  return { round: rejects + 1, issues: last.reason ?? '', ...(head ? { head } : {}), ...(sinceDiff ? { sinceDiff } : {}), ...(maxRounds ? { maxRounds } : {}) };
-}
+/** 一次派发会用的角色与模型（失败升级之后） */
+interface ModelPlan { role: string; model: string; thinking: ThinkingLevel | null; escalated: boolean }
 
 export class Engine {
   private readonly d: EngineDeps;
   private readonly runs = new Map<string, ActiveRun>();
-  private readonly verifying = new Set<string>();
   private readonly pending = new Set<Promise<unknown>>();
   private readonly listeners = new Set<() => void>();
 
@@ -151,13 +131,13 @@ export class Engine {
     return out;
   }
 
-  /** 派发一个任务：ready → 实施；in_progress 无租约 → 重新派发实施；review 无租约 → 派发审查。立即返回 run_id。 */
+  /** 派发一个任务：ready → 开工；in_progress 无租约 → 重新派发（接着原会话）。立即返回 run_id。 */
   async dispatch(flowId: string, taskId: string): Promise<Dispatched> {
     const { store, root } = this.d;
     ensureLocalExcludes(root);
     const flow = store.readFlow(flowId);
     let task = store.readTask(flowId, taskId);
-    const { role, model, thinking, reviewMode, escalated } = this.planModel(flowId, task);
+    const { role, model, thinking, escalated } = this.planModel(flowId, task);
     const paused = activePause(store, model, this.now());
     if (paused) throw new DispatchError(`${describePause(paused, this.now())}。恢复：/flow models resume ${paused.model}，或用 /flow-config 给 ${role} 换模型`);
     const runId = `r-${this.now().getTime().toString(36)}${randomBytes(3).toString('hex')}`;
@@ -178,26 +158,29 @@ export class Engine {
       throw new DispatchError(`任务 ${taskId} 在待批准的计划修订中（将被调整或取消），用户批准或打回修订前暂停派发`);
     }
     if (task.status === 'ready') {
-      // merge-fix 任务的 worktree 由合并队列预先准备（含冲突标记），直接复用；
-      // 承载先行验收测试的任务从测试分支末端开工，合并时把测试一并带入集成分支
-      const carried = carriedTestOf(task, store.listTasks(flowId));
-      if (carried && (carried.status !== 'done' || !carried.branch)) throw new DispatchError(`任务 ${taskId} 承载的验收测试 ${carried.id} 尚未确认（${carried.status}），不能开工`);
+      // merge-fix 任务的 worktree 由合并队列预先准备（含冲突标记），直接复用
       const wt = task.worktree && task.branch && task.base_sha
         ? { path: task.worktree, branch: task.branch, base_sha: task.base_sha }
-        : createTaskWorktree(root, flowId, taskId, flow.integration_branch, carried?.branch ?? flow.integration_branch);
+        : createTaskWorktree(root, flowId, taskId, flow.integration_branch, flow.integration_branch);
       // 修复任务接着写过这些代码的任务的对话继续（第四轮后续）
       if (task.fork_from_task && tasksHas(store, flowId, task.fork_from_task)) fork = this.forkSource(flowId, store.readTask(flowId, task.fork_from_task), role, model);
       task = await store.transitionTask(flowId, taskId, {
         to: 'in_progress', trigger: 'dispatch', actor: 'dispatcher',
         patch: { lease, worktree: wt.path, branch: wt.branch, base_sha: wt.base_sha },
       });
-    } else if ((task.status === 'in_progress' || task.status === 'review') && !task.lease) {
+    } else if (task.status === 'in_progress' && !task.lease) {
       if (!task.worktree) throw new DispatchError(`任务 ${taskId} 没有 worktree，无法继续`);
       // 返工：接着同一角色上一次提交时的对话继续（第三轮后续 2）
-      if (task.status === 'in_progress') fork = this.forkSource(flowId, task, role, model);
+      fork = this.forkSource(flowId, task, role, model);
       task = await store.acquireLease(flowId, taskId, lease, 'dispatcher');
     } else {
       throw new DispatchError(`任务 ${taskId} 当前是 ${task.status}${task.lease ? `（run ${task.lease.run_id} 运行中）` : ''}，不能派发`);
+    }
+
+    // 任务第一次运行前填入初始笔记（第五轮）：目标是任务说明与验收标准，待完成是验收标准逐条
+    if (!store.readNotes(taskNotesRel(flowId, taskId))) {
+      const seed = seedTaskNotes(task);
+      await store.writeNotes(taskNotesRel(flowId, taskId), (n) => { n.goal = seed.goal; n.todo = seed.todo; }, { actor: 'dispatcher', flow: flowId, task: taskId, reason: '初始笔记' });
     }
 
     const sessionDir = sessionDirOf(root, runId);
@@ -206,7 +189,7 @@ export class Engine {
       ...(fork ? { forked_from: fork.run_id } : {}),
       run_id: runId, flow: flowId, task: taskId, role, model, started_at: this.now().toISOString(), ended_at: null,
       tokens: { input: null, output: null, cache_read: null, cache_write: null }, outcome: null, token_hash: lease.token_hash, violations: 0,
-      session_dir: sessionDir, ...(escalated ? { escalated: true } : {}), ...(reviewMode ? { review_mode: reviewMode } : {}),
+      session_dir: sessionDir, ...(escalated ? { escalated: true } : {}),
     });
 
     let handle: SubagentHandle;
@@ -226,75 +209,30 @@ export class Engine {
     return { run_id: runId, task: taskId, role, model };
   }
 
-  /** 待审查任务：低风险且配置为 skip 时只做程序检查直接进入 verify；否则在审查并发上限内派发审查 */
-  private async reviewStep(flowId: string, t: TaskFile): Promise<void> {
-    const policy = reviewPolicy(this.d.config);
-    const risk = assessRisk(this.d.config, t, this.d.store.listTasks(flowId), diffNumstat(t));
-    if (risk.low && policy.lowRisk.mode === 'skip') {
-      await this.d.store.transitionTask(flowId, t.id, { to: 'verifying', trigger: 'review_skip', actor: 'engine',
-        facts: { low_risk: true, reason: '低风险（只改文档或测试、改动小），按配置只做程序检查，免审查' } });
-      this.track(this.pump(flowId)); // 下一轮 pump 执行 verify（不能在本轮内等待，pump 是串行的）
-      return;
-    }
-    // 派审查前先跑 verify（第三轮 1）：失败直接退回实施；通过后再派审查
-    if (policy.verifyFirst && t.verify.length && !precheckOf(this.d.store, flowId, t)) {
-      if (this.verifying.has(t.id)) return;
-      this.verifying.add(t.id);
-      this.track(runPrecheck(this.d.store, this.d.config, flowId, t, this.d.verifyTimeoutMs, { expectFail: this.expectFail(flowId, t) })
-        .finally(() => this.verifying.delete(t.id))
-        .then(() => { this.notify(); return this.pump(flowId); }));
-      return;
-    }
-    const reviewing = [...this.runs.values()].filter((r) => r.role === REVIEWER_ROLE).length;
-    if (reviewing >= policy.maxParallel) return; // 审查并发已满：有审查结束时 pump 会再来
-    if (this.pausedFor(flowId, t)) return; // 审查模型暂停中：恢复后 pump 会再来
-    await this.dispatch(flowId, t.id);
-  }
-
-  /** 派发这个任务会用的角色与模型：审查按风险分级（H），实施失败后升级（I） */
+  /** 派发这个任务会用的角色与模型：同一任务失败达到次数后（或被很多任务依赖的底座），实施换成升级模型 */
   private planModel(flowId: string, task: TaskFile): ModelPlan {
-    const role = task.status === 'review' ? REVIEWER_ROLE : task.role;
+    const role = task.role;
     const base = this.modelFor(role);
     let model = base.model;
-    // 按风险审查（H、第三轮 C）：低风险用便宜模型，高风险用强模型，其余用审查者自己的模型（取不到时都退回审查者的模型）
-    let reviewMode: ReviewMode | undefined;
-    if (role === REVIEWER_ROLE && task.stage_review) {
-      // 阶段末审查用强模型；确认只看清单上的几处，用审查者自己的模型
-      reviewMode = task.stage_review === 'review' && testStageMode(this.d.config, this.d.store.listTasks(flowId), task.stage) !== 'light' ? 'strong' : 'full';
-      if (reviewMode === 'strong') model = strongReviewModel(this.d.config, this.d.roleSettings(), role, model) ?? model;
-    } else if (role === REVIEWER_ROLE) {
-      const risk = assessRisk(this.d.config, task, this.d.store.listTasks(flowId), diffNumstat(task));
-      const policy = reviewPolicy(this.d.config).lowRisk;
-      reviewMode = risk.low && policy.mode === 'cheap' ? 'light' : risk.high ? 'strong' : 'full';
-      if (reviewMode === 'light') model = resolveModelRef(this.d.config, policy.model) ?? model;
-      if (reviewMode === 'strong') model = strongReviewModel(this.d.config, this.d.roleSettings(), role, model) ?? model;
-    }
-    // 失败后升级模型（I）：同一任务失败达到次数后，实施换成升级模型
     let escalated = false;
     const esc = escalationPolicy(this.d.config);
-    // 关键底座（被多个任务硬依赖）第一次就用升级模型：它卡住时后面的任务全部等待
-    const critical = esc.criticalFanout > 0 && task.kind !== 'test' && hardFanout(task, this.d.store.listTasks(flowId)) >= esc.criticalFanout;
-    if (role !== REVIEWER_ROLE && esc.enabled && (task.attempts >= esc.afterFailures || critical)) {
+    const critical = esc.criticalFanout > 0 && hardFanout(task, this.d.store.listTasks(flowId)) >= esc.criticalFanout;
+    if (esc.enabled && (task.attempts >= esc.afterFailures || critical)) {
       const up = escalationModel(this.d.config, this.d.roleSettings(), role, model);
       if (up) { model = up; escalated = true; }
     }
-    return { role, model, thinking: base.thinking, ...(reviewMode ? { reviewMode } : {}), escalated };
+    return { role, model, thinking: base.thinking, escalated };
   }
 
   /** 任务下一次派发要用的模型正被暂停时返回暂停记录（没设置模型等其他问题交给 dispatch 报错） */
   pausedFor(flowId: string, task: TaskFile): ModelPause | null {
-    if (task.lease || !['ready', 'in_progress', 'review'].includes(task.status)) return null;
+    if (task.lease || !['ready', 'in_progress'].includes(task.status)) return null;
     if (!this.d.store.readModelPauses().pauses.some((p) => pauseActive(p, this.now()))) return null;
     try {
       return activePause(this.d.store, this.planModel(flowId, task).model, this.now());
     } catch {
       return null;
     }
-  }
-
-  /** 测试必须先失败：fix 的复现测试，build/feature 的先行验收测试 */
-  private expectFail(flowId: string, t: TaskFile): boolean {
-    return t.kind === 'test' && (this.d.store.readFlow(flowId).mode === 'fix' || isLeadingTest(t, this.d.store.listTasks(flowId)));
   }
 
   private modelFor(role: string): { model: string; thinking: ThinkingLevel | null } {
@@ -308,7 +246,7 @@ export class Engine {
    * 换了模型（例如失败升级）、关闭 limits.continue_session、或任务重新开工（ready）时从头开始。
    */
   private forkSource(flowId: string, task: TaskFile, role: string, model: string): { run_id: string; session_file: string; task: string } | null {
-    if (role === REVIEWER_ROLE || this.d.config.limits.continue_session === false) return null;
+    if (this.d.config.limits.continue_session === false) return null;
     const prev = this.d.store.listRuns().filter((r) => r.flow === flowId && r.task === task.id && r.role === role && r.ended_at)
       .sort((a, b) => a.started_at.localeCompare(b.started_at)).at(-1);
     if (!prev || prev.outcome !== 'submitted' || prev.model !== model || !prev.session_file) return null;
@@ -321,20 +259,17 @@ export class Engine {
   private buildSpec(flowId: string, task: TaskFile, role: string, runId: string, token: string, model: string, thinking: ThinkingLevel | null, fork: { run_id: string; task: string } | null = null): SubagentSpec {
     const { root, config, store } = this.d;
     const agent = loadAgent(role, root, this.d.packageAgentsDir);
-    // 审查者使用被审任务的 scope 规则
     const { rules } = ruleFilesFor(config, root, task.scopes);
-    const mode = role === REVIEWER_ROLE ? (task.stage_review ? 'stage' : 'review') : 'impl';
-    const diffStat = mode === 'review' && task.worktree && task.base_sha
-      ? git(task.worktree, ['diff', '--stat', task.base_sha, 'HEAD']) : undefined;
-    const previousReview = mode === 'review' ? previousReviewOf(store, flowId, task, reviewPolicy(config).maxRounds) : null;
-    // 改动不大时把 diff 直接放进审查提示，省掉审查者自己 git diff 的一轮（第二轮起只附上次审查之后的改动）
-    let inlineDiff: string | undefined;
-    if (mode === 'review' && task.worktree && task.base_sha) {
-      const from = previousReview?.head ?? task.base_sha;
-      try {
-        const d = git(task.worktree, ['diff', from, 'HEAD']);
-        if (d.length <= INLINE_DIFF_MAX) inlineDiff = d;
-      } catch { /* 上次审查的提交已不存在 */ }
+    const mode = task.accept_of ? 'accept' : task.final_review ? 'review' : 'impl';
+    // 独立验收：逐条验收全部标准，或只复查上次没通过的条目
+    let accept: { kind: 'check' | 'confirm'; items: { id: string; text: string; last?: string }[] } | undefined;
+    if (task.accept_of) {
+      const a = store.readAcceptance(flowId, task.accept_of);
+      if (a) {
+        const lastOf = (id: string) => { const r = a.results.find((x) => x.id === id); return r ? `${r.passed ? '通过' : '未通过'}：${r.evidence}` : undefined; };
+        const items = (task.accept_kind === 'confirm' ? failedOf(a) : a.criteria).map((c) => ({ ...c, ...(task.accept_kind === 'confirm' && lastOf(c.id) ? { last: lastOf(c.id)! } : {}) }));
+        accept = { kind: task.accept_kind ?? 'check', items };
+      }
     }
     // 重新派发时告诉实施者 worktree 里已有的改动（含未提交的），避免重做或覆盖
     let existingWork: string | undefined;
@@ -343,52 +278,27 @@ export class Engine {
       const stat = git(task.worktree, ['diff', '--stat', task.base_sha]).trim();
       if (status || stat) existingWork = [stat, status && `未提交：\n${status}`].filter(Boolean).join('\n\n');
     }
-    const skillNames = task.replan ? ['revise-plan', 'decompose-dag'] : [...(STAGE_SKILLS[task.stage] ?? []), ...(mode === 'impl' ? ['write-handoff'] : [])];
+    const skillNames = task.replan ? ['revise-plan', 'plan-modules'] : [...new Set([...skillsFor(task.stage, role), ...(mode === 'impl' && config.role(role).writes.length ? ['write-handoff'] : [])])];
     const skills = skillNames.map((n) => {
       const f = this.d.packageSkillsDir ? path.join(this.d.packageSkillsDir, n, 'SKILL.md') : '';
       return f && existsSync(f) ? { path: `skills/${n}`, content: readFileSync(f, 'utf8').replace(/^---[\s\S]*?---\s*/, '').trim() } : null;
     }).filter((x): x is { path: string; content: string } => !!x);
     const tasks = store.listTasks(flowId);
-    const carried = carriedTestOf(task, tasks);
-    // 阶段末审查：本阶段相对第一次合并前的改动；确认时附问题清单与修复开始后的改动
-    let stageReview: AssembleStageReview | undefined;
-    if (mode === 'stage' && task.stage_review) {
-      const sr = store.readStageReview(flowId, task.stage);
-      const stat = (from: string | null | undefined) => {
-        if (!from || !task.worktree) return undefined;
-        try { const s = git(task.worktree, ['diff', '--stat', from, 'HEAD']).trim(); return s.length > 8000 ? `${s.slice(0, 8000)}\n…` : s; } catch { return undefined; }
-      };
-      const batch = sr ? batchOfTask(sr, task.id) : undefined;
-      // 审查看本批任务、确认看修复任务各自适配过的已有测试
-      const adjIds = !batch ? [] : task.stage_review === 'review' ? batch.tasks : [...batch.fix_tasks, ...batch.refix_tasks];
-      const testAdjustments = adjIds.map((id) => tasks.find((x) => x.id === id)).filter((x): x is TaskFile => !!x?.test_adjustments?.length)
-        .map((x) => ({ task: x.id, files: x.test_adjustments! }));
-      stageReview = { kind: task.stage_review, baseSha: sr?.base_sha ?? null, diffStat: stat(sr?.base_sha),
-        ...(testAdjustments.length ? { testAdjustments } : {}),
-        ...(task.stage_review === 'confirm' ? { issues: batch?.issues ?? [], fixBase: batch?.fix_base ?? null, fixDiffStat: stat(batch?.fix_base) } : {}) };
-    }
     // 实施类角色的临时目录（项目与 worktree 之外）：做实验、建临时文件，run 结束后删除
-    const scratch = mode === 'impl' && config.role(role).writes.length ? scratchDir(root, runId) : undefined;
+    const scratch = (mode === 'impl' || mode === 'accept') && (config.role(role).writes.length || config.role(role).bash === 'full') ? scratchDir(root, runId) : undefined;
     if (scratch) mkdirSync(scratch, { recursive: true });
     const prompt = assemblePrompt({
       agent, rules, skills, task, flowId, handoff: store.readHandoff(flowId, task.id), mode, commands: config.commands,
-      ...(carried ? { carriedTest: { id: carried.id, title: carried.title, writes: carried.writes } } : {}),
-      ...(isLeadingTest(task, tasks) ? { leadingTest: true } : {}),
       knowledge: selectKnowledge(store.readKnowledge(), task).map(formatEntry),
       ...(scratch ? { scratchDir: scratch } : {}),
-      ...(mode === 'review' ? { evidenceDir: path.join(root, '.flow', 'flows', flowId, 'evidence', task.id) } : {}),
       upstream: task.depends_on.flatMap((d) => {
         const u = tasks.find((x) => x.id === d.task);
         return u ? [{ id: u.id, title: u.title, type: d.type, status: u.status === 'done' ? '已完成' : `未完成：${u.status}`, handoff: store.readHandoff(flowId, u.id) }] : [];
       }),
-      ...(diffStat !== undefined ? { diffStat } : {}),
-      ...(previousReview ? { previousReview } : {}),
-      ...(inlineDiff !== undefined ? { inlineDiff } : {}),
-      ...(mode === 'review' && (task.stage === 'S1' || task.stage === 'F1') && !task.replan && store.readProposal(flowId) ? { proposalExtras: store.readProposal(flowId)!.extras ?? [] } : {}),
       ...(fork && mode === 'impl' && fork.task === task.id ? { continuation: { run: fork.run_id } } : {}),
       ...(fork && mode === 'impl' && fork.task !== task.id ? { priorTask: { id: fork.task, title: store.readTask(flowId, fork.task).title, run: fork.run_id } } : {}),
       ...(existingWork ? { existingWork } : {}),
-      ...(stageReview ? { stageReview } : {}),
+      ...(accept ? { accept } : {}),
       ...(mode === 'impl' && (PROPOSAL_STAGES.has(task.stage) || task.replan) ? { implModels: this.implModels(role) } : {}),
     });
     const runDir = path.join(worktreesRoot(root), '.runs', runId);
@@ -428,7 +338,7 @@ export class Engine {
 
   private async failRun(flowId: string, taskId: string, runId: string, reason: string): Promise<void> {
     const t = this.d.store.readTask(flowId, taskId);
-    if (t.lease?.run_id === runId && (t.status === 'in_progress' || t.status === 'review')) {
+    if (t.lease?.run_id === runId && t.status === 'in_progress') {
       await this.d.store.transitionTask(flowId, taskId, { to: t.status, trigger: 'run_failed', actor: 'dispatcher', facts: { reason } });
     }
   }
@@ -458,7 +368,7 @@ export class Engine {
     if (unavailable && prev.model) {
       const pause = await recordPause(store, { model: prev.model, role: active.role, flow: active.flow, task: active.task, u: unavailable, now: this.now() });
       const t = store.readTask(active.flow, active.task);
-      if (t.lease?.run_id === runId && (t.status === 'in_progress' || t.status === 'review')) {
+      if (t.lease?.run_id === runId && t.status === 'in_progress') {
         await store.transitionTask(active.flow, active.task, { to: t.status, trigger: 'run_paused', actor: 'dispatcher', facts: { reason: describePause(pause, this.now()) } });
       }
     } else if (prev.model && r.turns > 0 && !r.error) {
@@ -468,13 +378,13 @@ export class Engine {
     }
     if (leaseHeld && !unavailable) {
       const why = r.error ?? (r.exitCode ? `退出码 ${r.exitCode}${r.stderrTail ? `：${r.stderrTail.slice(-300)}` : ''}` : '未提交就结束');
-      await this.failRun(active.flow, active.task, runId, `子进程结束但没有${active.role === REVIEWER_ROLE ? '给出审查结论' : '提交'}（${why}）`);
+      await this.failRun(active.flow, active.task, runId, `子进程结束但没有提交（${why}）`);
     }
     this.notify();
     await this.pump(active.flow);
   }
 
-  /** 程序步骤：promote、给待审查任务派审查、执行 verify、重新派发被打回或失败的任务。 */
+  /** 程序步骤：promote、推进阶段与验收、合并、重新派发失败或被退回的任务。 */
   private pumpChain: Promise<void> = Promise.resolve();
 
   /** 程序步骤按流程串行执行：多个 run 同时结束时，避免并发地重复执行同一步骤 */
@@ -500,19 +410,10 @@ export class Engine {
     } catch (e) { report(e); }
     for (const listed of this.d.store.listTasks(flowId)) {
       try {
-        // 循环中有 await，列表可能已过时（例如 verify 已结束并清除了 verifying 标记）：以最新状态为准
+        // 循环中有 await，列表可能已过时：以最新状态为准。失败或被打回、没有租约的任务重新派发（接着原会话）
         const t = this.d.store.readTask(flowId, listed.id);
         if (t.lease) continue;
-        if (t.status === 'review') {
-          await this.reviewStep(flowId, t);
-        } else if (t.status === 'in_progress') {
-          if (!this.pausedFor(flowId, t)) await this.dispatch(flowId, t.id);
-        } else if (t.status === 'verifying' && !this.verifying.has(t.id)) {
-          this.verifying.add(t.id);
-          this.track(runVerify(this.d.store, this.d.config, flowId, t, this.d.verifyTimeoutMs, { expectFail: this.expectFail(flowId, t) })
-            .finally(() => this.verifying.delete(t.id))
-            .then(() => { this.notify(); return this.pump(flowId); }));
-        }
+        if (t.status === 'in_progress' && !this.pausedFor(flowId, t)) await this.dispatch(flowId, t.id);
       } catch (e) { report(e); }
     }
     // merge-fix 是合并流程的一部分（原任务挂起等待它），由程序直接派发；仍受并发与互斥约束
@@ -568,25 +469,40 @@ export class Engine {
         return;
       }
       if (flow.stage_status !== 'active' || this.gating.has(flowId)) return;
+      // 需求讨论（D0）由主会话和用户进行，提交需求说明后才执行闸门
+      if (flow.stage === REQUIREMENTS_STAGE && !flow.requirements?.submitted) return;
       const created = await ensureStageTasks(deps, flowId);
       if (created.length) { await this.promote(flowId); this.notify(); return; }
-      // 阶段审查（第四轮）：角色的任务全部合入就开一批审查，不必等整个阶段；审查、修复、确认都完成后才跑闸门
-      const step = await stageReviewStep(deps, flowId);
-      if (step === 'wait') { await this.promote(flowId); this.notify(); return; }
-      const stageTasks = this.d.store.listTasks(flowId).filter((t) => t.stage === flow.stage);
-      if (!stageTasks.every(isSettled)) return;
+      // 模块独立验收（第五轮）：模块合并后派验收；没通过的交回实现者修复、再复查。验收推进后可能有模块可以开工
+      if (await acceptanceStep(deps, flowId)) { await this.promote(flowId); this.notify(); }
+      const all = this.d.store.listTasks(flowId);
+      const stageTasks = all.filter((t) => t.stage === flow.stage);
+      if (!stageTasks.every(isSettled) || !allAccepted(all, flow.stage)) return;
       // 计划修订待用户批准时不提交闸门（批准后可能新增本阶段的任务）
       if (this.d.store.readRevision(flowId)?.status === 'proposed') return;
-      if (!force && gateFailedWithoutChange(this.d.store, flowId, flow.stage)) return;
+      // 最终代码审查（可选，review.final）：所有模块验收通过后、阶段闸门前；必须改的自动修，建议等用户挑选
+      const review = await finalReviewStep(deps, flowId);
+      if (review.changed) { await this.promote(flowId); this.notify(); }
+      if (review.wait) return;
+      if (!force && flow.stage !== REQUIREMENTS_STAGE && gateFailedWithoutChange(this.d.store, flowId, flow.stage)) return;
       await this.d.store.transitionStage(flowId, { to: 'awaiting_gate', trigger: 'submit_gate', actor: 'engine' });
       this.gating.add(flowId);
       this.notify();
       this.track(runStageGate(this.d.root, this.d.store, this.d.config, flowId, this.d.verifyTimeoutMs)
         .then(async (g) => {
           this.d.onGate?.(g);
-          // 阶段末审查：闸门通过则结束；全量测试失败则按日志生成修复任务（最多两轮，之后转需要用户处理）
-          if (g.passed) await stageGatePassed(deps, flowId, g.stage);
-          else if (g.failed) await stageGateFailed(deps, flowId, g.stage, g.failed);
+          if (!g.passed) {
+            // 实施阶段的全量测试失败：按日志交给负责的模块修复（最多两轮，之后需要你处理）
+            if (g.failed && !DESIGN_STAGES.has(g.stage)) {
+              const r = await gateFailed(deps, flowId, g.failed);
+              if (r.reason) await this.d.store.recordEvent({ flow: flowId, actor: 'engine', type: 'note', reason: `需要你处理：${r.reason}`, data: { needs_human: true, stage: g.stage } });
+            }
+            // 设计阶段缺产出（例如没有提交模块清单、没有项目规则）：让写作者接着原会话补上，最多 3 次
+            if (g.stage === REQUIREMENTS_STAGE) await reopenRequirements(this.d.store, flowId, `阶段检查未通过：${g.reasons.join('；')}`, 'gate');
+            else if (DESIGN_STAGES.has(g.stage) && this.d.store.listTasks(flowId).filter((t) => t.stage === g.stage && t.title.startsWith('修订：')).length < 3) {
+              await ensureStageTasks(deps, flowId, `阶段检查未通过：${g.reasons.join('；')}`);
+            }
+          }
           if (g.passed && !g.needsHuman) await this.d.store.advanceStage(flowId, 'gate');
         })
         .finally(() => this.gating.delete(flowId))
@@ -701,6 +617,12 @@ export class Engine {
   /** 等到没有运行中的子进程与程序步骤（测试与关闭时使用） */
   async idle(): Promise<void> {
     while (this.pending.size) await Promise.allSettled([...this.pending]);
+  }
+
+  /** 运行中插话（/flow-add）：送到这个任务正在运行的子进程；没有运行中的子进程或不支持时返回 false */
+  steer(flowId: string, taskId: string, message: string): boolean {
+    for (const r of this.runs.values()) if (r.flow === flowId && r.task === taskId) return r.handle.steer?.(message) ?? false;
+    return false;
   }
 
   kill(runId: string): void {

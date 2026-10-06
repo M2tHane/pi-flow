@@ -20,7 +20,7 @@ test('/flow init：生成骨架、.gitignore、.flow 与初始提交；重复执
   try {
     writeFileSync(path.join(r.dir, '.gitignore'), 'node_modules/');
     const first = await initProject(r.dir, PKG);
-    for (const f of ['workflow.yaml', 'AGENTS.md', 'rules/global.md', 'rules/backend.md', 'docs/PRD.md', 'docs/contracts/.gitkeep', '.flow/state.json']) {
+    for (const f of ['workflow.yaml', 'AGENTS.md', 'rules/global.md', 'docs/interfaces/.gitkeep', 'docs/research/.gitkeep', '.flow/state.json']) {
       assert.ok(existsSync(path.join(r.dir, f)), f);
     }
     assert.match(readFileSync(path.join(r.dir, 'workflow.yaml'), 'utf8'), new RegExp(`^project: ${path.basename(r.dir)}$`, 'm'));
@@ -30,14 +30,15 @@ test('/flow init：生成骨架、.gitignore、.flow 与初始提交；重复执
     assert.match(r.git('log', '--format=%s'), /pi-flow: 初始化项目骨架/);
     assert.match(formatInit(first), /新建/);
 
-    // 用户改了一条规则、删了 PRD
-    writeFileSync(path.join(r.dir, 'rules/backend.md'), '# 我自己的规则\n');
-    rmSync(path.join(r.dir, 'docs/PRD.md'));
+    assert.ok(!existsSync(path.join(r.dir, 'rules/backend.md')), '项目专属规则由规划阶段生成，不再预置分层规则');
+    // 用户改了规则、删了 AGENTS.md
+    writeFileSync(path.join(r.dir, 'rules/global.md'), '# 我自己的规则\n');
+    rmSync(path.join(r.dir, 'AGENTS.md'));
     const eventsBefore = readFileSync(path.join(r.dir, '.flow/events.jsonl'), 'utf8');
     const second = await initProject(r.dir, PKG);
-    assert.deepEqual(second.created, ['docs/PRD.md']);
-    assert.ok(second.differs.includes('rules/backend.md'));
-    assert.equal(readFileSync(path.join(r.dir, 'rules/backend.md'), 'utf8'), '# 我自己的规则\n', '不覆盖');
+    assert.deepEqual(second.created, ['AGENTS.md']);
+    assert.ok(second.differs.includes('rules/global.md'));
+    assert.equal(readFileSync(path.join(r.dir, 'rules/global.md'), 'utf8'), '# 我自己的规则\n', '不覆盖');
     assert.equal(readFileSync(path.join(r.dir, '.flow/events.jsonl'), 'utf8'), eventsBefore, '.flow 不重复初始化');
     assert.equal((readFileSync(path.join(r.dir, '.gitignore'), 'utf8').match(/\.codegraph/g) ?? []).length, 1);
     const third = await initProject(r.dir, PKG);
@@ -59,14 +60,14 @@ test('/flow init 在非 git 目录与子目录中报错', async () => {
 test('preflight：报告缺失的规则、未设置模型的角色与 workflow 错误', async () => {
   const p = await setupProject();
   try {
-    const items = preflight({ root: p.dir, roleSettings: { version: 1, roles: { reviewer: { model: 'x/y' } } }, availableModels: ['a/b'] });
+    const items = preflight({ root: p.dir, roleSettings: { version: 1, roles: { architect: { model: 'x/y' } } }, availableModels: ['a/b'] });
     const get = (k: string) => items.find((i) => i.item === k)!;
     assert.equal(get('git').level, 'ok');
     assert.equal(get('workflow.yaml').level, 'ok');
     assert.equal(get('主分支').level, 'ok');
     assert.equal(get('规则文件').level, 'warn');
     assert.match(get('规则文件').detail, /database\.md/);
-    assert.match(get('角色模型').detail, /reviewer 的模型 x\/y 当前不可用/);
+    assert.match(get('角色模型').detail, /architect 的模型 x\/y 当前不可用/);
     writeFileSync(path.join(p.dir, 'workflow.yaml'), 'version: 2\n');
     assert.equal(preflight({ root: p.dir }).find((i) => i.item === 'workflow.yaml')!.level, 'error');
   } finally { p.cleanup(); }
@@ -114,7 +115,7 @@ test('唯一允许的下一步：dispatch → wait → 报告阻塞；闸门等�
     assert.match(turnContext(p.store, 2), /^\[pi-flow 状态\][\s\S]*\[唯一允许的下一步\]/);
     await p.store.transitionStage(p.flowId, { to: 'awaiting_gate', trigger: 'submit_gate', actor: 'engine' });
     await p.store.transitionStage(p.flowId, { to: 'awaiting_human', trigger: 'gate_passed', actor: 'engine', needs_human: true });
-    assert.match(nextStep(p.store, 2).next, /\/flow approve/);
+    assert.match(nextStep(p.store, 2).next, /\/flow-approve/);
   } finally { p.cleanup(); }
 });
 

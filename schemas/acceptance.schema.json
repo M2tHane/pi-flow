@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pi-flow/acceptance.schema.json",
+  "type": "object",
+  "required": [
+    "task",
+    "status",
+    "round",
+    "criteria",
+    "results",
+    "check_task",
+    "fix_tasks",
+    "confirm_tasks",
+    "version"
+  ],
+  "properties": {
+    "task": {
+      "type": "string",
+      "pattern": "^T-[0-9]{3,}$"
+    },
+    "status": {
+      "enum": [
+        "checking",
+        "fixing",
+        "confirming",
+        "accepted",
+        "needs_human"
+      ]
+    },
+    "round": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 2
+    },
+    "criteria": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "text"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^A-[0-9]+$"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "passed",
+          "evidence"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^A-[0-9]+$"
+          },
+          "passed": {
+            "type": "boolean"
+          },
+          "evidence": {
+            "type": "string",
+            "maxLength": 2000
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "check_task": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^T-[0-9]{3,}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "fix_tasks": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^T-[0-9]{3,}$"
+      }
+    },
+    "confirm_tasks": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^T-[0-9]{3,}$"
+      }
+    },
+    "summary": {
+      "type": "string",
+      "maxLength": 2000
+    },
+    "reason": {
+      "type": "string"
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    }
+  },
+  "additionalProperties": false
+}

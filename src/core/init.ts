@@ -19,13 +19,9 @@ export function skeleton(packageRoot: string, projectName: string): Map<string, 
   const files = new Map<string, string>();
   files.set('workflow.yaml', t('templates/workflow.yaml').replace(/^project: .*$/m, `project: ${projectName}`));
   files.set('AGENTS.md', t('templates/AGENTS.md'));
+  // 通用规则；项目专属规则 rules/project.md 由规划阶段的 architect 起草、用户批准时写入
   for (const f of readdirSync(path.join(packageRoot, 'rules')).filter((x) => x.endsWith('.md')).sort()) files.set(`rules/${f}`, t(`rules/${f}`));
-  files.set('docs/PRD.md', t('templates/docs/PRD.md'));
-  files.set('docs/ARCHITECTURE.md', t('templates/docs/ARCHITECTURE.md'));
-  files.set('docs/DESIGN.md', t('templates/docs/DESIGN.md'));
-  files.set('docs/adr/0000-template.md', t('templates/docs/adr/0000-template.md'));
-  files.set('docs/features/_template.md', t('templates/docs/features/_template.md'));
-  files.set('docs/contracts/.gitkeep', '');
+  files.set('docs/interfaces/.gitkeep', '');
   files.set('docs/research/.gitkeep', '');
   return files;
 }

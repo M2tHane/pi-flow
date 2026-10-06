@@ -1,66 +1,61 @@
-// 给人看的状态视图：只呈现高层阶段（需求 → 规划 → 实施 → 验收 → 完成）、进度、正在做的事和需要用户处理的事。
-// 底层阶段（S0…S5、F0、F1）、任务 DAG 与状态机细节留给程序与 /flow status --detail。
+// 给人看的状态视图：只呈现高层阶段（需求 → 原型 → 规划 → 实施 → 完成）、进度、正在做的事和需要用户处理的事。
+// 底层阶段（S0…S5、F0、F1）、任务 DAG 与状态机细节留给程序与 /flow-status --detail。
 import type { FlowConfig } from './config.ts';
 import type { StateStore } from './state-store.ts';
 import { isFinished } from './state-store.ts';
-import { isLeadingTest } from './dag.ts';
 import { budgetState, formatBudget } from './cost-control.ts';
 import { activePauses, describePause } from './model-pause.ts';
-import { describeStageReview } from './stage-review.ts';
-import { PHASES, type FlowFile, type Phase, type TaskFile } from './schemas.ts';
+import { MAX_GATE_ROUNDS, describeAcceptance } from './acceptance.ts';
+import { type FlowFile, type Phase, type TaskFile } from './schemas.ts';
+import { DESIGN_STAGES, PROPOSAL_STAGES } from '../modes/plan.ts';
 
 export type PhaseOrDone = Phase | 'done';
 
 export const PHASE_LABEL: Record<PhaseOrDone, string> = {
-  discovery: '需求', planning: '规划', execution: '实施', acceptance: '验收', done: '完成',
+  requirements: '需求', prototype: '原型', planning: '规划', execution: '实施', done: '完成',
 };
 
 /** 未在 workflow.yaml 中写 phase 时的默认对应 */
 const DEFAULT_PHASE: Record<string, Phase> = {
-  S0: 'discovery', F0: 'discovery', S1: 'planning', F1: 'planning', S2: 'execution', S3: 'execution', S4: 'acceptance', S5: 'acceptance',
+  D0: 'requirements', D1: 'prototype', D2: 'planning', E: 'execution',
+  S0: 'requirements', F0: 'requirements', S1: 'planning', F1: 'planning', S2: 'execution', S3: 'execution', S4: 'execution', S5: 'execution',
 };
 
 const GOALS: Record<'build' | 'feature' | 'fix', Record<PhaseOrDone, string>> = {
   build: {
-    discovery: '整理需求，写出 PRD（含非目标与可验证的验收标准）',
-    planning: '架构、契约与任务拆解',
-    execution: '按任务拆解实现，每个任务跑全量测试后合入集成分支；阶段末统一审查一次、按模块修复',
-    acceptance: '集成与端到端测试，发布审批后合入主分支',
+    requirements: '主 agent 和你逐轮讨论需求，写成需求说明（含验收标准、术语与界面风格），你确认',
+    prototype: '按定下的风格生成可点击的原型，你点一遍确认',
+    planning: '划分模块、排好顺序、写模块之间的接口与项目规则，你确认',
+    execution: '一个模块交给一个模型实现（前后端与测试），合并时跑全量测试，再由独立的验收者对照验收标准确认',
     done: '已合入主分支',
   },
   feature: {
-    discovery: '写出功能说明（目标、非目标、验收标准）',
-    planning: '影响面分析与本功能的任务拆解',
-    execution: '实现本功能的任务，每个任务跑全量测试后合入集成分支；阶段末统一审查一次、按模块修复',
-    acceptance: '新功能验收与全量回归，审批后合入主分支',
+    requirements: '主 agent 和你逐轮讨论这次要加的功能，写成需求说明，你确认',
+    prototype: '按定下的风格生成新界面的原型，你确认',
+    planning: '确定涉及哪些模块、各改什么、验收标准，你确认',
+    execution: '按模块实现，合并时跑全量测试，再由独立的验收者确认',
     done: '已合入主分支',
   },
   fix: {
-    discovery: '定位问题与根因',
-    planning: '写出复现测试（必须先失败）',
-    execution: '修复问题',
-    acceptance: '审查、验证并合入主分支',
+    requirements: '记录问题',
+    prototype: '（不适用）',
+    planning: '（不适用）',
+    execution: '实现者定位并修复，合并后由验收者复现确认已修好',
     done: '已合入主分支',
   },
 };
 
-const INFLIGHT = new Set(['in_progress', 'review', 'verifying', 'queued_merge', 'merging']);
+const INFLIGHT = new Set(['in_progress', 'queued_merge', 'merging']);
 
 export function phaseOfStage(config: FlowConfig, mode: 'build' | 'feature', stage: string): Phase {
   const def = config.raw.modes[mode]?.stages.find((s) => s.id === stage);
   return def?.phase ?? DEFAULT_PHASE[stage] ?? 'execution';
 }
 
-/** fix 流程的高层阶段由任务推进情况决定 */
+/** fix 流程的高层阶段：记录问题 → 实施（定位、修复、验收）→ 完成 */
 function fixPhase(flow: FlowFile, tasks: TaskFile[]): PhaseOrDone {
   if (isFinished(flow) && flow.stage_status === 'done') return 'done';
-  const scout = tasks.find((t) => t.kind === 'analysis');
-  const repro = tasks.find((t) => t.kind === 'test');
-  const fix = tasks.find((t) => t.kind === 'impl');
-  if (!scout || scout.status !== 'done') return 'discovery';
-  if (!repro || repro.status !== 'done') return 'planning';
-  if (fix && ['verifying', 'queued_merge', 'merging', 'done'].includes(fix.status)) return 'acceptance';
-  return 'execution';
+  return tasks.length ? 'execution' : 'requirements';
 }
 
 export function currentPhase(config: FlowConfig, flow: FlowFile, tasks: TaskFile[]): PhaseOrDone {
@@ -71,7 +66,7 @@ export function currentPhase(config: FlowConfig, flow: FlowFile, tasks: TaskFile
 
 /** 本流程会经过的高层阶段（按配置的阶段顺序去重） */
 export function phasesOf(config: FlowConfig, flow: FlowFile): Phase[] {
-  if (flow.mode === 'fix') return [...PHASES];
+  if (flow.mode === 'fix') return ['requirements', 'execution'];
   const out: Phase[] = [];
   for (const s of flow.stages) {
     const p = phaseOfStage(config, flow.mode, s);
@@ -81,7 +76,7 @@ export function phasesOf(config: FlowConfig, flow: FlowFile): Phase[] {
 }
 
 const FAILURE_KIND: Record<string, string> = {
-  review_reject: '审查打回', verify_fail: '验证失败', precheck_fail: '审查前验证失败', merge_verify_fail: '合并后验证失败', run_failed: '运行中断', lease_expired: '租约过期',
+  merge_verify_fail: '合并时全量测试失败', run_failed: '运行中断', lease_expired: '租约过期',
 };
 
 /** 任务最近一次失败的类型（来自事件日志） */
@@ -90,12 +85,9 @@ export function lastFailureKind(store: StateStore, flowId: string, taskId: strin
   return ev ? FAILURE_KIND[ev.trigger!]! : null;
 }
 
-/** expectFail：测试必须先失败（fix 的复现测试、先行验收测试） */
-export function taskActivity(t: TaskFile, failureKind: string | null, expectFail: 'repro' | 'leading' | null = null): string {
-  const working = t.stage_review === 'review' ? '阶段审查中' : t.stage_review === 'confirm' ? '确认修复中' : t.kind === 'analysis' ? '定位中' : t.kind === 'review-fix' ? '修复中' : '实现中';
+export function taskActivity(t: TaskFile, failureKind: string | null): string {
+  const working = t.accept_of ? (t.accept_kind === 'confirm' ? '复查中' : '验收中') : t.final_review ? '代码审查中' : t.replan ? '起草计划修订' : t.kind === 'review-fix' ? '修复中' : t.kind === 'merge-fix' ? '解决合并冲突' : t.kind === 'doc' ? '撰写中' : '实现中';
   const base = t.status === 'in_progress' ? (t.lease ? working : '等待重新派发')
-    : t.status === 'review' ? '审查中'
-      : t.status === 'verifying' ? (expectFail === 'repro' ? '确认复现中' : expectFail === 'leading' ? '确认测试先失败' : '验证中')
         : t.status === 'queued_merge' || t.status === 'merging' ? '合入中'
           : t.status === 'ready' ? '待派发'
             : t.status === 'pending' ? '等待前置任务'
@@ -117,33 +109,43 @@ export function actionsNeeded(store: StateStore, config: FlowConfig): Action[] {
     if (flow.stage_status === 'awaiting_human') {
       if (flow.mode === 'fix') {
         const why = [...store.readEvents()].reverse().find((e) => e.flow === flow.id && e.type === 'gate_result')?.reason ?? '';
-        out.push({ key: `${flow.id}:escalation`, text: `修复 ${flow.id} 超出修复规模：${short(why.replace(/^建议改用 \/flow-build --feature：/, ''))}`, command: '仍按修复处理 /flow approve；改用功能流程 /flow abort 后 /flow-build --feature "<描述>"' });
+        out.push({ key: `${flow.id}:escalation`, text: `修复 ${flow.id} 超出修复规模：${short(why.replace(/^建议改用 \/flow-build --feature：/, ''))}`, command: '仍按修复处理 /flow-approve；改用功能流程 /flow abort 后 /flow-build --feature "<描述>"' });
       } else {
         const phase = PHASE_LABEL[currentPhase(config, flow, tasks)];
         const last = flow.stage === flow.stages.at(-1);
-        const extras = ['S1', 'F1'].includes(flow.stage) ? store.readProposal(flow.id)?.extras?.length ?? 0 : 0;
-        const assumed = ['S1', 'F1'].includes(flow.stage) ? store.readProposal(flow.id)?.assumptions?.length ?? 0 : 0;
-        out.push({ key: `${flow.id}:gate:${flow.stage}`, text: `${phase}阶段的产出等待你审批${last ? '（批准后合入主分支）' : ''}${extras ? `；其中 ${extras} 项设计超出了需求，需要你确认（/flow status --detail 查看）` : ''}${assumed ? `；${assumed} 处需求没说清，architect 按默认方案处理了，需要你确认（/flow status --detail 查看）` : ''}`, command: last ? '/flow approve' : '/flow approve 或 /flow reject "<意见>"' });
+        const extras = PROPOSAL_STAGES.has(flow.stage) ? store.readProposal(flow.id)?.extras?.length ?? 0 : 0;
+        const assumed = PROPOSAL_STAGES.has(flow.stage) ? store.readProposal(flow.id)?.assumptions?.length ?? 0 : 0;
+        out.push({ key: `${flow.id}:gate:${flow.stage}`, text: `${phase}阶段的产出等待你审批${last ? '（批准后合入主分支）' : ''}${extras ? `；其中 ${extras} 项设计超出了需求，需要你确认（/flow-status --detail 查看）` : ''}${assumed ? `；${assumed} 处需求没说清，architect 按默认方案处理了，需要你确认（/flow-status --detail 查看）` : ''}`, command: last ? '/flow-approve' : '/flow-approve 或 /flow-reject "<意见>"' });
       }
     }
     if (flow.mode !== 'fix' && flow.stage_status === 'active') {
       const gate = [...store.readEvents()].reverse().find((e) => e.flow === flow.id && e.type === 'gate_result');
-      const sr = store.readStageReview(flow.id, flow.stage);
-      if (sr?.status === 'needs_human') {
-        out.push({ key: `${flow.id}:stage-review:${flow.stage}:${sr.version}`, text: `实施阶段的${short(sr.reason ?? '全量测试仍失败', 200)}（失败日志：/flow status --detail）`,
-          command: '用 /flow replan "<怎么修>" 交给 architect 安排修复任务；处理后执行 /flow gate 重跑' });
-      } else if (gate?.to === 'active' && gate.data?.['stage'] === flow.stage) {
-        out.push({ key: `${flow.id}:gatefail:${gate.seq}`, text: `阶段检查未通过：${short(gate.reason ?? '')}`, command: '修复后执行 /flow gate' });
+      const rounds = (flow.gate_rounds ?? []).filter((r) => r.stage === flow.stage).length;
+      // 模块验收两轮修复后仍不通过（第五轮）
+      for (const a of store.listAcceptances(flow.id).filter((x) => x.status === 'needs_human')) {
+        const t = tasks.find((x) => x.id === a.task);
+        out.push({ key: `${flow.id}:accept:${a.task}:${a.version}`, text: `模块 ${a.task}「${short(t?.title ?? '', 40)}」验收${short(a.reason ?? '未通过', 200)}，依赖它的模块在等待`,
+          command: `/flow accept ${a.task} 人工放行；或 /flow-add "<怎么改>" --task <修复任务>、/flow replan "<怎么改>" 交给 architect` });
       }
+      if (flow.stage === 'D0' && !flow.requirements?.submitted) {
+        out.push({ key: `${flow.id}:discuss:${flow.requirements?.rounds ?? 0}`, text: '需求讨论中：回答主 agent 的问题，确认共识后它会提交需求说明给你审批', command: '直接在对话里回答' });
+      } else if (gate?.to === 'active' && gate.data?.['stage'] === flow.stage && (DESIGN_STAGES.has(flow.stage) || rounds >= MAX_GATE_ROUNDS || !tasks.some((t) => t.stage === flow.stage && !['done', 'cancelled'].includes(t.status)))) {
+        out.push({ key: `${flow.id}:gatefail:${gate.seq}`, text: `阶段检查未通过${rounds >= MAX_GATE_ROUNDS ? `（已自动修复 ${rounds} 轮）` : ''}：${short(gate.reason ?? '')}`, command: '用 /flow replan "<怎么修>" 交给 architect，或处理后执行 /flow gate 重跑' });
+      }
+    }
+    const review = flow.mode !== 'fix' ? store.readFinalReview(flow.id) : null;
+    if (review?.status === 'awaiting_user') {
+      const left = review.findings.filter((f) => !review.fixed.includes(f.id));
+      out.push({ key: `${flow.id}:review:${review.version}`, text: `最终代码审查还有 ${left.length} 条没修（${left.map((f) => f.id).join('、')}），等你挑选（/flow review 查看）`, command: '/flow review fix <R-编号>... 交给模块修复；/flow review done 都不修' });
     }
     const budget = budgetState(store, config, flow);
     if (budget?.warn) {
       out.push({ key: `${flow.id}:budget:${budget.exceeded ? 'over' : 'warn'}`, text: formatBudget(budget),
-        command: budget.exceeded ? '/flow budget tokens <数值> 或 /flow budget cost <金额> 提高预算后继续' : '/flow status --cost 查看用量；需要时 /flow budget 提高预算' });
+        command: budget.exceeded ? '/flow budget tokens <数值> 或 /flow budget cost <金额> 提高预算后继续' : '/flow-status --cost 查看用量；需要时 /flow budget 提高预算' });
     }
     const rev = store.readRevision(flow.id);
     if (rev?.status === 'proposed') {
-      out.push({ key: `${flow.id}:revision:${rev.version}`, text: `计划修订等待你批准：${short(rev.summary, 200)}`, command: '/flow approve 批准，或 /flow reject "<意见>" 打回重做（详情：/flow status --detail）' });
+      out.push({ key: `${flow.id}:revision:${rev.version}`, text: `计划修订等待你批准：${short(rev.summary, 200)}`, command: '/flow-approve 批准，或 /flow-reject "<意见>" 打回重做（详情：/flow-status --detail）' });
     }
     if (flow.sync?.status === 'conflict') {
       out.push({ key: `${flow.id}:sync:${flow.sync.main_sha}`, text: `把 ${config.raw.main_branch} 同步进集成分支时冲突，已暂停派发新任务：${short(flow.sync.reason ?? '')}`,
@@ -160,7 +162,7 @@ export function actionsNeeded(store: StateStore, config: FlowConfig): Action[] {
   }
   const cand = store.readKnowledge().entries.filter((e) => e.status === 'candidate');
   if (cand.length) {
-    out.push({ key: `knowledge:candidates:${cand.at(-1)!.id}`, text: `${cand.length} 条知识候选待确认（来自审查打回、合并后验证失败）：${cand.slice(-3).map((e) => e.id).join('、')}${cand.length > 3 ? ' 等' : ''}`,
+    out.push({ key: `knowledge:candidates:${cand.at(-1)!.id}`, text: `${cand.length} 条知识候选待确认（来自合并后验证失败）：${cand.slice(-3).map((e) => e.id).join('、')}${cand.length > 3 ? ' 等' : ''}`,
       command: '/flow knowledge 查看；确认 /flow knowledge accept <K-编号>，不要 /flow knowledge retire <K-编号>' });
   }
   return out;
@@ -179,7 +181,13 @@ export function visibleFlows(store: StateStore): FlowFile[] {
 function phaseBar(config: FlowConfig, flow: FlowFile, cur: PhaseOrDone): string {
   const all: PhaseOrDone[] = [...phasesOf(config, flow), 'done'];
   const idx = all.indexOf(cur);
-  return all.map((p, i) => (i < idx ? `${PHASE_LABEL[p]} ✓` : i === idx ? `[${PHASE_LABEL[p]}]` : PHASE_LABEL[p])).join(' → ');
+  // 跳过的阶段（例如无界面时的原型）对应的高层阶段标为"跳过"
+  const mode = flow.mode;
+  const phaseOf = (s: string) => (mode === 'fix' ? null : phaseOfStage(config, mode, s));
+  const skipped = new Set((flow.skip_stages ?? []).map(phaseOf));
+  const kept = new Set(flow.stages.filter((s) => !flow.skip_stages?.includes(s)).map(phaseOf));
+  const label = (p: PhaseOrDone) => (p !== 'done' && skipped.has(p) && !kept.has(p) ? `${PHASE_LABEL[p]}（跳过）` : null);
+  return all.map((p, i) => label(p) ?? (i < idx ? `${PHASE_LABEL[p]} ✓` : i === idx ? `[${PHASE_LABEL[p]}]` : PHASE_LABEL[p])).join(' → ');
 }
 
 export function renderFlow(store: StateStore, config: FlowConfig, flow: FlowFile): string {
@@ -190,21 +198,29 @@ export function renderFlow(store: StateStore, config: FlowConfig, flow: FlowFile
   const inPhase = flow.mode === 'fix' || cur === 'done' ? tasks
     : tasks.filter((t) => phaseOfStage(config, flow.mode as 'build' | 'feature', t.stage) === cur);
   const counted = inPhase.filter((t) => t.status !== 'cancelled');
-  lines.push(counted.length ? `进度：${counted.filter((t) => t.status === 'done').length} / ${counted.length} 个任务完成` : '进度：本阶段的任务尚未生成');
+  const discussing = flow.stage === 'D0' && flow.mode !== 'fix';
+  lines.push(counted.length ? `进度：${counted.filter((t) => t.status === 'done').length} / ${counted.length} 个任务完成`
+    : discussing ? (flow.requirements?.submitted ? '进度：需求说明已提交' : `进度：和主 agent 讨论中${flow.requirements?.rounds ? `（第 ${flow.requirements.rounds + 1} 版）` : ''}`) : '进度：本阶段的任务尚未生成');
   const active = tasks.filter((t) => INFLIGHT.has(t.status));
   lines.push('');
   lines.push(active.length
-    ? `正在进行：\n${active.map((t) => `- ${t.id} ${short(t.title, 40)}（${t.lease?.role ?? t.role}）${taskActivity(t, t.attempts ? lastFailureKind(store, flow.id, t.id) : null,
-      t.kind !== 'test' ? null : flow.mode === 'fix' ? 'repro' : isLeadingTest(t, tasks) ? 'leading' : null)}`).join('\n')}`
+    ? `正在进行：\n${active.map((t) => `- ${t.id} ${short(t.title, 40)}（${t.lease?.role ?? t.role}）${taskActivity(t, t.attempts ? lastFailureKind(store, flow.id, t.id) : null)}`).join('\n')}`
     : `正在进行：${flow.stage_status === 'awaiting_human' ? '无（等待你审批）' : flow.stage_status === 'awaiting_gate' ? '阶段检查中' : '无'}`);
-  const sr = flow.mode !== 'fix' ? store.readStageReview(flow.id, flow.stage) : null;
-  if (sr && sr.status !== 'done') lines.push(`阶段审查：${describeStageReview(sr)}`);
+  // 模块与验收进度（第五轮）
+  const mods = tasks.filter((t) => t.needs_acceptance && t.status !== 'cancelled');
+  if (mods.length) {
+    lines.push(`模块：\n${mods.map((t) => {
+      const a = store.readAcceptance(flow.id, t.id);
+      const state = a ? describeAcceptance(a) : t.status === 'done' ? '等待验收' : taskActivity(t, null);
+      return `- ${t.id} ${short(t.title, 40)}：${state}`;
+    }).join('\n')}`);
+  }
   const blocked = tasks.filter((t) => t.status === 'blocked');
   lines.push(blocked.length ? `阻塞：${blocked.map((t) => t.id).join('、')}（见上方"需要你处理"）` : '阻塞：无');
   return lines.join('\n');
 }
 
-/** /flow status 的默认视图 */
+/** /flow-status 的默认视图 */
 export function renderStatus(store: StateStore, config: FlowConfig): string {
   const flows = visibleFlows(store);
   if (!flows.length) return '当前没有进行中的流程。开始：/flow-build "<项目描述>"、/flow-build --feature "<功能描述>" 或 /flow-fix "<问题描述>"。';
@@ -212,7 +228,7 @@ export function renderStatus(store: StateStore, config: FlowConfig): string {
   const head = actions.length
     ? `需要你处理：\n${actions.map((a) => `- ${a.text}\n  → ${a.command}`).join('\n')}`
     : '需要你处理：无';
-  return [head, ...flows.map((f) => renderFlow(store, config, f)), '（完整任务列表：/flow status --detail；成本：/flow status --cost）'].join('\n\n');
+  return [head, ...flows.map((f) => renderFlow(store, config, f)), '（完整任务列表：/flow-status --detail；成本：/flow-status --cost）'].join('\n\n');
 }
 
 // —— 主动通知：只在进入新阶段、出现需要用户处理的事、任务首次失败重试时提醒 ——
@@ -242,7 +258,7 @@ export function notices(prev: StatusSnapshot, next: StatusSnapshot, failureKind?
     if (before && before !== phase) out.push(phase === 'done' ? `pi-flow：${flow} 已完成。` : `pi-flow：${flow} 进入${PHASE_LABEL[phase]}阶段。`);
   }
   for (const flow of Object.keys(prev.phases)) {
-    if (!(flow in next.phases)) out.push(`pi-flow：${flow} 已结束${flow.startsWith('X-') ? '，修复已合入主分支或已中止，详见 /flow status --cost 中的修复日志' : ''}。`);
+    if (!(flow in next.phases)) out.push(`pi-flow：${flow} 已结束${flow.startsWith('X-') ? '，修复已合入主分支或已中止，详见 /flow-status --cost 中的修复日志' : ''}。`);
   }
   for (const [key, text] of Object.entries(next.actions)) {
     if (!(key in prev.actions)) out.push(`pi-flow 需要你处理：${text}`);

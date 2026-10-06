@@ -14,14 +14,11 @@ export const PROJECT_YAML = TEST_YAML
   typecheck: "true"
   lint:      "true"
   test:      "test -f src/server/t-001/a.ts && ! grep -q FAIL src/server/t-001/a.ts"
-  test_affected: "true {files}"
   e2e:       "true"
 limits:`);
 
-/** 关闭逐任务审查（模板默认）：提交后直接进入合并队列，合并时跑全量 typecheck、lint、test */
-export const DIRECT_YAML = PROJECT_YAML.replace(/^  per_task: true$/m, '  per_task: false');
-/** 模板默认的新流程：不逐任务审查，阶段末审查一次 */
-export const STAGE_REVIEW_YAML = DIRECT_YAML.replace(/^  stage_end: false$/m, '  stage_end: true');
+/** 第五轮起提交后都直接合并（合并时跑全量测试）：保留这个名字给旧测试 */
+export const DIRECT_YAML = PROJECT_YAML;
 
 export interface Project {
   dir: string;
@@ -32,7 +29,7 @@ export interface Project {
   cleanup: () => void;
 }
 
-export async function setupProject(opts: { yaml?: string; tasks?: TaskInput[]; now?: () => Date; files?: Record<string, string> } = {}): Promise<Project> {
+export async function setupProject(opts: { yaml?: string; tasks?: TaskInput[]; now?: () => Date; files?: Record<string, string>; stages?: string[] } = {}): Promise<Project> {
   const repo = tmpRepo();
   const yaml = opts.yaml ?? PROJECT_YAML;
   writeFileSync(path.join(repo.dir, 'workflow.yaml'), yaml);
@@ -49,7 +46,7 @@ export async function setupProject(opts: { yaml?: string; tasks?: TaskInput[]; n
   const config = parseConfig(yaml);
   const store = await StateStore.init(repo.dir, { ...(opts.now ? { now: opts.now } : {}), limits: config.limits });
   const base = repo.git('rev-parse', 'HEAD');
-  const flow = await store.createFlow({ mode: 'build', title: '演示', stages: ['S3'], base_sha: base });
+  const flow = await store.createFlow({ mode: 'build', title: '演示', stages: opts.stages ?? ['S3'], base_sha: base });
   ensureIntegrationBranch(repo.dir, flow.integration_branch, base);
   if (opts.tasks?.length) await store.addTasks(flow.id, opts.tasks, 'architect');
   const cleanup = () => { rmSync(worktreesRoot(repo.dir), { recursive: true, force: true }); repo.cleanup(); };

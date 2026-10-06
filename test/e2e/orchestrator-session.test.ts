@@ -20,11 +20,13 @@ before(async () => { llm = await startFakeLlm({ scriptsDir: SCRIPTS, logFile: LO
 after(() => { rmSync(LOG, { force: true }); return llm?.close(); });
 
 test('调度模式：orchestrator 不能自己写代码，只能 dispatch/wait；任务经子进程完成', { skip: !piAvailable && 'pi 不可用', timeout: 300_000 }, async () => {
-  const p = await setupProject({ tasks: [mkTask('T-001', { verify: ['test'] })] });
+  // 旧角色只在测试夹具里：放进项目的 .pi/agents 覆盖目录
+  const p = await setupProject({ tasks: [mkTask('T-001', { verify: ['test'] })],
+    files: { '.pi/agents/backend-engineer.md': readFileSync(path.join(ROOT, 'test/fixtures/agents/backend-engineer.md'), 'utf8') } });
   const agentDir = mkdtempSync(path.join(tmpdir(), 'pi-flow-agentdir-'));
   try {
     writeFileSync(path.join(agentDir, 'pi-flow.json'), JSON.stringify({ version: 1, roles: {
-      orchestrator: { model: 'fakellm/orch' }, 'backend-engineer': { model: 'fakellm/impl-happy' }, reviewer: { model: 'fakellm/review-pass' } } }));
+      orchestrator: { model: 'fakellm/orch' }, 'backend-engineer': { model: 'fakellm/impl-happy' } } }));
     const provider = path.join(ROOT, 'test/fixtures/fake-llm/provider.ts');
     // 必须异步：假 LLM 在本进程内，spawnSync 会阻塞事件循环导致死锁
     const r = await new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve) => {
@@ -62,9 +64,9 @@ test('调度模式：orchestrator 不能自己写代码，只能 dispatch/wait�
     const reqs = all.filter((x) => x.model === 'orch');
     assert.match(JSON.stringify(reqs[1].last), /Tool write not found/);
     // 只启用了 orchestrator 的工具
-    assert.deepEqual([...reqs[0].tools].sort(), ['flow_dispatch', 'flow_replan', 'flow_status', 'flow_wait', 'read']);
+    assert.deepEqual([...reqs[0].tools].sort(), ['flow_dispatch', 'flow_replan', 'flow_requirements', 'flow_status', 'flow_wait', 'history', 'notes', 'read']);
     const sys = JSON.stringify(reqs[0].system);
-    assert.match(sys, /你是 pi-flow 的调度者/);
+    assert.match(sys, /你是 pi-flow 的主会话/);
     assert.match(sys, /唯一允许的下一步.*flow_dispatch\(T-001\)/);
     // 主会话用量记入 runs（role=orchestrator），成本统计可见
     const orch = store.listRuns().filter((x) => x.role === 'orchestrator');
@@ -78,18 +80,17 @@ test('调度模式：orchestrator 不能自己写代码，只能 dispatch/wait�
   }
 });
 
-test('真实 pi：空仓库执行 /flow-build 先访谈需求，确认后完成 S0 任务，停在等待人工批准', { skip: !piAvailable && 'pi 不可用', timeout: 300_000 }, async () => {
+test('真实 pi：空仓库执行 /flow-build，主 agent 逐轮问用户、自己查代码，用户确认后提交需求说明，停在等待你审阅', { skip: !piAvailable && 'pi 不可用', timeout: 300_000 }, async () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'pi-flow-build-'));
   const agentDir = mkdtempSync(path.join(tmpdir(), 'pi-flow-agentdir-'));
   try {
     execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir });
-    writeFileSync(path.join(agentDir, 'pi-flow.json'), JSON.stringify({ version: 1, roles: {
-      orchestrator: { model: 'fakellm/interviewer' }, architect: { model: 'fakellm/arch-prd' }, reviewer: { model: 'fakellm/review-pass' } } }));
+    writeFileSync(path.join(agentDir, 'pi-flow.json'), JSON.stringify({ version: 1, roles: { orchestrator: { model: 'fakellm/grill' } } }));
     const provider = path.join(ROOT, 'test/fixtures/fake-llm/provider.ts');
     const out = await new Promise<{ status: number | null; text: string }>((resolve) => {
       const c = spawn('pi', ['-p', '--no-session', '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-context-files',
         '-e', provider, '-e', path.join(ROOT, 'src/pi-adapter/extension.ts'), '--model', 'fakellm/plain',
-        '/flow-build "做一个待办应用"', '单用户网页端，其余按你的建议', '/flow-build --confirm'], {
+        '/flow-build "做一个待办应用"', '帮我做个待办', '只有我自己用，就按你推荐的写'], {
         cwd: dir, stdio: ['ignore', 'pipe', 'pipe'],
         env: { ...process.env, PI_OFFLINE: '1', PI_SKIP_VERSION_CHECK: '1', PI_CODING_AGENT_DIR: agentDir, FAKE_LLM_URL: llm.url, FAKE_LLM_SCRIPTS: SCRIPTS, PI_FLOW_EXTRA_EXTENSIONS: provider },
       });
@@ -103,18 +104,20 @@ test('真实 pi：空仓库执行 /flow-build 先访谈需求，确认后完成 
     assert.match(out.text, /已创建流程 B-001（build）/);
     const store = new StateStore(dir);
     const flow = store.readFlow('B-001');
-    assert.equal(flow.stage, 'S0');
+    assert.equal(flow.stage, 'D0');
     assert.equal(flow.stage_status, 'awaiting_human', out.text);
-    assert.equal(store.readTask('B-001', 'T-001').status, 'done');
-    assert.match(execFileSync('git', ['show', 'flow/B-001/integration:docs/PRD.md'], { cwd: dir, encoding: 'utf8' }), /待办应用 PRD/);
-    assert.match(out.text, /\/flow approve/);
-    assert.match(out.text, /开始需求访谈（新项目）/);
+    assert.deepEqual(flow.skip_stages, ['D1'], '没有界面，跳过原型');
+    assert.deepEqual(store.listTasks('B-001'), [], '需求讨论不派子任务');
+    assert.match(execFileSync('git', ['show', 'flow/B-001/integration:docs/requirements.md'], { cwd: dir, encoding: 'utf8' }), /待办应用需求说明[\s\S]*## 术语/);
+    assert.match(out.text, /\/flow-approve/);
     const all = readFileSync(LOG, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
-    const iv = all.filter((x) => x.model === 'interviewer');
-    assert.deepEqual([...iv[0].tools].sort(), ['flow_brief', 'read'], '访谈只能读文档与记录需求');
-    assert.match(JSON.stringify(iv[0].system), /需求访谈者[\s\S]*待补充/);
-    const arch = all.find((x) => x.model === 'arch-prd' && x.turn === 0);
-    assert.match(JSON.stringify(arch.last), /用户确认的需求摘要[\s\S]*不做多人协作/);
+    const reqs = all.filter((x) => x.model === 'grill');
+    // 讨论中：注入逐轮追问与写需求说明的技能，唯一允许的下一步是讨论并 flow_requirements；能读代码（grep），不能写
+    const sys = JSON.stringify(reqs[0].system);
+    assert.match(sys, /逐轮追问[\s\S]*写需求说明/);
+    assert.match(sys, /唯一允许的下一步.*需求讨论.*flow_requirements/);
+    assert.ok(reqs[0].tools.includes('grep') && reqs[0].tools.includes('flow_requirements') && !reqs[0].tools.includes('write'), JSON.stringify(reqs[0].tools));
+    assert.ok(!store.readEvents().some((e) => e.type === 'violation'), '读代码不算越权');
   } finally {
     rmSync(dir, { recursive: true, force: true });
     rmSync(`${dir}.worktrees`, { recursive: true, force: true });

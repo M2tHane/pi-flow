@@ -28,8 +28,9 @@ export function parseAgentFile(text: string, file: string): AgentDef {
   };
 }
 
+/** packageAgentsDir 可以是多个目录（按 path.delimiter 分隔，前面的优先），测试用来叠加夹具角色 */
 export function loadAgent(role: string, projectRoot: string, packageAgentsDir: string): AgentDef {
-  for (const file of [path.join(projectRoot, '.pi', 'agents', `${role}.md`), path.join(packageAgentsDir, `${role}.md`)]) {
+  for (const file of [path.join(projectRoot, '.pi', 'agents', `${role}.md`), ...packageAgentsDir.split(path.delimiter).map((d) => path.join(d, `${role}.md`))]) {
     if (existsSync(file)) return parseAgentFile(readFileSync(file, 'utf8'), file);
   }
   throw new Error(`找不到角色 ${role} 的定义（.pi/agents/${role}.md 或包内 agents/${role}.md）`);

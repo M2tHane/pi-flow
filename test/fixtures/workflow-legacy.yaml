@@ -1,0 +1,83 @@
+# 运行时测试用的固定配置（第四轮模板的副本，去掉了审查；按层拆分的角色只用于测试运行时机制）
+version: 1
+project: my-project
+main_branch: main
+commands:                       # verify 与闸门只能引用这里定义的命令名
+  install:   "pnpm install"
+  typecheck: "pnpm typecheck"
+  lint:      "pnpm lint"
+  test:      "pnpm test"
+  e2e:       "pnpm e2e"
+limits:
+  max_parallel: 3               # 同时进行的实施任务数（审查另计，见 review.max_parallel）；本地模型服务要能承受这么多并发
+  max_attempts: 3
+  lease_minutes: 45
+  max_violations_per_run: 5     # 每次运行被拦下的操作达到此数即终止（弱模型适当调大）
+  max_task_files: 12
+  fix_max_files: 5              # 超过则建议升级为 feature
+  session_retention_days: 14    # 子进程会话留档保留天数，/flow doctor --fix 清理
+  bash_timeout_s: 300           # 子进程每条 bash 命令最多运行的秒数（挂起的测试会被结束，模型能看到超时）
+  auto_dispatch: true           # ready 任务由程序自动派发，主 agent 只负责沟通，不用每个任务唤醒一次
+  continue_session: true        # 返工时接着上一次的对话继续（同一角色、同一模型），不从头读任务与代码
+  merge_batch: 3                # 批量合并：合并队列里最多 3 个任务一起 rebase、只跑一次全量测试，失败再逐个合并；1 关闭
+models:                         # 档位到具体模型的映射，由用户填写
+  strong: "<provider/model>"
+  medium: "<provider/model>"
+  cheap:  "<provider/model>"
+testing:
+  adjust_tests: true            # 实施任务可以修改别的角色已有的测试来适配按契约变化的接口（只改不增删，审查时核对）；false 时只能改 writes 内的文件
+escalation:                     # 同一任务失败 after_failures 次后，下一次实施换成升级模型
+  critical_fanout: 3            # 被至少 3 个任务硬依赖的实施任务（底座）第一次就用升级模型；0 关闭
+  after_failures: 2             # 升级模型：/flow-config escalate > roles.<角色>.escalate_model > 上一档（cheap→medium→strong）
+# budget:                       # 每个流程的预算（可选；也可以用 /flow budget 为单个流程设置）
+#   tokens: 5000000             # 输入 + 输出，不含缓存
+#   cost: 20                    # 金额（Pi 报告的 cost）
+#   warn_ratio: 0.8             # 用到这个比例时提醒；超出后暂停派发新任务
+modes:
+  build:
+    stages:
+      - { id: S0, name: requirements,   phase: requirements,  gate: { human: true } }
+      - { id: S1, name: architecture,   phase: planning,   gate: { human: true, auto: [typecheck] } }
+      - { id: S2, name: infrastructure, phase: execution,  gate: { auto: [install, typecheck, lint] } }
+      - { id: S3, name: slices,         phase: execution,  gate: { all_tasks_done: true, auto: [test] } }
+      - { id: S4, name: integration,    phase: execution, gate: { auto: [e2e] } }
+      - { id: S5, name: release,        phase: execution, gate: { human: true } }
+  feature:
+    stages:
+      - { id: F0, name: feature-spec,   phase: requirements,  gate: { human: true } }
+      - { id: F1, name: impact-and-dag, phase: planning,   gate: { human: true, auto: [typecheck] } }
+      - { id: S3, name: slices,         phase: execution,  gate: { all_tasks_done: true, auto: [test] } }
+      - { id: S4, name: regression,     phase: execution, gate: { auto: [test, e2e], human: true } }
+scopes:
+  backend:    { rules: [rules/backend.md],      writes: ["src/server/**", "tests/server/**"] }
+  database:   { rules: [rules/database.md],     writes: ["migrations/**", "src/db/**", "tests/db/**"] }
+  frontend:   { rules: [rules/frontend.md],     writes: ["src/web/**", "tests/web/**"] }
+  ui:         { rules: [rules/ui.md],           writes: ["design/**", "src/web/components/base/**"] }
+  shared:     { rules: [rules/shared-types.md], writes: ["src/shared/**"] }
+  acceptance: { rules: [rules/testing.md],      writes: ["tests/acceptance/**", "tests/e2e/**"] }
+  docs:       { rules: [rules/docs.md],         writes: ["docs/**"] }
+  research:   { writes: ["docs/research/**"] }
+  code:       { writes: ["**"] }
+  checking:   { writes: [] }
+  infra:      { writes: ["package.json", "pnpm-lock.yaml", "tsconfig*.json", ".github/**"] }
+tool_groups:                    # 已核实：pi-serena 0.9.20、pi-codegraph 0.1.10、pi-web-access 0.35.0
+  serena_read: [serena_get_symbols_overview, serena_find_symbol, serena_find_referencing_symbols, serena_search_for_pattern,
+                serena_find_declaration, serena_find_implementations, serena_get_diagnostics_for_file]
+  # 一律按写操作对待。serena_rename_symbol 会改动所有引用处的文件，guard 无法限定范围，故不纳入
+  serena_edit: [serena_replace_symbol_body, serena_insert_before_symbol, serena_insert_after_symbol,
+                serena_safe_delete_symbol, serena_replace_content]
+  codegraph:   [codegraph_search, codegraph_callers, codegraph_callees, codegraph_impact, codegraph_explore,
+                codegraph_node, codegraph_status, codegraph_files]
+  web:         [web_search, fetch_content, get_search_content, source_check]
+roles:
+  orchestrator:      { model: medium, tools: [read, flow_status, flow_dispatch, flow_wait], read_paths: ["docs/**", ".flow/**"], writes: [] }
+  architect:         { model: strong, scopes: [docs, shared], tools: [codemode, read, write, edit, "@serena_read", "@codegraph", flow_propose_modules, flow_note, flow_submit] }
+  researcher:        { model: cheap,  scopes: [research], tools: [read, write, "@web", flow_note, flow_submit] }
+  db-engineer:       { model: medium, scopes: [database], tools: [read, write, edit, bash, "@serena_read", "@serena_edit", flow_claim, flow_note, flow_submit] }
+  backend-engineer:  { model: medium, scopes: [backend],  tools: [read, write, edit, bash, "@serena_read", "@serena_edit", flow_claim, flow_note, flow_submit] }
+  frontend-engineer: { model: medium, scopes: [frontend], tools: [read, write, edit, bash, "@serena_read", "@serena_edit", flow_claim, flow_note, flow_submit] }
+  ui-designer:       { model: medium, scopes: [ui],       tools: [read, write, edit, flow_claim, flow_note, flow_submit] }
+  infra-engineer:    { model: medium, scopes: [infra],    tools: [read, write, edit, bash, flow_claim, flow_note, flow_submit] }
+  test-engineer:     { model: medium, scopes: [acceptance], tools: [read, write, edit, bash, "@serena_read", "@codegraph", flow_claim, flow_note, flow_submit] }
+  implementer:       { model: strong, scopes: [code], tools: [read, write, edit, bash, flow_sync, flow_claim, flow_note, flow_submit] }
+  acceptor:          { model: strong, scopes: [checking], tools: [read, bash, flow_accept, flow_accept_confirm] }

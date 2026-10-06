@@ -4,27 +4,27 @@ import { parseConfig, ConfigError } from '../../src/core/config.ts';
 import { phaseOfStage, renderStatus, taskActivity, notices, snapshotOf, actionsNeeded, statusLine } from '../../src/core/status-view.ts';
 import { hashToken } from '../../src/core/state-machine.ts';
 import { setupProject } from '../helpers/project.ts';
-import { TEST_YAML } from '../helpers/config.ts';
+import { TEST_YAML, REAL_TEMPLATE_YAML } from '../helpers/config.ts';
 import { mkTask, hard } from '../helpers/tasks.ts';
 
 test('phase：模板显式配置；缺省按阶段 id 推断；顺序倒退报错', () => {
-  const c = parseConfig(TEST_YAML);
-  assert.equal(phaseOfStage(c, 'build', 'S0'), 'discovery');
-  assert.equal(phaseOfStage(c, 'build', 'S2'), 'execution');
-  assert.equal(phaseOfStage(c, 'build', 'S5'), 'acceptance');
-  assert.equal(phaseOfStage(c, 'feature', 'F1'), 'planning');
-  const noPhase = parseConfig(TEST_YAML.replace(/phase: \w+,\s*/g, ''));
-  assert.equal(phaseOfStage(noPhase, 'build', 'S3'), 'execution');
-  assert.equal(phaseOfStage(noPhase, 'feature', 'S4'), 'acceptance');
-  assert.throws(() => parseConfig(TEST_YAML.replace('id: S2, name: infrastructure, phase: execution', 'id: S2, name: infrastructure, phase: discovery')),
-    (e: unknown) => e instanceof ConfigError && /phase discovery 不能排在 planning 之后/.test(e.message));
+  const c = parseConfig(REAL_TEMPLATE_YAML);
+  assert.equal(phaseOfStage(c, 'build', 'D0'), 'requirements');
+  assert.equal(phaseOfStage(c, 'build', 'D1'), 'prototype');
+  assert.equal(phaseOfStage(c, 'build', 'D2'), 'planning');
+  assert.equal(phaseOfStage(c, 'feature', 'E'), 'execution');
+  const noPhase = parseConfig(REAL_TEMPLATE_YAML.replace(/phase: \w+,\s*/g, ''));
+  assert.equal(phaseOfStage(noPhase, 'build', 'D1'), 'prototype');
+  assert.equal(phaseOfStage(noPhase, 'build', 'E'), 'execution');
+  assert.throws(() => parseConfig(REAL_TEMPLATE_YAML.replace('id: D2, name: planning,     phase: planning', 'id: D2, name: planning,     phase: requirements')),
+    (e: unknown) => e instanceof ConfigError && /phase requirements 不能排在 prototype 之后/.test(e.message));
 });
 
 test('任务活动用人话表示，重试带上次失败原因', () => {
   const lease = { run_id: 'r', role: 'backend-engineer', token_hash: 'a'.repeat(64), acquired_at: 'x', expires_at: 'y' };
   assert.equal(taskActivity(mkTask('T-1', { status: 'in_progress', lease }), null), '实现中');
-  assert.equal(taskActivity(mkTask('T-1', { status: 'in_progress', attempts: 1 }), '审查打回'), '等待重新派发（第 2 次，上次：审查打回）');
-  assert.equal(taskActivity(mkTask('T-1', { status: 'review' }), null), '审查中');
+  assert.equal(taskActivity(mkTask('T-1', { status: 'in_progress', attempts: 1 }), '合并时全量测试失败'), '等待重新派发（第 2 次，上次：合并时全量测试失败）');
+  assert.equal(taskActivity(mkTask('T-1', { status: 'in_progress', lease, kind: 'analysis', accept_of: 'T-2', accept_kind: 'check' }), null), '验收中');
   assert.equal(taskActivity(mkTask('T-1', { status: 'queued_merge' }), null), '合入中');
   assert.equal(taskActivity(mkTask('T-1', { status: 'merging' }), null), '合入中');
 });
@@ -35,7 +35,7 @@ test('/flow status 精简视图：阶段条、进度、正在进行、需要你�
     let out = renderStatus(p.store, p.config);
     assert.match(out, /^需要你处理：无/);
     assert.match(out, /\[实施\] → 完成/);
-    assert.match(out, /实施阶段：按任务拆解实现/);
+    assert.match(out, /实施阶段：一个模块交给一个模型实现/);
     assert.match(out, /进度：0 \/ 3 个任务完成/);
     assert.doesNotMatch(out, /pending|in_progress|queued_merge|S3/, '不暴露内部状态名');
 
@@ -53,7 +53,7 @@ test('/flow status 精简视图：阶段条、进度、正在进行、需要你�
 
     await p.store.transitionStage(p.flowId, { to: 'awaiting_gate', trigger: 'submit_gate', actor: 'engine' });
     await p.store.transitionStage(p.flowId, { to: 'awaiting_human', trigger: 'gate_passed', actor: 'engine', needs_human: true });
-    assert.ok(actionsNeeded(p.store, p.config).some((a) => /等待你审批（批准后合入主分支）/.test(a.text) && a.command === '/flow approve'));
+    assert.ok(actionsNeeded(p.store, p.config).some((a) => /等待你审批（批准后合入主分支）/.test(a.text) && a.command === '/flow-approve'));
   } finally { p.cleanup(); }
 });
 

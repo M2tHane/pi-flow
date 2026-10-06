@@ -17,7 +17,7 @@ export interface CostRow {
   turnRuns: number;
 }
 
-export interface Rework { flow: string; task: string; title: string; review_reject: number; verify_fail: number; merge_fail: number; run_failed: number; total: number }
+export interface Rework { flow: string; task: string; title: string; merge_fail: number; run_failed: number; total: number }
 
 export interface CostReport {
   total: CostRow;
@@ -67,11 +67,10 @@ export function costReport(store: StateStore, opts: { flow?: string } = {}): Cos
   const rework = new Map<string, Rework>();
   for (const e of store.readEvents()) {
     if (e.type !== 'transition' || !e.task || !e.flow || (opts.flow && e.flow !== opts.flow)) continue;
-    const field = e.trigger === 'review_reject' ? 'review_reject' : e.trigger === 'verify_fail' || e.trigger === 'precheck_fail' ? 'verify_fail'
-      : e.trigger === 'merge_verify_fail' ? 'merge_fail' : e.trigger === 'run_failed' ? 'run_failed' : null;
+    const field = e.trigger === 'merge_verify_fail' ? 'merge_fail' : e.trigger === 'run_failed' ? 'run_failed' : null;
     if (!field) continue;
     const k = `${e.flow}/${e.task}`;
-    if (!rework.has(k)) rework.set(k, { flow: e.flow, task: e.task, title: titleOf.get(k) ?? '', review_reject: 0, verify_fail: 0, merge_fail: 0, run_failed: 0, total: 0 });
+    if (!rework.has(k)) rework.set(k, { flow: e.flow, task: e.task, title: titleOf.get(k) ?? '', merge_fail: 0, run_failed: 0, total: 0 });
     const w = rework.get(k)!;
     w[field]++;
     w.total++;
@@ -103,7 +102,7 @@ export function formatCost(c: CostReport, fixLogs: string[] = []): string {
     sec('按角色', c.byRole),
     sec('按模型', c.byModel),
     sec('按任务（前 10）', c.byTask),
-    c.rework.length ? `## 返工最多的任务\n${c.rework.map((w) => `- ${w.flow}/${w.task} ${w.title}：共 ${w.total} 次（审查打回 ${w.review_reject}，验证失败 ${w.verify_fail}，合并失败 ${w.merge_fail}，运行失败 ${w.run_failed}）`).join('\n')}` : '## 返工最多的任务\n- 无',
+    c.rework.length ? `## 返工最多的任务\n${c.rework.map((w) => `- ${w.flow}/${w.task} ${w.title}：共 ${w.total} 次（合并时全量测试失败 ${w.merge_fail}，运行失败 ${w.run_failed}）`).join('\n')}` : '## 返工最多的任务\n- 无',
     fixLogs.length ? `## 修复日志\n${fixLogs.map((f) => `- .flow/fixes/${f}`).join('\n')}` : '',
   ].filter(Boolean).join('\n\n');
 }

@@ -1,0 +1,6 @@
+{ "steps": [
+  { "tool_calls": [ { "name": "bash", "arguments": { "command": "node -e \"import('./src/todo/index.mjs').then(m => { m.add('买菜'); console.log(JSON.stringify(m.list())); })\"", "timeout": 60 } } ] },
+  { "tool_calls": [ { "name": "flow_accept", "arguments": { "summary": "逐条验收通过", "results": [
+    { "id": "A-1", "passed": true, "evidence": "node -e 调用 add('买菜') 后 list() 输出 [{\"title\":\"买菜\",\"done\":false}]" } ] } } ] },
+  { "text": "完成" }
+] }

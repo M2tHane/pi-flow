@@ -9,9 +9,10 @@ import type { RoleSettingsFile } from '../../src/core/schemas.ts';
 import { FakeLauncher, type FakeAgent } from '../fixtures/fake-subagent/launcher.ts';
 import type { Project } from './project.ts';
 
-export const AGENTS = path.join(import.meta.dirname, '../../agents');
+/** 包内角色（agents/）加上测试夹具里只用于运行时机制测试的旧角色 */
+export const AGENTS = [path.join(import.meta.dirname, '../../agents'), path.join(import.meta.dirname, '../fixtures/agents')].join(path.delimiter);
 export const ALL_FAKE: RoleSettingsFile = { version: 1, roles: Object.fromEntries(
-  ['backend-engineer', 'reviewer', 'frontend-engineer', 'architect', 'test-engineer'].map((r) => [r, { model: 'fake/model', thinking: 'low' as const }])) };
+  ['backend-engineer', 'frontend-engineer', 'architect', 'test-engineer', 'implementer', 'acceptor'].map((r) => [r, { model: 'fake/model', thinking: 'low' as const }])) };
 
 export type RoleScript = (role: string, nth: number, a: FakeAgent) => Promise<void>;
 

@@ -73,11 +73,8 @@
           },
           "kind": {
             "enum": [
-              "test",
               "impl",
               "doc",
-              "infra",
-              "integration",
               "review-fix",
               "merge-fix",
               "analysis"
@@ -156,8 +153,11 @@
               "type": "string"
             }
           },
-          "contract_change": {
-            "type": "boolean"
+          "shared": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         },
         "additionalProperties": false

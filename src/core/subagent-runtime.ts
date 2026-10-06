@@ -4,7 +4,7 @@ import { Value } from 'typebox/value';
 import type { FlowConfig } from './config.ts';
 import type { StateStore } from './state-store.ts';
 import type { TaskFile } from './schemas.ts';
-import { hashToken } from './state-machine.ts';
+import { canAppendInterfaces, hashToken } from './state-machine.ts';
 import { scratchDir } from './worktree.ts';
 import { TEST_GLOBS, adjustableTests, testAdjustEnabled } from './test-adjust.ts';
 import { matchesAny } from './paths.ts';
@@ -54,11 +54,11 @@ export class SubagentRuntime {
       cwd,
       workspaceRoot: t.worktree ?? this.env.root,
       mainRoot: this.env.root,
-      // 批准的计划修订创建的"改 API 文档"任务可以写契约，其余任务在契约锁定后只读
-      // 阶段审查的修复任务可以补充契约（只能新增，flow_submit 检查）
-      contractsLocked: ('S1' in flow.approvals || 'F1' in flow.approvals) && !t.contract_change && t.kind !== 'review-fix',
-      ...(t.kind === 'review-fix' ? { contractAdditions: true } : {}),
-      ...(role.writes.length ? { writes: t.conflict_files ?? t.writes, scratchDir: scratchDir(this.env.root, this.env.run) } : {}),
+      // 实现类任务可以在模块之间的接口文档里追加（只能新增，flow_submit 检查）
+      ...(canAppendInterfaces(t) ? { interfaceAdditions: true } : {}),
+      // 模块登记的公共文件（第五轮）也可以写；没有可写范围但能运行命令的角色（验收者）也有临时目录
+      ...(role.writes.length ? { writes: [...(t.conflict_files ?? t.writes), ...(t.conflict_files ? [] : t.shared ?? [])], scratchDir: scratchDir(this.env.root, this.env.run) } : {}),
+      ...(!role.writes.length && role.bash === 'full' ? { scratchDir: scratchDir(this.env.root, this.env.run) } : {}),
       ...(testAdjustEnabled(this.config, t) && t.worktree && t.base_sha ? { adjustableTests: this.adjustable(t.worktree, t.base_sha, t.writes) } : {}),
       // merge-fix：冲突文件里原任务适配过的已有测试不在角色可写范围内，也要能改
       ...(t.kind === 'merge-fix' && t.conflict_files ? { adjustableTests: t.conflict_files.filter((f) => matchesAny(f, TEST_GLOBS)) } : {}),

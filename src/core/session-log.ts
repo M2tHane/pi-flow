@@ -25,6 +25,21 @@ export function findSessionFile(dir: string): string | null {
   return out.sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)[0] ?? null;
 }
 
+/** 目录中的全部会话文件（递归，按修改时间从旧到新）；目录不存在时返回空 */
+export function listSessionFiles(dir: string): string[] {
+  if (!existsSync(dir)) return [];
+  const out: string[] = [];
+  const walk = (d: string) => {
+    for (const e of readdirSync(d, { withFileTypes: true })) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (e.name.endsWith('.jsonl')) out.push(p);
+    }
+  };
+  walk(dir);
+  return out.sort((a, b) => statSync(a).mtimeMs - statSync(b).mtimeMs);
+}
+
 export interface SessionSummary {
   toolCalls: { name: string; args: string; error: string | null }[];
   lastText: string;

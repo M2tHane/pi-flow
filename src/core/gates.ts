@@ -5,12 +5,13 @@ import path from 'node:path';
 import type { FlowConfig } from './config.ts';
 import { isSettled } from './state-machine.ts';
 import type { StateStore } from './state-store.ts';
-import { git } from './git.ts';
+import { git, gitOk } from './git.ts';
 import { worktreesRoot, removeWorktree } from './worktree.ts';
 import { evidenceText, runShell } from './verify-runner.ts';
-import { PROPOSAL_STAGES } from '../modes/plan.ts';
+import { DESIGN_DOC, PROPOSAL_STAGES, PROTOTYPE_STAGE, THEME_CSS } from '../modes/plan.ts';
+import { REQUIREMENTS_STAGE, requirementsMissing } from './requirements.ts';
 
-/** failed：失败的闸门命令与输出（阶段末审查据此生成修复任务） */
+/** failed：失败的闸门命令与输出（实施阶段据此按日志生成修复任务，见 acceptance.gateFailed） */
 export interface GateOutcome { stage: string; passed: boolean; needsHuman: boolean; reasons: string[]; failed?: { command: string; output: string } }
 
 export function stageDef(config: FlowConfig, mode: 'build' | 'feature', stage: string) {
@@ -31,7 +32,19 @@ export async function runStageGate(root: string, store: StateStore, config: Flow
 
   const open = store.listTasks(flowId).filter((t) => t.stage === flow.stage && !isSettled(t));
   if (open.length) reasons.push(`本阶段还有未完成的任务：${open.map((t) => `${t.id}（${t.status}）`).join('、')}`);
-  if (PROPOSAL_STAGES.has(flow.stage) && !store.readProposal(flowId)) reasons.push('架构阶段必须经 flow_propose_tasks 提交任务列表');
+  if (flow.stage === REQUIREMENTS_STAGE) {
+    const missing = requirementsMissing(root, flow.integration_branch, flow.requirements?.path);
+    if (missing) reasons.push(missing);
+  }
+  // 原型阶段与原型一起产出设计规范与共用样式
+  if (flow.stage === PROTOTYPE_STAGE) {
+    for (const f of [DESIGN_DOC, THEME_CSS]) if (!gitOk(root, ['cat-file', '-e', `${flow.integration_branch}:${f}`])) reasons.push(`原型阶段必须写出 ${f}`);
+  }
+  if (PROPOSAL_STAGES.has(flow.stage) && !store.readProposal(flowId)) reasons.push('规划阶段必须经 flow_propose_modules 提交模块清单');
+  // 新项目的规划阶段必须写出项目专属规则（批准时应用到 rules/project.md）
+  if (PROPOSAL_STAGES.has(flow.stage) && flow.mode === 'build' && !gitOk(root, ['cat-file', '-e', `${flow.integration_branch}:docs/rules-draft/project.md`])) {
+    reasons.push('规划阶段必须写出项目专属规则 docs/rules-draft/project.md');
+  }
 
   if (!reasons.length && def.gate.auto?.length) {
     const wt = path.join(worktreesRoot(root), `${flowId}-gate-${flow.stage}`);

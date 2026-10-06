@@ -14,23 +14,28 @@ import { ROLE_SETTINGS_FILENAME, loadRoleSettings, resolveRoleModel } from '../c
 import { THINKING_LEVELS, type ThinkingLevel } from '../core/schemas.ts';
 import { StateStore } from '../core/state-store.ts';
 import { Engine } from '../core/dispatcher.ts';
-import { affectedTests, codegraphSync } from '../core/codegraph.ts';
+import { codegraphSync } from '../core/codegraph.ts';
 import { acquireEngineLock, releaseEngineLock } from '../core/engine-lock.ts';
 import { enforceToolCall } from '../core/guard.ts';
 import { dirtyFiles, newDrift, nextStep, turnContext } from '../core/context-injector.ts';
 import { parseAgentFile } from '../core/agents.ts';
 import { runFlowConfig, type ModelOption } from '../commands/flow-config.ts';
 import { runFlowCommand, runFlowBuild, runFlowFix, FLOW_USAGE, type CommandEnv, type EngineHandle } from '../commands/flow.ts';
-import { activeBrief, interviewContext, updateBrief, CONFIRM_COMMAND, type InterviewMode } from '../modes/interview.ts';
-import { DispatchParams, ReplanParams, WaitParams, activeFlowId, flowDispatch, flowReplan, flowWait, statusText } from '../tools/orchestrator-tools.ts';
+import { DispatchParams, ReplanParams, RequirementsParams, WaitParams, activeFlowId, flowDispatch, flowReplan, flowRequirements, flowWait, statusText } from '../tools/orchestrator-tools.ts';
+import { discussionSkills } from '../core/requirements.ts';
 import { PiLauncher } from './launcher.ts';
 import { lastFailureKind, notices, snapshotOf, statusLine, visibleFlows } from '../core/status-view.ts';
 import { packageRoots, pluginExtensionsFor } from './plugins.ts';
+import { installMemory } from './memory.ts';
+import { NOTES_DESCRIPTION, NotesError, NotesParams, applyNoteOps, notesContextMessage, renderNotes } from '../core/notes.ts';
+import { HISTORY_DESCRIPTION, HistoryParams } from '../core/history.ts';
+import { historyTool } from '../tools/subagent-tools.ts';
+import { MAIN_NOTES_REL } from '../core/state-store.ts';
 
 export const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const TEMPLATE_WORKFLOW = path.join(PACKAGE_ROOT, 'templates', 'workflow.yaml');
 const SUBAGENT_EXTENSION = path.join(PACKAGE_ROOT, 'src', 'pi-adapter', 'subagent.ts');
-const ORCHESTRATOR_TOOLS = ['flow_status', 'flow_dispatch', 'flow_wait', 'flow_replan'];
+const ORCHESTRATOR_TOOLS = ['flow_status', 'flow_dispatch', 'flow_wait', 'flow_replan', 'flow_requirements'];
 
 /** 用户级设置文件：~/.pi/agent/pi-flow.json（与 Pi 官方 preset 示例的全局配置位置一致） */
 export function roleSettingsPath(): string {
@@ -83,8 +88,6 @@ interface RootSession {
   saved: SavedSession | null;
   /** 退出调度模式（由最近一次命令的上下文提供） */
   deactivate: (() => Promise<string>) | null;
-  /** 需求访谈模式（开流程之前） */
-  interview: InterviewMode | null;
   /** 调度模式下的状态栏（只在终端界面设置）；null 表示不显示 */
   status: ((text: string | undefined) => void) | null;
 }
@@ -117,7 +120,7 @@ function recordOrchestratorUsage(s: RootSession, message: Record<string, unknown
 function session(root: string): RootSession {
   let s = sessions.get(root);
   if (!s) {
-    s = { handle: null, orchestrator: false, driftBefore: null, notify: () => {}, saved: null, deactivate: null, interview: null, status: null };
+    s = { handle: null, orchestrator: false, driftBefore: null, notify: () => {}, saved: null, deactivate: null, status: null };
     sessions.set(root, s);
   }
   return s;
@@ -130,7 +133,7 @@ export function engineFor(root: string): EngineHandle {
   if (s.handle) return s.handle;
   if (!initialized(root)) throw new Error('当前项目尚未初始化 pi-flow（缺少 .flow/），请先执行 /flow init。');
   const holder = acquireEngineLock(root);
-  if (holder) throw new Error(`另一个 pi 会话（pid ${holder.pid}，自 ${holder.since}）正在运行该项目的流程。请在那个会话中操作，或关闭它后再执行 /flow resume。`);
+  if (holder) throw new Error(`另一个 pi 会话（pid ${holder.pid}，自 ${holder.since}）正在运行该项目的流程。请在那个会话中操作，或关闭它后再执行 /flow-resume。`);
   const config = loadConfig(path.join(root, 'workflow.yaml'));
   const store = new StateStore(root, { limits: config.limits });
   const extra = (process.env['PI_FLOW_EXTRA_EXTENSIONS'] ?? '').split(',').filter(Boolean);
@@ -142,11 +145,11 @@ export function engineFor(root: string): EngineHandle {
     // 测试用的额外扩展（假模型 provider）在前，随后是第三方插件；guard 所在的 subagent 扩展由引擎放在最后
     extraExtensions: (role) => [...extra, ...pluginExtensionsFor(config, role, packageRoots(root, getAgentDir())).paths],
     packageSkillsDir: path.join(PACKAGE_ROOT, 'skills'),
-    mergeHooks: { affectedFiles: (_wt, changed) => affectedTests(root, changed), afterMerge: codegraphSync },
+    mergeHooks: { afterMerge: codegraphSync },
     onError: (e) => s.notify(`pi-flow 程序步骤出错：${(e as Error).message}`, 'warning'),
   });
   s.handle = { store, engine, config };
-  // 任何命令启动引擎都要检查租约：卡住的子进程（例如挂起的测试命令）到期会被结束，不只在 /flow resume 时
+  // 任何命令启动引擎都要检查租约：卡住的子进程（例如挂起的测试命令）到期会被结束，不只在 /flow-resume 时
   engine.startLeaseWatch();
   // 进程退出时（没有经过 session_shutdown 的情况）也结束子进程，避免留下无人管理的 subagent
   process.once('exit', () => engine.killAll());
@@ -181,13 +184,12 @@ function agentPrompt(root: string, name: string): string {
 }
 
 export default function piFlow(pi: ExtensionAPI): void {
-  /** 进入调度或访谈模式前记住会话状态，并提供退出时的恢复 */
+  /** 进入调度模式前记住会话状态，并提供退出时的恢复 */
   const enterManagedMode = (ctx: ExtensionContext, s: RootSession) => {
-    if (!s.orchestrator && !s.interview) s.saved = { model: ctx.model, thinking: pi.getThinkingLevel(), tools: pi.getActiveTools() };
+    if (!s.orchestrator) s.saved = { model: ctx.model, thinking: pi.getThinkingLevel(), tools: pi.getActiveTools() };
     s.deactivate = async () => {
-      if (!s.orchestrator && !s.interview) return '当前不在调度模式。';
+      if (!s.orchestrator) return '当前不在调度模式。';
       s.orchestrator = false;
-      s.interview = null;
       s.status?.(undefined);
       s.status = null;
       const saved = s.saved;
@@ -196,7 +198,7 @@ export default function piFlow(pi: ExtensionAPI): void {
       pi.setActiveTools(saved.tools);
       if (saved.model) await pi.setModel(saved.model);
       pi.setThinkingLevel(saved.thinking);
-      return `已退出调度模式，恢复原来的模型${saved.model ? `（${saved.model.provider}/${saved.model.id}）` : ''}与工具。流程状态不变，/flow resume 可重新进入。`;
+      return `已退出调度模式，恢复原来的模型${saved.model ? `（${saved.model.provider}/${saved.model.id}）` : ''}与工具。流程状态不变，/flow-resume 可重新进入。`;
     };
   };
 
@@ -229,7 +231,7 @@ export default function piFlow(pi: ExtensionAPI): void {
         const config = engineFor(root).config;
         enterManagedMode(ctx, s);
         s.orchestrator = true;
-        s.interview = null;
+        registerFlowTools();
         const registered = new Set(pi.getAllTools().map((t) => t.name));
         pi.setActiveTools(config.activeTools('orchestrator').filter((t) => registered.has(t)));
         await applyOrchestratorModel(ctx, config);
@@ -239,23 +241,19 @@ export default function piFlow(pi: ExtensionAPI): void {
           s.status(statusLine(engineFor(root).store, config) ?? undefined);
         }
       },
-      activateInterview: async (mode) => {
-        const config = engineFor(root).config;
-        enterManagedMode(ctx, s);
-        s.orchestrator = false;
-        s.interview = mode;
-        pi.setActiveTools(['read', 'flow_brief']);
-        await applyOrchestratorModel(ctx, config);
-        if (ctx.hasUI) pi.sendUserMessage('请开始需求访谈。');
-      },
       deactivateOrchestrator: () => (s.deactivate ? s.deactivate() : '当前不在调度模式。'),
       waitForIdle: !ctx.hasUI,
+      // 需求讨论开始时让主 agent 先提问（只在终端界面；Pi 1.0.0 sendUserMessage 总会触发一轮，忙时作为 followUp 排队）
+      ...(ctx.hasUI ? { startConversation: (text: string) => pi.sendUserMessage(text, { deliverAs: 'followUp' }) } : {}),
       dependencies: () => ({ piVersion: VERSION, packageRoots: packageRoots(root, getAgentDir()) }),
     };
   };
 
-  // orchestrator 工具只在已初始化 pi-flow 的项目中注册，避免影响普通 pi 会话
-  if (initialized(process.cwd())) {
+  // orchestrator 工具只在已初始化 pi-flow 的项目中注册，避免影响普通 pi 会话；在空仓库里 /flow-build 初始化后进入调度模式时再注册
+  let flowToolsRegistered = false;
+  const registerFlowTools = () => {
+    if (flowToolsRegistered) return;
+    flowToolsRegistered = true;
     pi.registerTool({
       name: 'flow_status', label: 'flow_status', description: '只读：当前流程、阶段、任务计数、可派发与失败任务摘要、等待用户处理的事项。',
       parameters: Type.Object({}),
@@ -274,11 +272,20 @@ export default function piFlow(pi: ExtensionAPI): void {
       },
     });
     pi.registerTool({
-      name: 'flow_replan', label: 'flow_replan', description: '用户要求修改计划（漏了功能、要改需求、某个任务拆得不对）时调用：把用户的要求交给 architect 起草计划修订（新增任务、调整或取消未开始的任务）。修订需要用户 /flow approve 才生效；你不能自己改任务。',
+      name: 'flow_replan', label: 'flow_replan', description: '用户要求修改计划（漏了功能、要改需求、某个任务拆得不对）时调用：把用户的要求交给 architect 起草计划修订（新增任务、调整或取消未开始的任务）。修订需要用户 /flow-approve 才生效；你不能自己改任务。',
       parameters: ReplanParams,
       async execute(_id, p, _s, _u, ctx) {
         const h = engineFor(ctx.cwd);
         const r = await flowReplan(ctx.cwd, h.store, h.config, h.engine, checked(ReplanParams, p, 'flow_replan'));
+        return toolResult(r.text, r.details);
+      },
+    });
+    pi.registerTool({
+      name: 'flow_requirements', label: 'flow_requirements', description: '需求讨论阶段：和用户逐轮讨论、用户确认共识后，提交完整的需求说明（程序写入需求文件并交给用户审批），同时说明是否需要原型阶段。',
+      parameters: RequirementsParams,
+      async execute(_id, p, _s, _u, ctx) {
+        const h = engineFor(ctx.cwd);
+        const r = await flowRequirements(ctx.cwd, h.store, h.engine, checked(RequirementsParams, p, 'flow_requirements'));
         return toolResult(r.text, r.details);
       },
     });
@@ -291,27 +298,48 @@ export default function piFlow(pi: ExtensionAPI): void {
         return toolResult(r.text, r.details);
       },
     });
-  }
 
-  // 需求访谈工具：总是注册但默认不激活，只在访谈模式中启用
-  pi.registerTool({
-    name: 'flow_brief', label: 'flow_brief', defaultActive: false,
-    description: '需求访谈：记录与用户谈定的需求小节（key 见系统提示中的"待补充"），可一次更新多个小节。只记录用户确认过的内容。',
-    parameters: Type.Object({ sections: Type.Record(Type.String(), Type.String({ minLength: 1, maxLength: 4000 }), { description: '小节 key → 内容' }) }),
-    async execute(_id, p, _s, _u, ctx) {
-      const store = sessions.get(ctx.cwd)?.handle?.store ?? new StateStore(ctx.cwd);
-      const { brief, missing } = await updateBrief(store, (p as { sections: Record<string, string> }).sections);
-      return toolResult(missing.length
-        ? `已记录。还需要：${missing.map((x) => `${x.label}（${x.key}）`).join('、')}。`
-        : `已记录，清单已完整。请向用户展示摘要，并请其执行 ${CONFIRM_COMMAND[brief.mode]} 开始。`);
-    },
+    // 主 agent 的结构化笔记与历史检索（第五轮）：笔记跨流程保留在 .flow/notes/main.json
+    pi.registerTool({
+      name: 'notes', label: 'notes', description: `${NOTES_DESCRIPTION} 主会话的笔记跨流程保留：记录用户的偏好、讨论的结论、进行中的事项。`,
+      parameters: NotesParams,
+      async execute(_id, p, _s, _u, ctx) {
+        const params = checked<{ action: 'read' | 'update'; ops?: Parameters<typeof applyNoteOps>[1] }>(NotesParams, p, 'notes');
+        const store = mainStore(ctx.cwd);
+        if (params.action === 'read') return toolResult(renderNotes(store.readNotes(MAIN_NOTES_REL), '主会话笔记'));
+        if (!params.ops?.length) throw new Error('update 需要 ops：每条写 section、op 与 text / index / items。');
+        try {
+          const n = await store.writeNotes(MAIN_NOTES_REL, (cur) => { applyNoteOps(cur, params.ops!); return cur; }, { actor: 'orchestrator', reason: '更新主会话笔记' });
+          return toolResult(`已更新。\n${renderNotes(n, '主会话笔记')}`);
+        } catch (e) {
+          if (e instanceof NotesError) throw new Error(e.message);
+          throw e;
+        }
+      },
+    });
+    pi.registerTool({
+      name: 'history', label: 'history', description: HISTORY_DESCRIPTION,
+      parameters: HistoryParams,
+      async execute(_id, p, _s, _u, ctx) {
+        const file = ctx.sessionManager.getSessionFile();
+        return toolResult(historyTool(file ? [file] : [], checked(HistoryParams, p, 'history')).text);
+      },
+    });
+  };
+  const mainStore = (cwd: string) => sessions.get(cwd)?.handle?.store ?? new StateStore(cwd);
+  if (initialized(process.cwd())) registerFlowTools();
+  // 笔记放回上下文与压缩：每次按当前目录是否已初始化决定
+  installMemory(pi, {
+    active: (ctx) => initialized(ctx.cwd),
+    notesMessage: (ctx, near) => notesContextMessage(mainStore(ctx.cwd).readNotes(MAIN_NOTES_REL), { title: '主会话笔记', nearCompaction: near }),
+    compactAt: (ctx) => { try { return loadProjectConfig(ctx.cwd).config.compactAt; } catch { return 0.7; } },
   });
 
   pi.on('session_start', (_e, ctx) => {
     if (!initialized(ctx.cwd)) return;
     try {
       const flow = new StateStore(ctx.cwd).readState().active_flow;
-      if (flow) report(ctx, `pi-flow：检测到进行中的流程 ${flow}。执行 /flow resume 恢复并进入调度模式；/flow status 查看进度。`);
+      if (flow) report(ctx, `pi-flow：检测到进行中的流程 ${flow}。执行 /flow-resume 恢复并进入调度模式；/flow-status 查看进度。`);
     } catch (e) {
       report(ctx, `pi-flow：读取状态失败（${(e as Error).message}），请执行 /flow doctor。`, 'warning');
     }
@@ -320,16 +348,11 @@ export default function piFlow(pi: ExtensionAPI): void {
   // 调度模式：每轮注入状态与唯一允许的下一步，并记录轮开始时主工作区的改动
   pi.on('before_agent_start', (event, ctx) => {
     const s = sessions.get(ctx.cwd);
-    if (s?.interview && s.handle) {
-      const brief = activeBrief(s.handle.store);
-      const ctxText = brief ? interviewContext(brief) : '[需求访谈] 访谈已结束或已取消，请用户执行 /flow-build 或 /flow-fix 重新开始。';
-      event.systemPromptOptions.appendSystemPrompt = `${event.systemPromptOptions.appendSystemPrompt ?? ''}\n\n${agentPrompt(ctx.cwd, 'interviewer')}\n\n${ctxText}`.trim();
-      return;
-    }
     if (!s?.orchestrator || !s.handle) return;
     const { store, engine, config } = s.handle;
     s.driftBefore = dirtyFiles(ctx.cwd);
-    const injected = `${agentPrompt(ctx.cwd, 'orchestrator')}\n\n${turnContext(store, config.limits.max_parallel, engine.activeRuns().length, config, (f, t) => engine.pausedFor(f, t))}`;
+    const skills = discussionSkills(store, path.join(PACKAGE_ROOT, 'skills'));
+    const injected = `${agentPrompt(ctx.cwd, 'orchestrator')}${skills ? `\n\n${skills}` : ''}\n\n${turnContext(store, config.limits.max_parallel, engine.activeRuns().length, config, (f, t) => engine.pausedFor(f, t))}`;
     event.systemPromptOptions.appendSystemPrompt = `${event.systemPromptOptions.appendSystemPrompt ?? ''}\n\n${injected}`.trim();
   });
 
@@ -352,19 +375,15 @@ export default function piFlow(pi: ExtensionAPI): void {
     report(ctx, `pi-flow：本轮期间主工作区出现了未经派发的改动（${drift.slice(0, 5).join('、')}${drift.length > 5 ? ' 等' : ''}），已记录为越权。如果是你本人修改的，可以忽略。`, 'warning');
   });
 
-  // 调度模式下的 guard：orchestrator 只能读 docs/、.flow/，只能用 flow_status、flow_dispatch、flow_wait
+  // 调度模式下的 guard：orchestrator 只能读（read_paths 内），只能用 flow_* 调度工具，不能写
   pi.on('tool_call', async (event, ctx) => {
     const s = sessions.get(ctx.cwd);
-    if (s?.interview && s.handle) {
-      if (event.toolName === 'flow_brief') return;
-      if (event.toolName !== 'read') return { block: true, reason: '需求访谈阶段只能阅读 docs/ 下的文档并用 flow_brief 记录需求；不能写文件或执行命令。' };
-    }
-    if (!s?.handle || (!s.orchestrator && !s.interview)) return;
+    if (!s?.handle || !s.orchestrator) return;
     const { store, config, engine } = s.handle;
     const step = nextStep(store, config.limits.max_parallel, 0, config, (f, t) => engine.pausedFor(f, t));
     const r = await enforceToolCall({ toolName: event.toolName, input: event.input }, {
       config, role: 'orchestrator', cwd: ctx.cwd, workspaceRoot: ctx.cwd, mainRoot: ctx.cwd,
-      contractsLocked: true, ...(step.task ? { readyTaskId: step.task } : {}),
+      ...(step.task ? { readyTaskId: step.task } : {}),
     }, store, { flow: store.readState().active_flow, task: null, run: 'orchestrator' });
     if (r.allow) return;
     return { block: true, reason: r.reason };
@@ -380,7 +399,7 @@ export default function piFlow(pi: ExtensionAPI): void {
 
   pi.registerCommand('flow', {
     description: 'pi-flow 管理：status、next、resume、approve、reject、unblock、gate、doctor、init',
-    getArgumentCompletions: (prefix) => ['status', 'next', 'resume', 'answer', 'rules', 'knowledge', 'run', 'sync', 'replan', 'budget', 'models', 'off', 'approve', 'reject', 'unblock', 'gate', 'abort', 'doctor', 'init', 'help']
+    getArgumentCompletions: (prefix) => ['status', 'next', 'resume', 'answer', 'accept', 'review', 'add', 'rules', 'knowledge', 'run', 'sync', 'replan', 'budget', 'models', 'off', 'approve', 'reject', 'unblock', 'gate', 'abort', 'doctor', 'init', 'help']
       .filter((x) => x.startsWith(prefix.trim())).map((x) => ({ value: x, label: x })),
     handler: async (args, ctx) => {
       try {
@@ -391,9 +410,30 @@ export default function piFlow(pi: ExtensionAPI): void {
     },
   });
 
+  // 常用操作的独立命令（第五轮）：/flow-approve、/flow-reject、/flow-add、/flow-resume、/flow-status
+  const shortcuts: [string, string, string][] = [
+    ['flow-approve', 'approve', 'pi-flow：批准当前阶段（需求、原型、规划、最终合入主分支）或待批准的计划修订'],
+    ['flow-reject', 'reject', 'pi-flow：打回当前阶段并写明意见，写作者接着原会话修改'],
+    ['flow-add', 'add', 'pi-flow：中途追加需求，送到正在做的模块或交给 architect 安排'],
+    ['flow-resume', 'resume', 'pi-flow：会话丢失或进程被杀后恢复流程，并进入调度模式'],
+    ['flow-status', 'status', 'pi-flow：当前阶段、进度、正在做什么、需要你处理什么（--detail 看完整任务列表）'],
+  ];
+  for (const [name, sub, description] of shortcuts) {
+    pi.registerCommand(name, {
+      description,
+      handler: async (args, ctx) => {
+        try {
+          report(ctx, await runFlowCommand(`${sub} ${args}`.trim(), commandEnv(ctx)));
+        } catch (e) {
+          report(ctx, (e as Error).message, 'error');
+        }
+      },
+    });
+  }
+
   pi.registerCommand('flow-build', {
     description: 'pi-flow：从零建新项目，或 --feature 在已有项目上加功能',
-    getArgumentCompletions: (prefix) => ['--feature', '--confirm', '--cancel', '--direct', '--from'].filter((x) => x.startsWith(prefix.trim().split(' ').at(-1) ?? '')).map((x) => ({ value: x, label: x })),
+    getArgumentCompletions: (prefix) => ['--feature', '--from'].filter((x) => x.startsWith(prefix.trim().split(' ').at(-1) ?? '')).map((x) => ({ value: x, label: x })),
     handler: async (args, ctx) => {
       try {
         report(ctx, await runFlowBuild(args, commandEnv(ctx)));
@@ -404,7 +444,7 @@ export default function piFlow(pi: ExtensionAPI): void {
   });
 
   pi.registerCommand('flow-fix', {
-    description: 'pi-flow：修复缺陷或小改动（scout 定位 → 复现测试 → 修复 → 审查 → 直接合入主分支）',
+    description: 'pi-flow：修复缺陷（实现者定位并修复 → 全量测试 → 验收者复现确认 → 直接合入主分支）',
     handler: async (args, ctx) => {
       try {
         report(ctx, await runFlowFix(args, commandEnv(ctx)));

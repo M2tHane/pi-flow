@@ -1,4 +1,4 @@
-// M7 验收：/flow-fix 全流程、升级提示、与 build 流程并存的规则、成本统计与 runs 记录一致。
+// M7 验收：/flow-fix 全流程、与 build 流程并存的规则、成本统计与 runs 记录一致。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -14,7 +14,7 @@ import type { RoleSettingsFile } from '../../src/core/schemas.ts';
 const TEST_CMD = "for f in $(find tests/acceptance/fixes -name '*.ts' 2>/dev/null); do grep -q EXPECT_BUG_GONE $f && grep -rq BUG src/server/calc && exit 1; done; exit 0";
 const YAML = PROJECT_YAML.replace(/  test:      ".*"/, `  test:      "${TEST_CMD.replace(/"/g, '\\"')}"`);
 const SETTINGS: RoleSettingsFile = { version: 1, roles: Object.fromEntries(
-  ['scout', 'test-engineer', 'backend-engineer', 'reviewer'].map((r) => [r, { model: 'fake/m' }])) };
+  ['implementer', 'acceptor', 'backend-engineer'].map((r) => [r, { model: 'fake/m' }])) };
 
 function env(p: Project, engine: ReturnType<typeof makeEngine>['engine']): CommandEnv {
   return {
@@ -24,33 +24,22 @@ function env(p: Project, engine: ReturnType<typeof makeEngine>['engine']): Comma
   };
 }
 
-const findings = (over: Record<string, unknown> = {}) => ({
-  location: 'src/server/calc/add.ts:1', root_cause: '加法实现成了减法', impact_files: ['src/server/calc/add.ts'],
-  suggested_role: 'backend-engineer', contract_change: false, estimated_files: 1, ...over,
-});
-
-function scripts(scoutFindings = findings()): RoleScript {
+/** 实现者：第一次只加了回归测试、没修好（合并时全量测试失败），第二次修好；验收者逐条确认 */
+function scripts(opts: { acceptPass?: boolean } = {}): RoleScript {
   return async (role, nth, a: FakeAgent) => {
-    if (role === 'reviewer') { await a.call('flow_approve', { decision: 'pass', notes: 'ok' }); return; }
-    await a.call('flow_claim');
-    if (role === 'scout') {
-      assert.ok((await a.call('read', { path: 'src/server/calc/add.ts' })).ok);
-      // 只读角色不能写
-      assert.equal((await a.call('write', { path: 'x.ts', content: '' })).ok, false);
-      await a.call('flow_note', { text: '定位到 add.ts' });
-      const r = await a.call('flow_submit', { summary: '加法写错', findings: scoutFindings });
+    if (role === 'acceptor') {
+      const ids = ['A-1', 'A-2', 'A-3'];
+      const r = await a.call('flow_accept', { summary: '复现确认', results: ids.map((id) => ({ id, passed: opts.acceptPass ?? true, evidence: 'add(1,2) 返回 3' })) });
       assert.ok(r.ok, r.text);
       return;
     }
-    if (role === 'test-engineer') {
-      const dir = `tests/acceptance/fixes/${a.env.flow.toLowerCase()}`;
-      // 第一次写的测试没有复现问题（不含标记），应被打回
-      await a.call('write', { path: `${dir}/add.test.ts`, content: nth === 1 ? '// 没有断言\n' : '// EXPECT_BUG_GONE add(1,2)===3\n' });
-    } else {
-      await a.call('write', { path: 'src/server/calc/add.ts', content: 'export const add = (a: number, b: number) => a + b;\n' });
-    }
-    await a.call('flow_note', { text: '完成' });
-    const s = await a.call('flow_submit', { summary: role === 'test-engineer' ? '复现测试' : '修正加法' });
+    assert.ok((await a.call('flow_claim')).ok);
+    assert.ok((await a.call('read', { path: 'src/server/calc/add.ts' })).ok);
+    const dir = `tests/acceptance/fixes/${a.env.flow.toLowerCase()}`;
+    await a.call('write', { path: `${dir}/add.test.ts`, content: '// EXPECT_BUG_GONE add(1,2)===3\n' });
+    if (nth > 1) await a.call('write', { path: 'src/server/calc/add.ts', content: 'export const add = (a: number, b: number) => a + b;\n' });
+    await a.call('flow_note', { text: '根因：加法实现成了减法' });
+    const s = await a.call('flow_submit', { summary: '修正加法并加回归测试' });
     assert.ok(s.ok, s.text);
   };
 }
@@ -61,10 +50,10 @@ async function project() {
   return p;
 }
 
-test('/flow-fix：scout → 复现测试先失败 → 修复 → 审查 → 直接合入主分支 → 日志含成本', async () => {
+test('/flow-fix：一个实现者定位并修复（回归测试）→ 合并时全量测试 → 直接合入主分支 → 独立验收 → 日志含成本', async () => {
   const p = await project();
   try {
-    const { engine, errors } = makeEngine(p, scripts(), SETTINGS);
+    const { engine, errors, launcher } = makeEngine(p, scripts(), SETTINGS);
     const out = await runFlowFix('--direct "加法结果不对：add(1,2) 返回 -1"', env(p, engine));
     assert.deepEqual(errors, []);
     assert.match(out, /已创建修复 X-002/);
@@ -72,54 +61,29 @@ test('/flow-fix：scout → 复现测试先失败 → 修复 → 审查 → 直�
     const flow = p.store.readFlow(fixId);
     assert.equal(flow.stage_status, 'done', out);
     const tasks = p.store.listTasks(fixId);
-    assert.deepEqual(tasks.map((t) => [t.kind, t.role, t.status]), [
-      ['analysis', 'scout', 'done'], ['test', 'test-engineer', 'done'], ['impl', 'backend-engineer', 'done']]);
-    const fix = tasks[2]!;
-    assert.deepEqual(fix.writes, ['src/server/calc/add.ts']);
-    // 复现测试第一次没有失败 → 被打回
-    assert.equal(tasks[1]!.attempts, 1);
-    assert.match(tasks[1]!.last_failure ?? '', /复现测试没有失败/);
-    // 主分支（主工作区检出）得到修复与复现测试
+    const fix = tasks.find((t) => t.id === 'T-001')!;
+    assert.deepEqual([fix.kind, fix.role, fix.status, fix.accepted], ['impl', 'implementer', 'done', true]);
+    // 第一次没修好：合并时全量测试失败退回
+    assert.equal(fix.attempts, 1);
+    assert.match(fix.last_failure ?? '', /合并后验证失败/);
+    assert.ok(tasks.some((t) => t.role === 'acceptor' && t.accept_of === 'T-001' && t.status === 'done'));
+    assert.match(launcher.launched[0]!.prompt, /用户报告的问题：\n加法结果不对/);
+    // 主分支（主工作区检出）得到修复与回归测试
     assert.match(readFileSync(path.join(p.dir, 'src/server/calc/add.ts'), 'utf8'), /a \+ b/);
-    assert.match(readFileSync(path.join(p.dir, `tests/acceptance/fixes/x-002/add.test.ts`), 'utf8'), /EXPECT_BUG_GONE/);
-    assert.match(p.git('log', '--format=%s', 'main'), /^\[X-002\/T-003\] fix: 加法结果不对/m);
+    assert.match(readFileSync(path.join(p.dir, 'tests/acceptance/fixes/x-002/add.test.ts'), 'utf8'), /EXPECT_BUG_GONE/);
+    assert.match(p.git('log', '--format=%s', 'main'), /^\[X-002\/T-001\] /m);
     assert.equal(p.git('status', '--porcelain', '--', '.', ':(exclude).flow'), '');
     // fix 日志
     const logs = p.store.listFixLogs();
     assert.equal(logs.length, 1);
     const log = readFileSync(path.join(p.dir, '.flow/fixes', logs[0]!), 'utf8');
-    for (const sec of ['## 问题', '## 根因', '## 改动', '## 验证', '## 成本']) assert.ok(log.includes(sec), sec);
-    assert.match(log, /加法实现成了减法/);
+    for (const sec of ['## 问题', '## 改动', '## 验收', '## 成本']) assert.ok(log.includes(sec), sec);
     assert.match(log, /src\/server\/calc\/add\.ts/);
+    assert.match(log, /A-1 [^\n]*：通过（add\(1,2\) 返回 3）/);
     const cost = costReport(p.store, { flow: fixId });
     assert.ok(log.includes(`合计：${cost.total.runs} 次运行`));
     assert.match(await runFlowCommand('status --cost', env(p, engine)), new RegExp(`\\.flow/fixes/${logs[0]}`));
     assert.deepEqual((await p.store.verifyIntegrity()).errors, []);
-  } finally { p.cleanup(); }
-});
-
-test('超出 fix 规模时给出升级提示；用户可继续或中止', async () => {
-  const p = await project();
-  try {
-    const { engine } = makeEngine(p, scripts(findings({ estimated_files: 9, contract_change: true })), SETTINGS);
-    await runFlowFix('--direct "导出功能有问题"', env(p, engine));
-    const fix = p.store.openFixFlow()!;
-    assert.equal(fix.stage_status, 'awaiting_human');
-    const status = await runFlowCommand('status', env(p, engine));
-    assert.match(status, /^需要你处理：\n- 修复 X-002 超出修复规模：需要修改契约/);
-    assert.match(status, /仍按修复处理 \/flow approve；改用功能流程 \/flow abort/);
-    assert.match(status, /\[需求 ✓ → 规划\]|需求 ✓ → \[规划\]/);
-    assert.match(await runFlowCommand('status --detail', env(p, engine)), /建议改用 \/flow-build --feature：需要修改契约/);
-    assert.match(await runFlowCommand('abort', env(p, engine)), /确认请执行 \/flow abort --yes/);
-    assert.match(await runFlowCommand('abort --yes', env(p, engine)), /已中止 X-002.*--feature/);
-    assert.equal(p.store.openFixFlow(), null);
-
-    // 再来一次，这次选择继续
-    await runFlowFix('--direct "导出功能有问题（第二次）"', env(p, engine));
-    assert.equal(p.store.openFixFlow()!.stage_status, 'awaiting_human');
-    const r = await runFlowCommand('approve', env(p, engine));
-    assert.match(r, /继续按修复处理/);
-    assert.equal(p.store.readFlow('X-003').stage_status, 'done');
   } finally { p.cleanup(); }
 });
 
@@ -151,9 +115,9 @@ test('成本汇总与 runs 记录一致；返工统计来自事件日志', async
     }
     assert.equal(c.total.runs, runs.length);
     assert.equal(c.byFlow.reduce((a, r) => a + r.runs, 0), runs.length);
-    const repro = c.rework.find((w) => w.task === 'T-002')!;
-    assert.equal(repro.verify_fail, 1);
+    const repro = c.rework.find((w) => w.task === 'T-001')!;
+    assert.equal(repro.merge_fail, 1);
     const text = await runFlowCommand('status --cost', env(p, engine));
-    assert.match(text, /# 成本统计[\s\S]*## 按角色[\s\S]*返工最多的任务[\s\S]*T-002/);
+    assert.match(text, /# 成本统计[\s\S]*## 按角色[\s\S]*返工最多的任务[\s\S]*T-001/);
   } finally { p.cleanup(); }
 });

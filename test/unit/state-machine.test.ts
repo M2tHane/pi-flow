@@ -7,14 +7,13 @@ import { mkTask, hard } from '../helpers/tasks.ts';
 const NOW = new Date('2026-01-01T00:00:00Z');
 const later = (min: number) => new Date(NOW.getTime() + min * 60_000).toISOString();
 const TOKEN = 'tok-impl';
-const RTOKEN = 'tok-review';
 const lease = (run: string, token: string, min = 30) => ({
   run_id: run, role: 'backend-engineer', token_hash: hashToken(token), acquired_at: NOW.toISOString(), expires_at: later(min),
 });
 const facts = (over: Partial<Facts> = {}): Facts => ({
   now: NOW, limits: { max_attempts: 3, max_parallel: 2 }, actor: 'engine', stage_active: true,
   status_of: new Map(), running_count: 0, conflicting_running: [], merging_other: null, queue_head: true,
-  handoff_written: true, evidence_saved: true, contracts_locked: true, ...over,
+  handoff_written: true, ...over,
 });
 const inProgress = (over: Partial<TaskFile> = {}) => mkTask('T-001', {
   status: 'in_progress', lease: lease('r-1', TOKEN), worktree: '/wt/T-001', branch: 'flow/B-001/T-001', base_sha: 'abc', ...over,
@@ -38,12 +37,12 @@ test('不在转移表中的转移全部被拒', () => {
       }
     }
   }
-  assert.ok(rejected > 500);
+  assert.ok(rejected > 300);
 });
 
 test('pending -> ready：硬依赖 done 且 stage active', () => {
   const t = mkTask('T-002', { deps: [hard('T-001')] });
-  bad(planTransition(t, 'ready', 'schedule', facts({ status_of: new Map([['T-001', 'review']]) })), /T-001/);
+  bad(planTransition(t, 'ready', 'schedule', facts({ status_of: new Map([['T-001', 'accepting']]) })), /T-001/);
   bad(planTransition(t, 'ready', 'schedule', facts({ status_of: new Map([['T-001', 'done']]), stage_active: false })), /stage/);
   ok(planTransition(t, 'ready', 'schedule', facts({ status_of: new Map([['T-001', 'done']]) })));
 });
@@ -60,88 +59,54 @@ test('ready -> in_progress：并发、互斥、worktree、租约', () => {
   assert.equal(r.task.worktree, '/wt');
 });
 
-test('in_progress -> review：token、租约、diff、受保护路径、handoff', () => {
+test('in_progress -> queued_merge（submit）：token、租约、diff、受保护路径、handoff；提交后直接进入合并队列', () => {
   const t = inProgress();
   const good = facts({ token: TOKEN, diff_files: ['src/server/t-001/a.ts'] });
-  bad(planTransition(t, 'review', 'submit', { ...good, token: undefined }), /token/);
-  bad(planTransition(t, 'review', 'submit', { ...good, token: 'forged' }), /token/);
-  bad(planTransition(t, 'review', 'submit', { ...good, now: new Date(later(31)) }), /租约/);
-  bad(planTransition(t, 'review', 'submit', { ...good, diff_files: ['src/web/x.ts'] }), /src\/web\/x\.ts/);
-  bad(planTransition(inProgress({ writes: ['**'] }), 'review', 'submit', { ...good, diff_files: ['.flow/state.json'] }), /受保护/);
-  bad(planTransition(inProgress({ writes: ['**'] }), 'review', 'submit', { ...good, diff_files: ['docs/contracts/a.ts'] }), /受保护/);
-  bad(planTransition(t, 'review', 'submit', { ...good, handoff_written: false }), /handoff/);
-  bad(planTransition(t, 'review', 'submit', { ...good, diff_files: [] }), /没有改动/);
-  const r = ok(planTransition(t, 'review', 'submit', good));
-  assert.equal(r.task.lease, null);
-  assert.equal(r.task.impl_run, 'r-1');
-});
-
-test('in_progress -> queued_merge（submit_direct）：不逐任务审查时提交直接进入合并队列，检查与 submit 相同；两条路径互斥', () => {
-  const t = inProgress();
-  const good = facts({ token: TOKEN, diff_files: ['src/server/t-001/a.ts'], direct_merge: true });
-  bad(planTransition(t, 'queued_merge', 'submit_direct', { ...good, direct_merge: undefined }), /需要逐任务审查/);
-  bad(planTransition(t, 'review', 'submit', good), /直接进入合并队列/);
-  bad(planTransition(t, 'queued_merge', 'submit_direct', { ...good, token: 'forged' }), /token/);
-  bad(planTransition(t, 'queued_merge', 'submit_direct', { ...good, diff_files: ['src/web/x.ts'] }), /src\/web\/x\.ts/);
-  bad(planTransition(t, 'queued_merge', 'submit_direct', { ...good, handoff_written: false }), /handoff/);
-  bad(planTransition(t, 'queued_merge', 'submit_direct', { ...good, diff_files: [] }), /没有改动/);
-  const r = ok(planTransition(t, 'queued_merge', 'submit_direct', good));
+  bad(planTransition(t, 'queued_merge', 'submit', { ...good, token: undefined }), /token/);
+  bad(planTransition(t, 'queued_merge', 'submit', { ...good, token: 'forged' }), /token/);
+  bad(planTransition(t, 'queued_merge', 'submit', { ...good, now: new Date(later(31)) }), /租约/);
+  bad(planTransition(t, 'queued_merge', 'submit', { ...good, diff_files: ['src/web/x.ts'] }), /src\/web\/x\.ts/);
+  bad(planTransition(inProgress({ writes: ['**'] }), 'queued_merge', 'submit', { ...good, diff_files: ['.flow/state.json'] }), /受保护/);
+  bad(planTransition(inProgress({ writes: ['**'] }), 'queued_merge', 'submit', { ...good, diff_files: ['rules/project.md'] }), /受保护/);
+  bad(planTransition(t, 'queued_merge', 'submit', { ...good, handoff_written: false }), /handoff/);
+  bad(planTransition(t, 'queued_merge', 'submit', { ...good, diff_files: [] }), /没有改动/);
+  const r = ok(planTransition(t, 'queued_merge', 'submit', good));
   assert.equal(r.task.status, 'queued_merge');
   assert.equal(r.task.lease, null);
   assert.equal(r.task.impl_run, 'r-1');
 });
 
+test('登记的公共文件算在可写范围内；实现类任务可以在接口文档里追加，改动已有内容被拒', () => {
+  const t = inProgress({ shared: ['src/routes.ts'] });
+  const good = facts({ token: TOKEN, diff_files: ['src/server/t-001/a.ts', 'src/routes.ts', 'docs/interfaces/kb.md'] });
+  ok(planTransition(t, 'queued_merge', 'submit', good));
+  bad(planTransition(t, 'queued_merge', 'submit', { ...good, interface_rewrites: ['docs/interfaces/kb.md'] }), /只能在接口文档中追加/);
+  bad(planTransition(inProgress({ kind: 'doc' }), 'queued_merge', 'submit', good), /越出/);
+});
+
 test('适配已有测试：flow_submit 算出的 test_adjustments 不算越出 writes，记在任务上；不在其中的仍被拒', () => {
   const t = inProgress();
-  const good = facts({ token: TOKEN, diff_files: ['src/server/t-001/a.ts', 'tests/acceptance/api.test.js'], direct_merge: true });
-  bad(planTransition(t, 'queued_merge', 'submit_direct', good), /越出任务 writes：tests\/acceptance\/api\.test\.js/);
-  const r = ok(planTransition(t, 'queued_merge', 'submit_direct', { ...good, test_adjustments: ['tests/acceptance/api.test.js'] }));
+  const good = facts({ token: TOKEN, diff_files: ['src/server/t-001/a.ts', 'tests/acceptance/api.test.js'] });
+  bad(planTransition(t, 'queued_merge', 'submit', good), /越出任务 writes：tests\/acceptance\/api\.test\.js/);
+  const r = ok(planTransition(t, 'queued_merge', 'submit', { ...good, test_adjustments: ['tests/acceptance/api.test.js'] }));
   assert.deepEqual(r.task.test_adjustments, ['tests/acceptance/api.test.js']);
-  bad(planTransition(t, 'queued_merge', 'submit_direct', { ...good, diff_files: [...good.diff_files!, 'tests/acceptance/b.test.js'], test_adjustments: ['tests/acceptance/api.test.js'] }), /tests\/acceptance\/b\.test\.js/);
-  const again = ok(planTransition({ ...inProgress(), test_adjustments: ['old.test.js'] }, 'review', 'submit', facts({ token: TOKEN, diff_files: ['src/server/t-001/a.ts'] })));
+  bad(planTransition(t, 'queued_merge', 'submit', { ...good, diff_files: [...good.diff_files!, 'tests/acceptance/b.test.js'], test_adjustments: ['tests/acceptance/api.test.js'] }), /tests\/acceptance\/b\.test\.js/);
+  const again = ok(planTransition({ ...inProgress(), test_adjustments: ['old.test.js'] }, 'queued_merge', 'submit', facts({ token: TOKEN, diff_files: ['src/server/t-001/a.ts'] })));
   assert.equal(again.task.test_adjustments, undefined, '重新提交时按本次的改动重算');
 });
 
-test('阶段审查的修复任务可以在契约中新增内容，改动已有内容被拒；其他任务仍不能改契约', () => {
-  const fix = inProgress({ kind: 'review-fix' });
-  const good = facts({ token: TOKEN, diff_files: ['src/server/t-001/a.ts', 'docs/contracts/web.md'], direct_merge: true, contracts_locked: false });
-  ok(planTransition(fix, 'queued_merge', 'submit_direct', good));
-  bad(planTransition(fix, 'queued_merge', 'submit_direct', { ...good, contract_rewrites: ['docs/contracts/web.md'] }), /只能在契约中新增/);
-  bad(planTransition(inProgress(), 'queued_merge', 'submit_direct', { ...good, contracts_locked: true }), /受保护|越出/);
-});
-
-test('review -> verifying：reviewer run 不同于实施 run', () => {
-  const t = mkTask('T-001', { status: 'review', impl_run: 'r-1', lease: lease('r-2', RTOKEN) });
-  bad(planTransition(t, 'verifying', 'review_pass', facts({ token: 'x' })), /token/);
-  const same = mkTask('T-001', { status: 'review', impl_run: 'r-2', lease: lease('r-2', RTOKEN) });
-  bad(planTransition(same, 'verifying', 'review_pass', facts({ token: RTOKEN })), /同一个 run/);
-  ok(planTransition(t, 'verifying', 'review_pass', facts({ token: RTOKEN })));
-});
-
-test('review -> in_progress：打回需要原因，attempts 加 1', () => {
-  const t = mkTask('T-001', { status: 'review', impl_run: 'r-1', lease: lease('r-2', RTOKEN) });
-  bad(planTransition(t, 'in_progress', 'review_reject', facts({ token: RTOKEN })), /原因/);
-  const r = ok(planTransition(t, 'in_progress', 'review_reject', facts({ token: RTOKEN, reason: 'a.ts:3 缺校验，应返回 422' })));
-  assert.equal(r.task.attempts, 1);
-  assert.equal(r.task.lease, null);
-  assert.match(r.task.last_failure ?? '', /422/);
-});
-
-test('verifying：全部退出码为 0 且有 evidence 才进合并队列；失败回 in_progress', () => {
-  const t = mkTask('T-001', { status: 'verifying', verify: ['typecheck', 'test'] });
-  const pass = [{ command: 'typecheck', exit_code: 0 }, { command: 'test', exit_code: 0 }];
-  bad(planTransition(t, 'queued_merge', 'verify_pass', facts({ verify_results: pass.slice(0, 1) })), /test/);
-  bad(planTransition(t, 'queued_merge', 'verify_pass', facts({ verify_results: pass, evidence_saved: false })), /evidence/);
-  ok(planTransition(t, 'queued_merge', 'verify_pass', facts({ verify_results: pass })));
-  const fail = [{ command: 'typecheck', exit_code: 0 }, { command: 'test', exit_code: 1 }];
-  bad(planTransition(t, 'in_progress', 'verify_fail', facts({ verify_results: pass })), /没有失败/);
-  const r = ok(planTransition(t, 'in_progress', 'verify_fail', facts({ verify_results: fail })));
-  assert.equal(r.task.attempts, 1);
+test('只读任务（验收、计划修订）提交结论：不能有改动，要有 handoff', () => {
+  const a = inProgress({ kind: 'analysis', replan: 'x', writes: [] });
+  ok(planTransition(a, 'done', 'report', facts({ token: TOKEN, diff_files: [] })));
+  bad(planTransition(a, 'done', 'report', facts({ token: TOKEN, diff_files: ['x.ts'] })), /只读任务不得有改动/);
+  bad(planTransition(a, 'done', 'report', facts({ token: TOKEN, handoff_written: false })), /handoff/);
+  bad(planTransition(inProgress({ kind: 'analysis', writes: [] }), 'done', 'report', facts({ token: TOKEN })), /缺少结构化结论/);
+  bad(planTransition(inProgress(), 'done', 'report', facts({ token: TOKEN })), /analysis/);
 });
 
 test('失败达上限自动转 blocked', () => {
-  const t = mkTask('T-001', { status: 'verifying', attempts: 2 });
-  const r = ok(planTransition(t, 'in_progress', 'verify_fail', facts({ verify_results: [{ command: 'test', exit_code: 1 }] })));
+  const t = mkTask('T-001', { status: 'merging', attempts: 2 });
+  const r = ok(planTransition(t, 'in_progress', 'merge_verify_fail', facts({ post_verify_ok: false, reason: 'test 退出码 1' })));
   assert.equal(r.to, 'blocked');
   assert.equal(r.task.status, 'blocked');
   assert.match(r.task.blocked_reason ?? '', /上限/);
@@ -163,7 +128,7 @@ test('合并：同一时间只有一个 merging；done 需要 rebase、验证、
 });
 
 test('任一进行中状态可转 blocked，需写明原因', () => {
-  for (const s of ['in_progress', 'review', 'verifying', 'queued_merge', 'merging'] as const) {
+  for (const s of ['in_progress', 'queued_merge', 'merging'] as const) {
     bad(planTransition(mkTask('T-001', { status: s }), 'blocked', 'block', facts()), /原因/);
     const r = ok(planTransition(mkTask('T-001', { status: s, lease: lease('r-1', TOKEN) }), 'blocked', 'block', facts({ reason: '需求歧义' })));
     assert.equal(r.task.blocked_reason, '需求歧义');
@@ -196,9 +161,9 @@ test('in_progress -> ready：租约过期且 worktree 干净；第二次过期�
 });
 
 test('planTransition 不修改入参', () => {
-  const t = mkTask('T-001', { status: 'verifying' });
+  const t = mkTask('T-001', { status: 'merging' });
   const snapshot = JSON.stringify(t);
-  planTransition(t, 'in_progress', 'verify_fail', facts({ verify_results: [{ command: 'test', exit_code: 1 }] }));
+  planTransition(t, 'in_progress', 'merge_verify_fail', facts({ post_verify_ok: false, reason: 'x' }));
   assert.equal(JSON.stringify(t), snapshot);
 });
 
@@ -222,8 +187,7 @@ test('run_failed：子进程未提交就退出，计一次失败并清空租约�
   assert.equal(r.task.lease, null);
   assert.equal(r.task.worktree, '/wt/T-001');
   bad(planTransition(r.task, 'in_progress', 'run_failed', facts({ reason: 'x' })), /没有运行中/);
-  const rv = mkTask('T-001', { status: 'review', attempts: 2, lease: lease('r-2', RTOKEN) });
-  const r2 = ok(planTransition(rv, 'review', 'run_failed', facts({ reason: '审查 run 崩溃' })));
+  const r2 = ok(planTransition(inProgress({ attempts: 2 }), 'in_progress', 'run_failed', facts({ reason: '又崩溃' })));
   assert.equal(r2.to, 'blocked');
 });
 
@@ -235,9 +199,6 @@ test('run_interrupted：会话中断不消耗失败预算，保留 worktree；�
   assert.equal(r.task.lease, null);
   assert.equal(r.task.worktree, '/wt/T-001');
   bad(planTransition(r.task, 'in_progress', 'run_interrupted', facts({ reason: 'x' })), /没有运行中/);
-  const rv = ok(planTransition(mkTask('T-001', { status: 'review', lease: lease('r-2', RTOKEN) }), 'review', 'run_interrupted', facts({ reason: '中断' })));
-  assert.equal(rv.task.status, 'review');
-  bad(planTransition(mkTask('T-001', { status: 'review', lease: lease('r-2', RTOKEN) }), 'in_progress', 'run_interrupted', facts({ reason: '中断' })), /非法/);
   const many = ok(planTransition(inProgress({ interruptions: MAX_INTERRUPTIONS - 1 }), 'in_progress', 'run_interrupted', facts({ reason: '又中断' })));
   assert.equal(many.to, 'blocked');
   assert.match(many.task.blocked_reason ?? '', /连续中断 5 次/);
@@ -253,20 +214,4 @@ test('run_paused：模型服务不可用不计失败、不计中断，保留 wor
   assert.equal(r.task.last_failure, null, '不覆盖上次失败原因');
   bad(planTransition(r.task, 'in_progress', 'run_paused', facts({ reason: 'x' })), /没有运行中/);
   bad(planTransition(inProgress(), 'in_progress', 'run_paused', facts()), /原因/);
-  const rv = ok(planTransition(mkTask('T-001', { status: 'review', lease: lease('r-2', RTOKEN) }), 'review', 'run_paused', facts({ reason: '限流' })));
-  assert.equal(rv.task.status, 'review');
-  bad(planTransition(mkTask('T-001', { status: 'review', lease: lease('r-2', RTOKEN) }), 'in_progress', 'run_paused', facts({ reason: '限流' })), /非法/);
-});
-
-test('审查中 flow_block 的任务，用户回答后回到审查；实施中阻塞的仍回到 ready', () => {
-  const inReview = mkTask('T-001', { status: 'review', worktree: '/w', branch: 'b', base_sha: 'abc', lease: lease('r-2', RTOKEN) });
-  const blocked = ok(planTransition(inReview, 'blocked', 'block', facts({ reason: '规则冲突，请确认' }))).task;
-  assert.equal(blocked.blocked_from, 'review');
-  const back = ok(planTransition(blocked, 'review', 'unblock', facts({ actor: 'human' }))).task;
-  assert.equal(back.status, 'review');
-  assert.equal(back.worktree, '/w');
-  assert.equal(back.blocked_from, undefined);
-  bad(planTransition(blocked, 'review', 'unblock', facts({ actor: 'run:r-x' })), /只有用户/);
-  const implBlocked = ok(planTransition(inProgress(), 'blocked', 'block', facts({ reason: '需要决定' }))).task;
-  bad(planTransition(implBlocked, 'review', 'unblock', facts({ actor: 'human' })), /只有在审查中阻塞/);
 });

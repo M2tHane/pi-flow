@@ -60,8 +60,6 @@ test('提示：项目知识在系统提示末尾（技能之后），声明不�
   assert.ok(!plain.user.includes('上游任务'));
   const many = upstreamSection(Array.from({ length: 10 }, (_, i) => ({ id: `T-00${i}`, title: 't', type: 'hard' as const, status: '已完成', handoff: 'x'.repeat(2000) })));
   assert.ok(many.length < UPSTREAM_TOTAL + 1000, String(many.length));
-  const review = assemblePrompt({ ...base, mode: 'review', task: mkTask('T-002'), upstream: [{ id: 'T-001', title: 'x', type: 'hard', status: '已完成', handoff: 'abc' }] });
-  assert.ok(!review.user.includes('上游任务'), '审查提示不带上游 handoff');
 });
 
 test('提升为规则草案的目标：条目共同 scope 的规则文件，否则 global', () => {
