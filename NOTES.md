@@ -43,6 +43,11 @@
 - serena 的 `prepareArguments`（修正参数名）在 `tool_call` 之前还是之后，影响 guard 看到的参数名。
 - `tool_result` 层未过滤敏感内容（`grep -r` 等可能读到 `.env`）。
 - guard 管不到脚本文件内部（`bash x.sh`、`node x.js`、`npm run`），兜底是提交时的 diff 检查。
+- ZCode 实测（2026-10-06/07，无原型、headless RPC 驱动，GLM-5.3-flash 作全角色模型）暴露、尚未处理的问题：
+  - 验收标准里的"手工点验桌面端"会让 implementer/acceptor 反复启动真实 GUI（弹用户窗口）；规划时应把需要真机的标准标为用户自验，agent 侧改为脚本化验证。
+  - 弱模型当 acceptor 时反复触发 guard（后台 `&`、curl），累计 5 次终止并 blocked，且依赖它的修复任务无法推进（T-011 → T-013 死锁）；可考虑违规计数按 run 清零、或 guard 命中时返回可行做法而不仅是拒绝。
+  - `flow_replan`/`flow_revise_plan` 不能原地修改已创建任务的 writes，只能取消再新建；范围扩权的常见场景代价偏高。
+  - typecheck 失败的汇报只有"退出码 1"，不带关键输出；`commands.yaml` 无效只警告不阻塞；规划任务被计入任务数；主 agent 在全部模块验收后没有明确的收尾动作（阶段仍显示 E）。
 
 ## 偏离记录
 
