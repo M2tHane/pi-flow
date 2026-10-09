@@ -128,5 +128,5 @@ export function proposalSummary(store: StateStore, flowId: string): string {
   const assumed = p.assumptions?.length
     ? `\n按默认方案处理的地方（${p.assumptions.length} 项，architect 没有停下来问你；不同意就 /flow-reject "第 N 项改成……"）：\n${p.assumptions.map((x, i) => `  ${i + 1}. ${x}`).join('\n')}`
     : '';
-  return `模块清单（${p.stage}，批准后创建）：\n${p.tasks.map((t) => `- ${t.id} ${t.title}${t.depends_on.length ? `（等 ${t.depends_on.map((x) => x.task).join('、')} 验收通过）` : ''}\n  可写：${t.writes.join('、')}${t.shared?.length ? `；公共文件：${t.shared.join('、')}` : ''}\n  验收：${t.acceptance.join('；')}`).join('\n')}\n${formatDagReport(p.report)}${extras}${assumed}`;
+  return `模块清单（${p.stage}，批准后创建）：\n${p.tasks.map((t) => `- ${t.id} ${t.title}${t.depends_on.length ? `（等 ${t.depends_on.map((x) => x.task).join('、')} 验收通过）` : ''}\n  可写：${t.writes.join('、')}${t.shared?.length ? `；公共文件：${t.shared.join('、')}` : ''}${t.size ? `；大小 ${t.size}` : ''}\n  验收：${t.acceptance.join('；')}${t.manual_checks?.length ? `\n  你自己打开查看：${t.manual_checks.join('；')}` : ''}`).join('\n')}\n${formatDagReport(p.report)}${extras}${assumed}`;
 }

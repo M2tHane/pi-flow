@@ -19,6 +19,12 @@ limits:
   auto_dispatch: true           # ready 任务由程序自动派发，主 agent 只负责沟通
   continue_session: true        # 返工、验收修复、恢复时接着原来的会话继续
   merge_batch: 3                # 合并队列里最多 3 个模块一起 rebase、只跑一次全量测试，失败再逐个合并；1 关闭
+  run_minutes: 30               # 每次运行的时间预算（M 号实现任务）：验收等只读任务减半，S 号减半、L 号加倍
+  run_grace_minutes: 5          # 到期先提醒收尾（写 handoff、能提交就提交），宽限期后结束；主会话复核后决定接着做、从头做或交给你
+  max_continuations: 2          # 同一任务超时后最多再做几次，再超时转为阻塞交给你
+# 会打开桌面应用或浏览器窗口的项目命令（前缀匹配，例如 "pnpm dev:desktop"）：agent 不能运行，看效果由你自己打开。
+# open、electron、浏览器、playwright open 等常见命令已内置拦截
+gui_commands: []
 review:
   final: false                  # 最终代码审查：所有模块验收通过后，一个审查者对照项目规范审查整个流程的改动；必须改的自动修，建议由你挑选
 context:

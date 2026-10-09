@@ -44,8 +44,8 @@
 - `tool_result` 层未过滤敏感内容（`grep -r` 等可能读到 `.env`）。
 - guard 管不到脚本文件内部（`bash x.sh`、`node x.js`、`npm run`），兜底是提交时的 diff 检查。
 - ZCode 实测（2026-10-06/07，无原型、headless RPC 驱动，GLM-5.3-flash 作全角色模型）暴露、尚未处理的问题：
-  - 验收标准里的"手工点验桌面端"会让 implementer/acceptor 反复启动真实 GUI（弹用户窗口）；规划时应把需要真机的标准标为用户自验，agent 侧改为脚本化验证。
-  - 弱模型当 acceptor 时反复触发 guard（后台 `&`、curl），累计 5 次终止并 blocked，且依赖它的修复任务无法推进（T-011 → T-013 死锁）；可考虑违规计数按 run 清零、或 guard 命中时返回可行做法而不仅是拒绝。
+  - ~~验收标准里的"手工点验桌面端"会让 implementer/acceptor 反复启动真实 GUI~~：第 146 条（manual_checks、拦下界面命令）。
+  - 弱模型当 acceptor 时反复触发 guard（后台 `&`、curl），累计 5 次终止并 blocked，且依赖它的修复任务无法推进（T-011 → T-013 死锁）。curl 部分由第 147 条解决（提示与规则矛盾）；卡住后的处理见第 145 条（超时复核）。违规达上限仍直接 blocked，未改。
   - `flow_replan`/`flow_revise_plan` 不能原地修改已创建任务的 writes，只能取消再新建；范围扩权的常见场景代价偏高。
   - typecheck 失败的汇报只有"退出码 1"，不带关键输出；`commands.yaml` 无效只警告不阻塞；规划任务被计入任务数；主 agent 在全部模块验收后没有明确的收尾动作（阶段仍显示 E）。
 
@@ -234,6 +234,9 @@
 142. `/flow-config` 菜单与 `show` 给每个角色标上做什么；README 以交互菜单为主，`set`/`unset` 保留给没有界面的场景。
 143. 删除 `learn-demo.html`（内容已过时，维护成本高），改为 `docs/pi-flow.drawio`（6 页：流程总览、角色、需求讨论、模块的生命周期、架构与安全、修复与中途变更）；流程变化时同步更新它。
 144. `/flow-config` 终端界面改为一张角色表（角色、职责、模型、备用模型、思考强度）：↑↓←→ 在表格里移动（最初用 Tab 切列，用户改为左右键）、Enter 在该格旁弹出下拉框（↑↓ 选、Enter 确认、Esc 收起；先在表格下方另起一块列表，用户改为下拉）、Backspace 恢复默认、表格里 Esc 保存并退出，按键提示固定在最下面一行（先做过 ←→ 改值，用户改为列表）；用 `ctx.ui.custom`（pi-tui 组件接口，Pi 1.0.0）承载，按键与渲染是纯逻辑（`src/commands/role-table.ts`，不 import pi-tui，自己识别传统与 Kitty 按键序列）；RPC 等无自定义组件的模式退回逐级菜单。
+145. 每次运行有时间预算（ZCode 实测 worker 与验收者卡住，心跳续租让租约管不住"忙着做无用功"）：M 号实现任务 `limits.run_minutes`（默认 30），只读任务减半，模块 `size` S 减半、L 加倍；到期 steer 提醒收尾，`run_grace_minutes`（默认 5）后结束，run 记为 `timeout`。超时不计失败，任务带 `timeout_review` 等主会话用 `flow_resolve_timeout` 复核：continue 接着原会话（fork 允许来自超时的会话）、restart 不带旧对话从头做、block 交给用户；超过 `max_continuations`（默认 2）次转 blocked。
+146. agent 只写代码、跑测试，不打开桌面应用与浏览器：guard 拦下 open、electron、浏览器、`playwright open`、`--headed`、`--ui` 等，以及 workflow.yaml 的 `gui_commands`（项目自己的启动命令，前缀匹配）。要看效果的写进模块的 `manual_checks`（界面模块自动加一条），验收者也可以把只差"打开看一眼"的条目标为 `manual`（不算未通过）；模块验收通过后列给用户与主会话。
+147. curl 只访问本机时放行（不能 -o 写文件、走代理、读配置）：acceptor 的提示一直写着用 curl 调接口，旧规则却对所有非 researcher 角色一律拦下，ZCode 的 T-011 因此违规到上限、卡住依赖它的修复任务。wget 仍然禁止。
 
 ## 真实模型实验
 
@@ -264,6 +267,8 @@
 ## 缓存提醒
 
 修改 `agents/`、`rules/`、`skills/` 会改变子进程系统提示的稳定前缀，提供商的提示缓存失效一次；`rules/` 的改动只影响之后 `/flow init` 的新项目。改动时在此追加一行。
+
+- 10-09（第 145–147 条）：orchestrator（超时复核、提醒用户查看 manual 条目）、implementer（不打开桌面应用与浏览器）、acceptor（curl 只访问本机、manual 条目）角色提示；`rules/global.md` 新增第 13 条（之后的条目顺延）；技能 plan-modules（size、manual_checks、验收标准不写要打开界面的条目）、revise-plan；工具声明多了 flow_resolve_timeout（主会话），flow_propose_modules 多了 size、manual_checks，flow_accept 的结果多了 manual，flow_revise_plan 的任务多了 size、manual_checks。
 
 - 10-06（第 139–141 条）：designer（设计规范与共用样式）、architect（ui、ui_pages）、implementer（界面按原型与设计规范实现）、acceptor（界面条目怎么验）角色提示；技能 write-prototype（DESIGN.md 结构）、plan-modules（ui、ui_pages）、grilling（ask_user）；工具声明 flow_propose_modules 多了 ui、ui_pages。
 - 10-06（第 134–138 条）：orchestrator（主 agent 直接讨论需求、可读代码）、architect（术语表、切分规则）、implementer（tdd）、acceptor（读术语表）角色提示；新增 reviewer 角色；删除 user-advocate、dev-advocate、analyst。技能新增 grilling、domain-modeling、tdd、code-review，重写 plan-modules、write-requirements（改给主会话用）。工具声明多了 flow_requirements（主会话）、flow_review_report；flow_submit 去掉 prototype 参数。

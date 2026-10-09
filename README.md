@@ -208,6 +208,16 @@ B-001「做一个待办应用」
 - **模型额度用完、限流时暂停，不判失败**：子进程因模型额度用完或暂时不可用（限流、过载、5xx、本地服务没启动）而结束时，任务不计失败，而是暂停这个模型：用它的任务先不派发，用其他模型的照常进行。"需要你处理"里会列出被暂停的模型、原因、受影响的任务。错误信息里带恢复时间时到点自动恢复；限流、过载从 5 分钟起自动重试（间隔加倍，最多 60 分钟）；额度用完又没给时间的等你 `/flow models resume <模型>`；也可以用 `/flow-config` 换模型。
 - **预算**：`workflow.yaml` 的 `budget`（tokens 计输入 + 输出、cost 计金额）或 `/flow budget` 为单个流程设置。用到 `warn_ratio`（默认 80%）时提醒，超出后暂停派发新任务（返工照常）。
 
+### 卡住的运行：时间预算与主 agent 复核
+
+每次运行都有时间预算：M 号实现任务 30 分钟（`limits.run_minutes`），验收这类只读任务减半；architect 规划时给模块标大小，S 减半、L 加倍。到期时程序插话提醒它收尾（写 handoff、能提交就提交），5 分钟宽限（`run_grace_minutes`）后结束运行。超时不算失败，任务等主 agent 复核：它看过改动、handoff 和最后的回复，决定接着原会话再做（continue）、不带旧对话换个思路从头做（restart），或者交给你（block）。同一任务超时超过 2 次（`max_continuations`）就转为阻塞，交给你处理。
+
+### 不打开桌面应用和浏览器
+
+agent 只写代码、跑测试（无界面的浏览器测试照常运行），不会启动桌面应用或打开浏览器窗口：`open`、`electron`、浏览器、`playwright open`、`--headed` 等会被拦下，项目自己会弹窗口的启动命令写进 `workflow.yaml` 的 `gui_commands`（例如 `"pnpm dev:desktop"`，前缀匹配，`pnpm run x` 与 `pnpm x` 视为同一条）。要看效果的事，architect 规划时写进模块的 `manual_checks`（界面模块自动加一条"对照原型看一遍"），验收者也可以把只差"打开看一眼"的条目标给你。模块验收通过后，这些条目出现在"需要你处理"里，由你自己打开查看；有问题用 `/flow-add` 描述。
+
+验收者可以用 curl 调用自己启动的本机服务（只能访问 localhost、127.0.0.1，不能写文件、走代理）。
+
 ### 执行中修订计划
 
 实施过程中要改需求、发现漏了功能、或者某个模块划分得不对，直接告诉主 agent。主 agent 调用 `flow_replan` 把你的原话交给 architect；不在调度模式时用 `/flow replan "<要改什么>"`。architect 先写影响分析（要改哪些接口和模块，受影响的模块哪些已完成、在做、没开始），再提交修订：未开始的取消或调整，进行中的做完后接一个修改任务，已完成的新增修改任务。程序校验合并后的任务图（角色、范围、无环），你 `/flow-approve` 后在一个事务里生效。
@@ -252,7 +262,8 @@ architect 默认启用 Pi 的 codemode：模型可以写一段脚本并行调用
 | 部分 | 内容 |
 |---|---|
 | `main_branch`、`commands` | 主分支名；install、typecheck、lint、test 的实际命令，可选的 `merge_check`（合并时一起跑的额外检查）。闸门只能引用这里的命令名 |
-| `limits` | 模块并发 `max_parallel`、批量合并 `merge_batch`、失败上限 `max_attempts`、租约 `lease_minutes`、单条 bash 超时 `bash_timeout_s`、自动派发 `auto_dispatch`、返工接续对话 `continue_session`、违规上限等 |
+| `limits` | 模块并发 `max_parallel`、批量合并 `merge_batch`、失败上限 `max_attempts`、租约 `lease_minutes`、单条 bash 超时 `bash_timeout_s`、每次运行的时间预算 `run_minutes`、宽限 `run_grace_minutes`、超时后最多再做 `max_continuations` 次、自动派发 `auto_dispatch`、返工接续对话 `continue_session`、违规上限等 |
+| `gui_commands` | 会打开桌面应用或浏览器窗口的项目命令（前缀匹配），agent 不能运行 |
 | `models` | 档位（strong、medium、cheap）对应的具体模型；`/flow-config` 设置过的角色以它为准 |
 | `context` | 触发压缩的上下文占比 `compact_at`（默认 0.7） |
 | `testing` | 适配已有测试 `adjust_tests`（默认开） |

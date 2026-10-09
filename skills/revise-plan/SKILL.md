@@ -16,6 +16,6 @@ description: 实施中修订模块计划：分析影响 → 新增模块或修�
    - 进行中的：不能取消。让它做完，再新增一个修改任务硬依赖它；也可以请用户用 /flow-add --task 直接把要求送给它。
    - 已完成的：新增修改任务（例如"知识库：检索结果加上高亮"）。
 3. **新增任务**：id 用 N-001 起；stage 为实施阶段；kind 为 impl，角色 implementer，scopes [code]；
-   writes 写具体目录，几个模块都会改的文件放进 shared；acceptance 每条都能实际运行验证（独立验收者会逐条确认）；
+   writes 写具体目录，几个模块都会改的文件放进 shared；acceptance 每条都能用测试或命令验证（独立验收者会逐条确认，agent 不打开桌面应用与浏览器）；只能打开应用看效果的写进 manual_checks；按大小填 size（S、M、L）；
    verify 用 [test]；依赖写 reason。
 4. 需要改模块之间的接口时，在新增任务的验收标准里写明，并把 docs/interfaces/ 下的文件放进它的 writes。

@@ -8,7 +8,7 @@ export const BUILTIN_WRITE_TOOLS = ['write', 'edit'] as const;
 export const FLOW_TOOLS = [
   'flow_status', 'flow_dispatch', 'flow_wait', 'flow_claim', 'flow_note', 'flow_submit',
   'flow_block', 'flow_learn', 'flow_revise_plan', 'flow_replan', 'flow_requirements', 'notes', 'history',
-  'flow_propose_modules', 'flow_sync', 'flow_accept', 'flow_accept_confirm', 'flow_review_report',
+  'flow_propose_modules', 'flow_sync', 'flow_accept', 'flow_accept_confirm', 'flow_review_report', 'flow_resolve_timeout',
 ] as const;
 /** 所有角色（包括 orchestrator）都隐式拥有的工具（第五轮：结构化笔记与历史检索） */
 export const MEMORY_TOOLS = ['notes', 'history'] as const;
@@ -22,9 +22,9 @@ export const ORCHESTRATING_TOOLS = ['codemode'] as const;
 export const BASH_READONLY = 'bash_readonly';
 
 /** 只能出现在特定角色上的工具 */
-const ROLE_EXCLUSIVE: Record<string, string> = { flow_accept: 'acceptor', flow_accept_confirm: 'acceptor', flow_review_report: 'reviewer', flow_propose_modules: 'architect', flow_revise_plan: 'architect', flow_replan: 'orchestrator', flow_requirements: 'orchestrator' };
+const ROLE_EXCLUSIVE: Record<string, string> = { flow_accept: 'acceptor', flow_accept_confirm: 'acceptor', flow_review_report: 'reviewer', flow_propose_modules: 'architect', flow_revise_plan: 'architect', flow_replan: 'orchestrator', flow_requirements: 'orchestrator', flow_resolve_timeout: 'orchestrator' };
 /** orchestrator 只允许这些工具（第 20 节） */
-const ORCHESTRATOR_ALLOWED = new Set(['read', 'grep', 'find', 'ls', 'ask_user', 'flow_status', 'flow_dispatch', 'flow_wait', 'flow_replan', 'flow_requirements', ...MEMORY_TOOLS]);
+const ORCHESTRATOR_ALLOWED = new Set(['read', 'grep', 'find', 'ls', 'ask_user', 'flow_status', 'flow_dispatch', 'flow_wait', 'flow_replan', 'flow_requirements', 'flow_resolve_timeout', ...MEMORY_TOOLS]);
 const WRITE_GROUP = 'serena_edit';
 const WEB_GROUP = 'web';
 
@@ -220,6 +220,8 @@ export function parseConfig(source: string): FlowConfig {
     if (name === 'orchestrator' && !toolList.includes('flow_replan')) toolList.push('flow_replan');
     // 第五轮：需求讨论由 orchestrator 直接和用户进行，隐式拥有 flow_requirements
     if (name === 'orchestrator' && !toolList.includes('flow_requirements')) toolList.push('flow_requirements');
+    // 运行超时后的复核由 orchestrator 决定（接着做、从头做、交给用户）
+    if (name === 'orchestrator' && !toolList.includes('flow_resolve_timeout')) toolList.push('flow_resolve_timeout');
     // 第五轮：所有角色都有结构化笔记与历史检索
     for (const x of MEMORY_TOOLS) if (!toolList.includes(x)) toolList.push(x);
     // 偏离：有 flow_submit 的角色隐式拥有 flow_claim（角色提示要求先 claim）

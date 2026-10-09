@@ -5,7 +5,7 @@ import type { StateStore } from './state-store.ts';
 import { isFinished } from './state-store.ts';
 import { budgetState, formatBudget } from './cost-control.ts';
 import { activePauses, describePause } from './model-pause.ts';
-import { MAX_GATE_ROUNDS, describeAcceptance } from './acceptance.ts';
+import { MAX_GATE_ROUNDS, describeAcceptance, manualChecksOf } from './acceptance.ts';
 import { type FlowFile, type Phase, type TaskFile } from './schemas.ts';
 import { DESIGN_STAGES, PROPOSAL_STAGES } from '../modes/plan.ts';
 
@@ -132,6 +132,11 @@ export function actionsNeeded(store: StateStore, config: FlowConfig): Action[] {
       } else if (gate?.to === 'active' && gate.data?.['stage'] === flow.stage && (DESIGN_STAGES.has(flow.stage) || rounds >= MAX_GATE_ROUNDS || !tasks.some((t) => t.stage === flow.stage && !['done', 'cancelled'].includes(t.status)))) {
         out.push({ key: `${flow.id}:gatefail:${gate.seq}`, text: `阶段检查未通过${rounds >= MAX_GATE_ROUNDS ? `（已自动修复 ${rounds} 轮）` : ''}：${short(gate.reason ?? '')}`, command: '用 /flow replan "<怎么修>" 交给 architect，或处理后执行 /flow gate 重跑' });
       }
+    }
+    // 要你自己打开应用查看的检查项（agent 不启动桌面应用与浏览器）：模块验收通过后列出
+    for (const m of manualChecksOf(store, flow.id)) {
+      out.push({ key: `${flow.id}:manual:${m.task}:${m.items.length}`, text: `模块 ${m.task}「${short(m.title, 40)}」代码已验收，需要你打开应用查看：${m.items.map((x, i) => `${i + 1}. ${short(x, 120)}`).join('；')}`,
+        command: `有问题用 /flow-add "${m.task} 的问题：<看到了什么>"（交给 architect 安排修复）；没问题不用操作` });
     }
     const review = flow.mode !== 'fix' ? store.readFinalReview(flow.id) : null;
     if (review?.status === 'awaiting_user') {

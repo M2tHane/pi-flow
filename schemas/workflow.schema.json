@@ -88,9 +88,28 @@
         "merge_batch": {
           "type": "integer",
           "minimum": 1
+        },
+        "run_minutes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "run_grace_minutes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_continuations": {
+          "type": "integer",
+          "minimum": 0
         }
       },
       "additionalProperties": false
+    },
+    "gui_commands": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
     },
     "models": {
       "type": "object",

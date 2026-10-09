@@ -26,6 +26,8 @@ export type Script = (a: FakeAgent) => Promise<void>;
 export class FakeLauncher implements SubagentLauncher {
   readonly launched: SubagentSpec[] = [];
   readonly transcripts: { role: string; calls: { tool: string; ok: boolean; text: string }[] }[] = [];
+  /** 运行中插话（时间预算到期的收尾提醒、/flow-add） */
+  readonly steers: { run: string; message: string }[] = [];
   private readonly store: StateStore;
   private readonly config: FlowConfig;
   private readonly pick: (spec: SubagentSpec, nth: number) => Script;
@@ -106,6 +108,6 @@ export class FakeLauncher implements SubagentLauncher {
       () => outcome(0, null),
       (e) => outcome(1, e instanceof Terminated ? '被 guard 终止' : String(e)),
     );
-    return { pid: undefined, done, kill: () => { terminated = true; } };
+    return { pid: undefined, done, kill: () => { terminated = true; }, steer: (message) => { this.steers.push({ run: env.run, message }); return !terminated; } };
   }
 }

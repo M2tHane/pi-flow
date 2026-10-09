@@ -8,14 +8,16 @@ import { INTERFACES_PATH, isProtected, matchesAny } from './paths.ts';
 
 export type Trigger =
   | 'schedule' | 'dispatch' | 'submit' | 'merge_start' | 'merge_done' | 'merge_verify_fail' | 'merge_blocked' | 'merge_requeue'
-  | 'block' | 'unblock' | 'lease_expired' | 'run_failed' | 'run_interrupted' | 'run_paused' | 'report' | 'cancel';
+  | 'block' | 'unblock' | 'lease_expired' | 'run_failed' | 'run_interrupted' | 'run_paused' | 'run_timeout' | 'report' | 'cancel';
 
 /** 同一任务连续会话中断达到此次数转 blocked，防止无限重来 */
 export const MAX_INTERRUPTIONS = 5;
+/** 同一任务超时后可以接着做的次数（limits.max_continuations 的默认值） */
+export const DEFAULT_MAX_CONTINUATIONS = 2;
 
 export interface Facts {
   now: Date;
-  limits: { max_attempts: number; max_parallel: number };
+  limits: { max_attempts: number; max_parallel: number; max_continuations?: number };
   /** 发起者：human、engine、run:<id> 等 */
   actor: string;
   // —— 由 StateStore 推导 ——
@@ -43,7 +45,7 @@ export interface Facts {
   attempts?: number;
 }
 
-export type TaskPatch = Partial<Pick<TaskFile, 'lease' | 'worktree' | 'branch' | 'base_sha'>>;
+export type TaskPatch = Partial<Pick<TaskFile, 'lease' | 'worktree' | 'branch' | 'base_sha' | 'timeout_review'>>;
 
 interface Rule {
   from: readonly TaskStatus[];
@@ -162,7 +164,7 @@ export const TRANSITIONS: readonly Rule[] = [
   {
     from: IN_FLIGHT, to: 'blocked', trigger: 'block',
     check: (_t, f) => reasonRequired(f),
-    effect: (t, f) => { t.blocked_reason = f.reason!; t.lease = null; },
+    effect: (t, f) => { t.blocked_reason = f.reason!; t.lease = null; delete t.timeout_review; },
   },
   {
     // 只读任务（需求讨论、验收、计划修订）提交结论后直接完成，没有 diff 与合并
@@ -201,11 +203,19 @@ export const TRANSITIONS: readonly Rule[] = [
     effect: (t) => { t.lease = null; },
   },
   {
+    // 超过时间预算被结束：不计失败，记一次超时，等主会话复核（复核内容由调用方经 patch.timeout_review 给出）
+    from: ['in_progress'], to: 'in_progress', trigger: 'run_timeout',
+    check: (t, f) => [...need(!!t.lease, '任务没有运行中的 run'), ...need(!!t.timeout_review, '缺少超时复核信息'), ...reasonRequired(f)],
+    effect: (t) => { t.lease = null; t.timeouts = (t.timeouts ?? 0) + 1; },
+  },
+  {
     from: ['blocked'], to: 'ready', trigger: 'unblock',
     check: (_t, f) => need(f.actor === 'human', '只有用户可以通过 /flow unblock 解除阻塞'),
     effect: (t, f) => {
       t.attempts = f.attempts ?? 0;
       t.lease_expirations = 0;
+      delete t.timeouts;
+      delete t.timeout_review;
       t.blocked_reason = null;
       t.lease = null;
       t.worktree = null;
@@ -260,6 +270,12 @@ export function planTransition(task: TaskFile, to: TaskStatus, trigger: Trigger,
   if (trigger === 'run_interrupted' && (next.interruptions ?? 0) >= MAX_INTERRUPTIONS) {
     effective = 'blocked';
     next.blocked_reason = `会话已连续中断 ${next.interruptions} 次：${facts.reason ?? ''}。请检查环境后 /flow unblock`;
+  }
+  const maxCont = facts.limits.max_continuations ?? DEFAULT_MAX_CONTINUATIONS;
+  if (trigger === 'run_timeout' && (next.timeouts ?? 0) > maxCont) {
+    effective = 'blocked';
+    delete next.timeout_review;
+    next.blocked_reason = `运行已超时 ${next.timeouts} 次（每次的时间预算用完仍没完成）：${facts.reason ?? ''}。请看 handoff 判断卡在哪，必要时改计划（拆小任务）或换模型后 /flow unblock`;
   }
   next.status = effective;
   return { ok: true, task: next, to: effective, rule };

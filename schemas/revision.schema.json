@@ -158,6 +158,24 @@
             "items": {
               "type": "string"
             }
+          },
+          "size": {
+            "enum": [
+              "S",
+              "M",
+              "L"
+            ],
+            "description": "任务大小：S 小改动、M 一般模块（默认）、L 大模块；决定每次运行的时间预算"
+          },
+          "manual_checks": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 500
+            },
+            "maxItems": 20,
+            "description": "要用户自己打开应用查看的检查项（agent 不启动桌面应用与浏览器）"
           }
         },
         "additionalProperties": false

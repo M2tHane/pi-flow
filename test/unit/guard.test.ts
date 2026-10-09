@@ -290,3 +290,43 @@ test('适配已有测试：列出的已有测试文件可以写（不受角色�
   blocked(checkToolCall(bash('rm tests/acceptance/api.test.js'), c), 'bash');
   blocked(checkToolCall(call('write', { path: 'tests/acceptance/api.test.js', content: '' }), ctx('backend-engineer', { writes: ['src/server/a.ts'] })), 'write_paths');
 });
+
+test('不能打开桌面应用或浏览器窗口：内置的界面命令与 gui_commands 都被拦下；无界面的测试照常运行', () => {
+  const gui = parseConfig(YAML.replace(/^limits:/m, 'gui_commands: ["pnpm dev:desktop", "node scripts/dev-desktop-env.mjs"]\nlimits:'));
+  const c = { ...ctx('backend-engineer'), config: gui };
+  for (const cmd of [
+    'open http://localhost:3000',
+    'open -a Safari index.html',
+    'xdg-open index.html',
+    'npx electron .',
+    'pnpm exec electron dist/main.js',
+    'npx playwright open http://localhost:3000',
+    'npx playwright test --headed',
+    'npx vitest --ui',
+    'npx cypress open',
+    'osascript -e "tell app \\"ZCode\\" to activate"',
+    'pnpm dev:desktop',
+    'pnpm run dev:desktop:test',
+    'pnpm dev:desktop:test --inspect',
+    'cd packages && node scripts/dev-desktop-env.mjs test',
+    'bash -c "pnpm dev:desktop"',
+  ]) blocked(checkToolCall(bash(cmd), c), 'bash', /不能启动桌面应用或打开浏览器窗口/);
+  for (const cmd of ['npx playwright test', 'pnpm test', 'pnpm dev:desktopx', 'node -e "1"', 'npm run build']) allowed(checkToolCall(bash(cmd), c));
+});
+
+test('curl 只能访问本机：调用自己启动的服务放行；外网、写文件、代理被拦下', () => {
+  const c = ctx('backend-engineer');
+  for (const cmd of [
+    'curl -s http://localhost:3000/api/health',
+    'curl -sS -X POST -H "Content-Type: application/json" -d \'{"a":1}\' http://127.0.0.1:8080/x',
+    'curl -s -o /dev/null -w "%{http_code}" http://localhost:5173/',
+    'curl localhost:3000/x',
+  ]) allowed(checkToolCall(bash(cmd), c));
+  blocked(checkToolCall(bash('curl https://example.com'), c), 'bash', /只能访问本机/);
+  blocked(checkToolCall(bash('curl -o out.html http://localhost:3000/'), c), 'bash', /不能使用 -o/);
+  blocked(checkToolCall(bash('curl -x http://proxy:8080 http://localhost:3000/'), c), 'bash', /不能使用 -x/);
+  blocked(checkToolCall(bash('curl -sO http://localhost:3000/a'), c), 'bash', /不能使用/);
+  blocked(checkToolCall(bash('curl http://localhost:3000@evil.com/'), c), 'bash', /只能访问本机/);
+  blocked(checkToolCall(bash('curl -s'), c), 'bash', /完整的 URL/);
+  blocked(checkToolCall(bash('wget http://localhost:3000/'), c), 'bash');
+});

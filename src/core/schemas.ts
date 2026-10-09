@@ -20,6 +20,26 @@ export const TASK_KINDS = ['impl', 'doc', 'review-fix', 'merge-fix', 'analysis']
 export const TaskKind = Type.Enum(TASK_KINDS);
 export type TaskKind = (typeof TASK_KINDS)[number];
 
+/** 任务大小（architect 规划时标注）：决定每次运行的时间预算，S 减半、L 加倍，默认 M */
+export const TASK_SIZES = ['S', 'M', 'L'] as const;
+export const TaskSize = Type.Enum(TASK_SIZES);
+export type TaskSize = (typeof TASK_SIZES)[number];
+
+/** 要用户自己打开应用查看的检查项：agent 不启动桌面应用与浏览器，程序不派人验证，模块验收通过后列给用户 */
+const ManualChecks = Type.Array(Type.String({ minLength: 1, maxLength: 500 }), { maxItems: 20 });
+
+/** 运行超时、等主会话复核：主会话决定接着原会话做（continue）、换个思路从头做（restart），或交给用户（转 blocked） */
+export const TimeoutReview = Type.Object({
+  run: Type.String({ minLength: 1 }),
+  at: IsoTime,
+  minutes: Type.Integer({ minimum: 1 }),
+  /** 子进程最后一段回复（截断） */
+  last_text: Type.Optional(Type.String()),
+  decision: Type.Optional(Type.Union([Type.Literal('continue'), Type.Literal('restart')])),
+  note: Type.Optional(Type.String({ maxLength: 2000 })),
+}, { additionalProperties: false });
+export type TimeoutReview = Static<typeof TimeoutReview>;
+
 export const STAGE_STATUSES = ['active', 'awaiting_gate', 'awaiting_human', 'done', 'aborted'] as const;
 export const StageStatus = Type.Enum(STAGE_STATUSES);
 export type StageStatus = (typeof STAGE_STATUSES)[number];
@@ -116,6 +136,12 @@ export const TaskFile = Type.Object({
   lease_expirations: Type.Integer({ minimum: 0 }),
   /** 会话中断（pi 崩溃、被强杀、用户关闭）导致 run 丢失的次数；不计入 attempts */
   interruptions: Type.Optional(Type.Integer({ minimum: 0 })),
+  /** 运行超过时间预算被结束的次数；不计入 attempts，超过 limits.max_continuations 转 blocked */
+  timeouts: Type.Optional(Type.Integer({ minimum: 0 })),
+  /** 超时后等主会话复核（有 decision 后由程序按决定重新派发） */
+  timeout_review: Type.Optional(TimeoutReview),
+  size: Type.Optional(TaskSize),
+  manual_checks: Type.Optional(ManualChecks),
   lease: Nullable(Lease),
   impl_run: Nullable(Type.String()),
   branch: Nullable(Type.String()),
@@ -193,6 +219,8 @@ export const RunFile = Type.Object({
     Type.Literal('failed'), Type.Literal('killed'), Type.Literal('lease_expired'), Type.Literal('noted'),
     /** 模型服务不可用（额度用完、限流等）：不计失败，模型暂停 */
     Type.Literal('unavailable'),
+    /** 超过时间预算被结束：不计失败，等主会话复核 */
+    Type.Literal('timeout'),
   ])),
   token_hash: Type.String({ minLength: 64, maxLength: 64 }),
   violations: Type.Integer({ minimum: 0 }),
@@ -206,6 +234,9 @@ export const RunFile = Type.Object({
   turns: Type.Optional(Type.Integer({ minimum: 0 })),
   /** 接着哪次 run 的对话继续（返工时 fork 上一次的会话） */
   forked_from: Type.Optional(Type.String()),
+  /** 时间预算到期的时刻（到期先提醒收尾，宽限期后结束） */
+  deadline_at: Type.Optional(IsoTime),
+  warned_at: Type.Optional(IsoTime),
   /** 子进程会话留档目录（<项目>.worktrees/.sessions/<run>/）与结束后找到的会话文件 */
   session_dir: Type.Optional(Type.String()),
   session_file: Type.Optional(Nullable(Type.String())),
@@ -277,7 +308,15 @@ export const WorkflowFile = Type.Object({
     auto_dispatch: Type.Optional(Type.Boolean()),
     /** 批量合并（第四轮后续）：不逐任务审查时，合并队列里最多这么多个任务一起 rebase、只跑一次全量测试，默认 3；1 关闭 */
     merge_batch: Type.Optional(PosInt),
+    /** 每次运行的时间预算（分钟，M 号实现任务），默认 30：只读任务（验收、修订）减半，S 号减半、L 号加倍 */
+    run_minutes: Type.Optional(PosInt),
+    /** 预算到期提醒收尾后的宽限（分钟），默认 5；仍没结束就结束运行 */
+    run_grace_minutes: Type.Optional(PosInt),
+    /** 同一任务超时后可以接着做的次数，默认 2；再超时转 blocked 交给用户 */
+    max_continuations: Type.Optional(Type.Integer({ minimum: 0 })),
   }, { additionalProperties: false }),
+  /** 会打开桌面应用或浏览器窗口的项目命令（前缀匹配，例如 "pnpm dev:desktop"）：agent 不能运行，要看效果时交给用户 */
+  gui_commands: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
   models: Type.Record(Type.String(), Type.String({ minLength: 1 })),
   modes: Type.Object({ build: Type.Optional(ModeDef), feature: Type.Optional(ModeDef) }, { additionalProperties: false }),
   scopes: Type.Record(Type.String(), Type.Object({
@@ -336,6 +375,8 @@ export const ProposedTask = Type.Object({
   verify: Type.Array(Type.String()),
   shared: Type.Optional(Type.Array(Type.String())),
   needs_acceptance: Type.Optional(Type.Boolean()),
+  size: Type.Optional(TaskSize),
+  manual_checks: Type.Optional(ManualChecks),
 }, { additionalProperties: false });
 export type ProposedTask = Static<typeof ProposedTask>;
 
@@ -380,6 +421,8 @@ export const RevisionTask = Type.Object({
   verify: Type.Array(Type.String()),
 
   shared: Type.Optional(Type.Array(Type.String())),
+  size: Type.Optional(Type.Enum(TASK_SIZES, { description: '任务大小：S 小改动、M 一般模块（默认）、L 大模块；决定每次运行的时间预算' })),
+  manual_checks: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 500 }), { maxItems: 20, description: '要用户自己打开应用查看的检查项（agent 不启动桌面应用与浏览器）' })),
 }, { additionalProperties: false });
 export type RevisionTask = Static<typeof RevisionTask>;
 
@@ -479,6 +522,8 @@ export const AcceptanceResult = Type.Object({
   id: Type.String({ pattern: '^A-[0-9]+$' }),
   passed: Type.Boolean(),
   evidence: Type.String({ maxLength: 2000 }),
+  /** 只能打开应用看效果才能确认：交给用户手动验证，不算未通过 */
+  manual: Type.Optional(Type.Boolean()),
 }, { additionalProperties: false });
 export type AcceptanceResult = Static<typeof AcceptanceResult>;
 export const AcceptanceFile = Type.Object({

@@ -144,6 +144,68 @@
       "type": "integer",
       "minimum": 0
     },
+    "timeouts": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "timeout_review": {
+      "type": "object",
+      "required": [
+        "run",
+        "at",
+        "minutes"
+      ],
+      "properties": {
+        "run": {
+          "type": "string",
+          "minLength": 1
+        },
+        "at": {
+          "type": "string",
+          "minLength": 1
+        },
+        "minutes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "last_text": {
+          "type": "string"
+        },
+        "decision": {
+          "anyOf": [
+            {
+              "type": "string",
+              "const": "continue"
+            },
+            {
+              "type": "string",
+              "const": "restart"
+            }
+          ]
+        },
+        "note": {
+          "type": "string",
+          "maxLength": 2000
+        }
+      },
+      "additionalProperties": false
+    },
+    "size": {
+      "enum": [
+        "S",
+        "M",
+        "L"
+      ]
+    },
+    "manual_checks": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 500
+      },
+      "maxItems": 20
+    },
     "lease": {
       "anyOf": [
         {

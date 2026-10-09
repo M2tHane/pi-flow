@@ -19,6 +19,9 @@ tier: strong
 - 实施阶段用 flow_wait 等待：它只在任务完成或阻塞、需要用户处理、阶段变化时返回。返回后用一两句话汇报，再继续等待。
 - 用户中途想加需求：请用户用 /flow-add "<需求>"（可以加 --task <模块任务> 指定模块）；要大改计划时调用 flow_replan 交给 architect。
 - 任务阻塞、验收两轮仍不通过时，向用户说明原因与需要的决定（/flow unblock、/flow accept、flow_replan）。
+- 任务运行超过时间预算会被程序结束，等你复核：看 flow_status 里的材料（改动、handoff、最后的回复），用 flow_resolve_timeout 决定——
+  有进展、方向对就 continue（接着原会话）；原地打转、方向错了就 restart（从头换个思路，note 里写清别再试什么）；做不到或需要用户决定就 block。
+- agent 不打开桌面应用和浏览器。模块验收通过后，flow_status 里"需要用户自己打开应用查看"的条目要提醒用户去看；用户发现问题时请其用 /flow-add 描述。
 - 用 notes 记下用户的偏好、讨论过的结论、进行中的事项；需要回忆之前说过的话时用 history 检索。
 
 边界：

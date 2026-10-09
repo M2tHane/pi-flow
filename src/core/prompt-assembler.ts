@@ -52,6 +52,8 @@ export interface AssembleInput {
   priorTask?: { id: string; title: string; run: string };
   /** 接着本任务上一次运行（run）的对话继续，只给简短的续做说明 */
   continuation?: { run: string };
+  /** 上一次运行超过时间预算被结束，主会话复核后继续：forked 表示接着那次的对话，否则从头开始（只带 handoff 与工作区） */
+  timeoutResume?: { run: string; minutes: number; budget: number; forked: boolean; decision?: 'continue' | 'restart'; note?: string };
   /** 本任务依赖的上游任务及其 handoff（需求汇总者从这里读两方意见） */
   upstream?: { id: string; title: string; type: 'hard' | 'soft'; status: string; handoff: string }[];
 }
@@ -92,6 +94,26 @@ export function continuationPrompt(i: AssembleInput): string {
     ...(i.scratchDir ? [`## 临时目录\n本次运行的临时目录换成了 \`${i.scratchDir}\`（上次的已删除）。`] : []),
     '开始：本次运行的身份已更换，先调用 flow_claim；按上面的原因修改，然后 flow_note 写 handoff 并 flow_submit。',
   ].join('\n\n');
+}
+
+/** 超时后主会话决定接着做：对话就在上面，只说明这次为什么回来 */
+export function timeoutContinuationPrompt(i: AssembleInput): string {
+  const t = i.task;
+  const r = i.timeoutResume!;
+  return [
+    `# 继续任务 ${i.flowId}/${t.id}：${t.title}`,
+    `上一次运行（${r.run}）用完了 ${r.minutes} 分钟的时间预算被结束。主会话看过进度，决定接着上面的对话继续；工作区保留着你的代码与本地提交。`,
+    ...(r.note ? [`## 主会话的意见（请先看）\n${r.note}`] : []),
+    ...(i.scratchDir ? [`## 临时目录\n本次运行的临时目录换成了 \`${i.scratchDir}\`（上次的已删除）。`] : []),
+    `本次的时间预算是 ${r.budget} 分钟。不要重复上次已经失败的尝试；做不到或需要用户决定的事用 flow_block 说明。`,
+    `开始：本次运行的身份已更换，${i.mode === 'impl' ? '先调用 flow_claim，然后接着做，最后 flow_note 写 handoff 并 flow_submit。' : '接着完成上面的工作并提交结论。'}`,
+  ].join('\n\n');
+}
+
+/** 超时后主会话决定从头做：不带旧对话，说明上次卡住的情况 */
+function restartSection(r: NonNullable<AssembleInput['timeoutResume']>): string {
+  const why = r.decision === 'restart' ? '主会话决定换个思路从头做（不带上次的对话）' : '主会话决定接着做，但上次的对话接不上（换了模型或会话太长），这次从头开始';
+  return `## 上一次运行超时\n上一次运行（${r.run}）用完了 ${r.minutes} 分钟的时间预算还没完成，${why}。先看 handoff 与工作区里已有的改动，不要重复上次走不通的路。${r.note ? `\n主会话的意见：${r.note}` : ''}\n本次的时间预算是 ${r.budget} 分钟。`;
 }
 
 export function assemblePrompt(i: AssembleInput): AssembledPrompt {
@@ -135,9 +157,14 @@ export function assemblePrompt(i: AssembleInput): AssembledPrompt {
     parts.push(`## handoff 笔记${h.length > HANDOFF_TAIL ? '（仅保留最近部分）' : ''}\n${h.slice(-HANDOFF_TAIL)}`);
   }
   if (t.last_failure) parts.push(`## 上次未通过的原因（请先处理）\n${t.last_failure}`);
+  if (i.timeoutResume && !i.timeoutResume.forked) parts.push(restartSection(i.timeoutResume));
+  if (i.timeoutResume?.forked) {
+    const user = timeoutContinuationPrompt(i);
+    return { system, user };
+  }
   if (i.mode === 'accept' && i.accept) {
     parts.push(`## ${i.accept.kind === 'check' ? '逐条验收' : '只复查这些条目'}\n${i.accept.items.map((x) => `- ${x.id} ${x.text}${x.last ? `\n  上次结论：${x.last}` : ''}`).join('\n')}`);
-    parts.push(`## 验收的要求\n1. 在当前工作区（集成分支最新代码）上构建并实际运行：启动服务、调用接口、打开页面、跑相关测试。临时文件、数据库、日志放在临时目录${i.scratchDir ? ` \`${i.scratchDir}\`` : ''}，不要改仓库里的文件。\n2. 每个条目给出 passed（true/false）与证据：运行的命令、请求与响应、看到的结果。没法验证的条目判为未通过并写明原因。\n3. 只看这些条目是否做到，不提风格偏好和重构建议。`);
+    parts.push(`## 验收的要求\n1. 在当前工作区（集成分支最新代码）上构建并实际运行：启动服务、调用接口（curl 只能访问本机）、跑相关测试。不要启动桌面应用或打开浏览器窗口；只能看界面才能最终确认的条目，用测试与命令查过没问题后 passed 与 manual 都填 true，交给用户自己查看。临时文件、数据库、日志放在临时目录${i.scratchDir ? ` \`${i.scratchDir}\`` : ''}，不要改仓库里的文件。\n2. 每个条目给出 passed（true/false）与证据：运行的命令、请求与响应、看到的结果。没法验证的条目（缺少启动方式等）判为未通过并写明原因。\n3. 只看这些条目是否做到，不提风格偏好和重构建议。`);
     parts.push(i.accept.kind === 'check'
       ? '开始：构建并运行，逐条验收，最后调用 flow_accept 一次提交全部条目的结论。'
       : '开始：只复查上面的条目，最后调用 flow_accept_confirm 提交结论；只能回答这些编号，不能提出新问题。');

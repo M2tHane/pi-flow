@@ -16,7 +16,7 @@ import { nextStep } from '../../src/core/context-injector.ts';
 const MODULES = [
   { id: 'M-1', title: '底座：项目骨架与公共组件', writes: ['src/base/**'], shared: ['src/routes.ts'], acceptance: ['服务能启动', '首页能打开'] },
   { id: 'M-2', title: '待办：增删改查', writes: ['src/todo/**'], shared: ['src/routes.ts'], acceptance: ['可以新增待办'], ui_pages: ['prototype/index.html'], depends_on: [{ module: 'M-1', reason: '需要底座' }] },
-  { id: 'M-3', title: '标签：给待办打标签', writes: ['src/tag/**'], shared: ['src/routes.ts'], acceptance: ['可以新增标签'], depends_on: [{ module: 'M-1', reason: '需要底座' }] },
+  { id: 'M-3', title: '标签：给待办打标签', writes: ['src/tag/**'], shared: ['src/routes.ts'], acceptance: ['可以新增标签'], depends_on: [{ module: 'M-1', reason: '需要底座' }], size: 'S', manual_checks: ['标签颜色看起来清楚'] },
 ];
 
 /** onRequirements：需求讨论中（主会话和用户讨论）时调用，模拟主会话提交需求说明 */
@@ -161,6 +161,12 @@ test('第五轮全流程：主会话提交需求说明（打回后带着意见�
     assert.ok(['prototype/index.html', 'DESIGN.md', 'docs/design/theme.css'].every((f) => todo.inputs.includes(f)), todo.inputs.join());
     assert.match(todo.acceptance.slice(1).join('\n'), /^界面按原型 prototype\/index\.html 实现[\s\S]*\n界面遵循 DESIGN\.md/);
     assert.ok(!base.inputs.includes('DESIGN.md'), '没有界面的模块不加设计规范');
+    // 界面效果由用户自己打开查看：界面模块自动加一条，规划时写的照常保留；大小随模块记下
+    assert.deepEqual(todo.manual_checks, ['打开界面对照原型 prototype/index.html 看一遍：布局、交互与加载、空、错误、无权限四种状态']);
+    const tag = mods.find((t) => t.title.startsWith('标签'))!;
+    assert.deepEqual(tag.manual_checks, ['标签颜色看起来清楚']);
+    assert.equal(tag.size, 'S');
+    assert.equal(base.manual_checks, undefined);
     const fix = tasks.find((t) => t.id === a.fix_tasks[0])!;
     assert.equal(fix.kind, 'review-fix');
     assert.equal(fix.fork_from_task, base.id);

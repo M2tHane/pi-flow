@@ -8,7 +8,9 @@ import { makeEngine } from '../helpers/engine.ts';
 import { mkTask } from '../helpers/tasks.ts';
 import { FLOW5_YAML, SETTINGS5, cmdEnv } from '../helpers/flow5.ts';
 import { runFlowCommand } from '../../src/commands/flow.ts';
-import { renderStatus } from '../../src/core/status-view.ts';
+import { actionsNeeded, renderStatus } from '../../src/core/status-view.ts';
+import { manualChecksOf } from '../../src/core/acceptance.ts';
+import { statusText } from '../../src/tools/orchestrator-tools.ts';
 
 const mod = (id: string, over: Parameters<typeof mkTask>[1] = {}) => mkTask(id, {
   stage: 'E', role: 'implementer', scopes: ['code'], writes: [`src/${id.toLowerCase()}/**`], shared: ['src/routes.ts'], acceptance: ['能用'], ...over,
@@ -170,5 +172,36 @@ test('实施阶段闸门的全量测试失败：按日志交给写过那个文�
     assert.equal(fix.fork_from_task, 'T-002');
     assert.match(p.store.readHandoff(p.flowId, fix.id), /FAIL src\/t-002\/bad\.ts/);
     assert.ok(!readFileSync(path.join(p.dir, 'workflow.yaml'), 'utf8').includes('bad.ts') || true);
+  } finally { p.cleanup(); }
+});
+
+test('要用户自己查看的检查项：规划时写的与验收者标为 manual 的条目，模块验收通过后列给用户与主会话；manual 不算未通过', async () => {
+  const p = await setupProject({ yaml: FLOW5_YAML, stages: ['E'], tasks: [mod('T-001', { needs_acceptance: true, acceptance: ['接口能用', '桌面端能看到流式回复'], manual_checks: ['桌面端发一句话，看到流式回复'] })] });
+  try {
+    const { engine, errors } = makeEngine(p, async (role, _nth, a) => {
+      if (role === 'acceptor') {
+        const r = await a.call('flow_accept', { summary: '代码层面都通过', results: [
+          { id: 'A-1', passed: true, evidence: 'curl http://localhost:3000/api 返回 200' },
+          { id: 'A-2', passed: true, manual: true, evidence: '协议帧测试通过；界面要用户打开看' },
+        ] });
+        assert.ok(r.ok, r.text);
+        return;
+      }
+      await a.call('flow_claim');
+      await a.call('write', { path: 'src/t-001/index.ts', content: 'x' });
+      await a.call('flow_note', { text: '完成' });
+      await a.call('flow_submit', { summary: '完成' });
+    }, SETTINGS5);
+    for (let i = 0; i < 6 && !p.store.readTask(p.flowId, 'T-001').accepted; i++) {
+      await engine.pump(p.flowId);
+      await engine.next(p.flowId);
+      await engine.idle();
+    }
+    assert.ok(p.store.readTask(p.flowId, 'T-001').accepted, 'manual 条目不算未通过，模块验收通过');
+    assert.deepEqual(manualChecksOf(p.store, p.flowId), [{ task: 'T-001', title: '任务 T-001', items: ['桌面端发一句话，看到流式回复', '桌面端能看到流式回复'] }]);
+    const act = actionsNeeded(p.store, p.config).find((x) => x.key.includes(':manual:T-001'));
+    assert.ok(act && /需要你打开应用查看/.test(act.text), JSON.stringify(act));
+    assert.match(statusText(p.store, engine, p.flowId), /需要用户自己打开应用查看/);
+    assert.deepEqual(errors, []);
   } finally { p.cleanup(); }
 });

@@ -10,8 +10,9 @@ import { git } from './git.ts';
 import type { FlowFile, ModelPause, TaskFile } from './schemas.ts';
 import { REQUIREMENTS_STAGE } from './requirements.ts';
 import { FINAL_REVIEW_DOC, LEVEL_LABEL } from './final-review.ts';
+import { REVIEW_GUIDE, awaitingReview } from './run-budget.ts';
 
-export interface NextStep { summary: string; next: string; tool: 'flow_dispatch' | 'flow_wait' | 'flow_requirements' | 'none'; task?: string }
+export interface NextStep { summary: string; next: string; tool: 'flow_dispatch' | 'flow_wait' | 'flow_requirements' | 'flow_resolve_timeout' | 'none'; task?: string }
 
 /** paused：任务下一次派发要用的模型正被暂停时返回暂停记录（来自 Engine.pausedFor） */
 export type PausedOf = (flowId: string, t: TaskFile) => ModelPause | null;
@@ -36,6 +37,11 @@ export function nextStep(store: StateStore, maxParallel: number, activeRunCount 
     return { summary, next: `最终代码审查已完成（${FINAL_REVIEW_DOC}），还有 ${left.length} 条没修：${left.map((f) => `${f.id}【${LEVEL_LABEL[f.level]}】${f.problem.slice(0, 60)}`).join('；')}。向用户概述这些条目，请用户挑选：/flow review fix <R-编号>... 交给负责的模块修复，或 /flow review done 都不修；你只能等待。`, tool: 'none' };
   }
 
+  // 运行超时等主会话复核（其他任务照常运行）
+  const reviews = tasks.filter(awaitingReview);
+  if (reviews.length) {
+    return { summary, next: `任务 ${reviews.map((t) => t.id).join('、')} 运行超过时间预算被结束，等你复核。flow_status 里有材料（改动、handoff、最后的回复）；对每个任务调用 flow_resolve_timeout(task_id, decision, note)。${REVIEW_GUIDE} 复核完继续 flow_wait。`, tool: 'flow_resolve_timeout', task: reviews[0]!.id };
+  }
   const budget = config ? budgetState(store, config, flow) : null;
   const overBudget = budget?.exceeded ? '本流程的预算已用完，程序暂停派发新任务。向用户说明，请其用 /flow budget 提高预算后继续。' : null;
   // 预测 promote 后的 ready（只读计算，不落盘）

@@ -27,16 +27,16 @@ const nextIds = (tasks: readonly TaskFile[], n: number): string[] => {
 
 export const criteriaOf = (t: Pick<TaskFile, 'acceptance'>) => t.acceptance.map((text, i) => ({ id: `A-${i + 1}`, text }));
 
-const line = (c: { id: string; text: string }, r?: AcceptanceResult) => `${c.id} ${c.text}${r ? `（${r.passed ? '通过' : '未通过'}${r.evidence ? `：${r.evidence}` : ''}）` : ''}`;
+const line = (c: { id: string; text: string }, r?: AcceptanceResult) => `${c.id} ${c.text}${r ? `（${r.passed ? '通过' : '未通过'}${r.manual ? '，需要用户打开查看' : ''}${r.evidence ? `：${r.evidence}` : ''}）` : ''}`;
 export const failedOf = (a: AcceptanceFile) => a.criteria.filter((c) => a.results.find((r) => r.id === c.id)?.passed === false);
 
 function acceptorTask(id: string, mod: TaskFile, kind: 'check' | 'confirm', ids: readonly string[]): TaskInput {
   return {
     id, stage: mod.stage, kind: 'analysis', role: ACCEPTOR_ROLE, scopes: ['acceptance'], depends_on: [], inputs: [...mod.inputs], writes: [], verify: [],
-    accept_of: mod.id, accept_kind: kind,
+    accept_of: mod.id, accept_kind: kind, ...(mod.size ? { size: mod.size } : {}),
     title: `${kind === 'check' ? '验收' : '复查'}：${mod.title}`.slice(0, 200),
     acceptance: kind === 'check'
-      ? ['在集成分支最新代码上构建并实际运行（启动服务、调用接口、打开页面、跑相关测试），对照下面的每条验收标准确认', ...criteriaOf(mod).map((c) => `${c.id} ${c.text}`),
+      ? ['在集成分支最新代码上构建并运行（启动服务、调用接口、跑相关测试；不打开桌面应用或浏览器窗口），对照下面的每条验收标准确认', ...criteriaOf(mod).map((c) => `${c.id} ${c.text}`),
         '用 flow_accept 逐条提交 passed 与证据（运行的命令、请求与响应、看到的结果）；只看验收标准，不提风格与重构建议']
       : [`只复查这些条目：${ids.join('、')}；用 flow_accept_confirm 逐条提交 passed 与证据，不能提出新问题`],
   };
@@ -123,6 +123,21 @@ async function advance(d: AcceptanceDeps, flow: FlowFile, mod: TaskFile, a: Acce
     default:
       return false;
   }
+}
+
+/**
+ * 要用户自己打开应用查看的检查项（agent 不启动桌面应用与浏览器）：规划时写的 manual_checks，加上验收者标为 manual 的条目。
+ * 只列已验收通过的模块（代码层面已经确认过）。
+ */
+export function manualChecksOf(store: StateStore, flowId: string): { task: string; title: string; items: string[] }[] {
+  const out: { task: string; title: string; items: string[] }[] = [];
+  for (const t of store.listTasks(flowId).filter((x) => x.needs_acceptance && x.accepted)) {
+    const a = store.readAcceptance(flowId, t.id);
+    const flagged = a ? a.criteria.filter((c) => a.results.find((r) => r.id === c.id)?.manual).map((c) => c.text) : [];
+    const items = [...new Set([...(t.manual_checks ?? []), ...flagged])];
+    if (items.length) out.push({ task: t.id, title: t.title, items });
+  }
+  return out;
 }
 
 /** 本阶段需要验收的模块是否都已通过（实施阶段闸门的前提） */

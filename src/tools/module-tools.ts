@@ -22,7 +22,9 @@ export const ModuleDef = Type.Object({
   title: Type.String({ minLength: 1, maxLength: 200, description: '模块名与它负责的事，例如"知识库：文档上传、切分、检索与管理页面"' }),
   writes: Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: 40, description: '模块的可写范围（目录 glob），前端、后端、测试都包括，例如 backend/app/kb/**、frontend/src/pages/kb/**、backend/tests/kb/**' }),
   shared: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { maxItems: 20, description: '要登记的公共文件（路由注册、菜单、迁移目录、文案等）：可以写，不算进模块之间的互斥' })),
-  acceptance: Type.Array(Type.String({ minLength: 1, maxLength: 500 }), { minItems: 1, maxItems: 30, description: '验收标准：每条都能实际运行验证（接口、页面、测试），独立验收者会逐条确认' }),
+  acceptance: Type.Array(Type.String({ minLength: 1, maxLength: 500 }), { minItems: 1, maxItems: 30, description: '验收标准：每条都能用测试或命令验证（接口、无界面的页面测试、单元测试），独立验收者会逐条确认；agent 不能打开桌面应用或浏览器窗口' }),
+  manual_checks: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 500 }), { maxItems: 20, description: '只能打开应用看效果才能确认的检查项（例如"桌面端发一句话能看到流式回复"）：不派 agent 验证，模块验收通过后列给用户自己查看' })),
+  size: Type.Optional(Type.Union([Type.Literal('S'), Type.Literal('M'), Type.Literal('L')], { description: '模块大小，决定每次运行的时间预算：S 小改动（一两个文件）、M 一般模块（默认）、L 大模块（跨前后端、很多文件）' })),
   inputs: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { maxItems: 30, description: '要先读的文件（需求说明、接口文档等；docs/modules.md、docs/glossary.md、AGENTS.md 会自动加上，原型页面与设计规范按 ui、ui_pages 自动加上）' })),
   ui: Type.Optional(Type.Boolean({ description: '模块有界面（页面、组件）：自动加上设计规范 DESIGN.md 与共用样式，并多一条验收标准"界面遵循设计规范"' })),
   ui_pages: Type.Optional(Type.Array(Type.String({ pattern: '^prototype/.+\\.html$' }), { maxItems: 20, description: '模块负责实现的原型页面（prototype/*.html）：自动加进输入，并多一条验收标准"界面按原型实现"；写了就隐含 ui' })),
@@ -51,6 +53,9 @@ export function modulesToTasks(ctx: ToolContext, p: Static<typeof ProposeModules
     const pages = m.ui_pages ?? [];
     for (const pg of pages) if (!has(pg)) errors.push(`${m.id}：原型里没有 ${pg}`);
     const ui = !!m.ui || pages.length > 0;
+    // 界面效果要用户自己打开看：agent 不启动桌面应用与浏览器
+    const uiManual = ui ? [pages.length ? `打开界面对照原型 ${pages.join('、')} 看一遍：布局、交互与加载、空、错误、无权限四种状态` : '打开界面看一遍：布局、交互与样式'] : [];
+    const manual = [...(m.manual_checks ?? []), ...uiManual];
     const uiCriteria = [
       ...(pages.length ? [`界面按原型 ${pages.join('、')} 实现：页面结构、交互与加载、空、错误、无权限四种状态和原型一致`] : []),
       ...(ui && design.length ? [`界面遵循 ${DESIGN_DOC}：颜色、字号、间距等用 ${THEME_CSS} 中的变量（映射到项目的技术栈），不另写一套`] : []),
@@ -65,6 +70,7 @@ export function modulesToTasks(ctx: ToolContext, p: Static<typeof ProposeModules
       depends_on: (m.depends_on ?? []).filter((d) => ids.has(d.module)).map((d) => ({ task: ids.get(d.module)!, type: 'hard' as const, reason: d.reason })),
       inputs: [...new Set([...(m.inputs ?? []), ...pages, ...(ui ? design : []), 'docs/modules.md', 'docs/glossary.md', 'AGENTS.md'])], writes: [...m.writes], acceptance: [...m.acceptance, ...uiCriteria], verify,
       ...(m.shared?.length ? { shared: [...m.shared] } : {}), needs_acceptance: true,
+      ...(m.size ? { size: m.size } : {}), ...(manual.length ? { manual_checks: manual } : {}),
     };
   });
   return { tasks, errors };
@@ -134,6 +140,7 @@ const ResultItem = Type.Object({
   id: Type.String({ pattern: '^A-[0-9]+$', description: '条目编号' }),
   passed: Type.Boolean({ description: '是否做到' }),
   evidence: Type.String({ minLength: 1, maxLength: 2000, description: '证据：运行的命令、请求与响应、看到的结果；未通过时写清差在哪' }),
+  manual: Type.Optional(Type.Boolean({ description: '这一条只能打开应用看效果才能最终确认（你不能启动桌面应用或浏览器）：用测试与命令能查的都查过且没问题时 passed 填 true、manual 填 true，程序会交给用户自己查看；查到问题照常判未通过' })),
 }, { additionalProperties: false });
 
 export const AcceptParams = Type.Object({
@@ -152,7 +159,7 @@ async function submitAccept(ctx: ToolContext, p: Static<typeof AcceptParams>, ki
   }
   const errs = await recordAcceptance(ctx.store, ctx.env.flow, t, p.results, p.summary, actor(ctx));
   if (errs.length) throw new FlowToolError(`结论未保存：\n${errs.map((e) => `- ${e}`).join('\n')}`);
-  await ctx.store.appendHandoff(ctx.env.flow, t.id, `${kind === 'check' ? '验收' : '复查'}结论：${p.summary}\n${p.results.map((r) => `- ${r.id} ${r.passed ? '通过' : '未通过'}：${r.evidence}`).join('\n')}`, actor(ctx));
+  await ctx.store.appendHandoff(ctx.env.flow, t.id, `${kind === 'check' ? '验收' : '复查'}结论：${p.summary}\n${p.results.map((r) => `- ${r.id} ${r.passed ? '通过' : '未通过'}${r.manual ? '（需要用户打开查看）' : ''}：${r.evidence}`).join('\n')}`, actor(ctx));
   // 验收是只读的：工作区里运行产生的文件随工作区一起丢弃，不检查改动
   try {
     await ctx.store.transitionTask(ctx.env.flow, t.id, { to: 'done', trigger: 'report', actor: actor(ctx), facts: { token: ctx.env.token, diff_files: [] } });

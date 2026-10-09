@@ -33,7 +33,7 @@ export class StateError extends Error {
   }
 }
 
-export interface StoreLimits { max_attempts: number; max_parallel: number }
+export interface StoreLimits { max_attempts: number; max_parallel: number; max_continuations?: number }
 
 export interface StoreOptions {
   now?: () => Date;
@@ -52,7 +52,7 @@ interface Journal {
 
 type StagedEvent = Omit<EventInput, 'ts'> & { ts?: string };
 
-const TASK_PATCH_KEYS = new Set(['lease', 'worktree', 'branch', 'base_sha']);
+const TASK_PATCH_KEYS = new Set(['lease', 'worktree', 'branch', 'base_sha', 'timeout_review']);
 
 export const flowRel = (flow: string) => `flows/${flow}/flow.json`;
 export const taskRel = (flow: string, task: string) => `flows/${flow}/tasks/${task}.json`;
@@ -172,7 +172,7 @@ export interface CreateFlowInput {
 }
 
 export type TaskInput = Pick<TaskFile, 'id' | 'stage' | 'kind' | 'title' | 'role' | 'scopes' | 'depends_on' | 'inputs'
-  | 'writes' | 'acceptance' | 'verify'> & Partial<Pick<TaskFile, 'merge_fix_for' | 'conflict_files' | 'worktree' | 'branch' | 'base_sha' | 'sync_main' | 'replan' | 'fork_from_task' | 'shared' | 'needs_acceptance' | 'accept_of' | 'accept_kind' | 'final_review'>>;
+  | 'writes' | 'acceptance' | 'verify'> & Partial<Pick<TaskFile, 'merge_fix_for' | 'conflict_files' | 'worktree' | 'branch' | 'base_sha' | 'sync_main' | 'replan' | 'fork_from_task' | 'shared' | 'needs_acceptance' | 'accept_of' | 'accept_kind' | 'final_review' | 'size' | 'manual_checks'>>;
 
 export interface IntegrityReport { ok: boolean; errors: string[] }
 
@@ -502,6 +502,8 @@ export class StateStore {
       ...(t.accept_of ? { accept_of: t.accept_of } : {}),
       ...(t.accept_kind ? { accept_kind: t.accept_kind } : {}),
       ...(t.final_review ? { final_review: true } : {}),
+      ...(t.size ? { size: t.size } : {}),
+      ...(t.manual_checks?.length ? { manual_checks: [...t.manual_checks] } : {}),
     };
     return tx.putTask(flow, task);
   }
@@ -668,7 +670,10 @@ export class StateStore {
       const t = tx.readTask(flow, id);
       if (t.lease) throw new StateError(`任务 ${id} 已有运行中的 run ${t.lease.run_id}`);
       if (t.status !== 'in_progress') throw new StateError(`任务 ${id} 当前是 ${t.status}，不能取得租约`);
-      const next = tx.putTask(flow, { ...t, lease });
+      if (t.timeout_review && !t.timeout_review.decision) throw new StateError(`任务 ${id} 运行超时，等主会话复核后才能继续`);
+      // 超时复核的决定在这次派发中用掉
+      const { timeout_review: _review, ...rest } = t;
+      const next = tx.putTask(flow, { ...rest, lease });
       tx.event({ flow, task: id, actor, type: 'dispatch', data: { run: lease.run_id, role: lease.role, ...data } });
       return next;
     });
@@ -723,7 +728,7 @@ export class StateStore {
   }
 
   /** 更新 run 记录（结束时间、token、模型、结果）。 */
-  async updateRun(id: string, patch: Partial<Pick<RunFile, 'ended_at' | 'tokens' | 'model' | 'outcome' | 'pid' | 'session_file' | 'cost' | 'turns'>>, actor: string, reason?: string): Promise<RunFile> {
+  async updateRun(id: string, patch: Partial<Pick<RunFile, 'ended_at' | 'tokens' | 'model' | 'outcome' | 'pid' | 'session_file' | 'cost' | 'turns' | 'warned_at'>>, actor: string, reason?: string): Promise<RunFile> {
     return this.transaction((tx) => {
       const run = tx.readJson<RunFile>(runRel(id));
       if (!run) throw new StateError(`run ${id} 不存在`);
@@ -944,6 +949,8 @@ export class StateStore {
           blocked_reason: null, last_failure: null, created_by: 'architect', version: 1,
           ...(t.shared?.length ? { shared: [...t.shared] } : {}),
           ...(t.needs_acceptance ? { needs_acceptance: true } : {}),
+          ...(t.size ? { size: t.size } : {}),
+          ...(t.manual_checks?.length ? { manual_checks: [...t.manual_checks] } : {}),
         });
       }
       for (const r of input.rewire) {

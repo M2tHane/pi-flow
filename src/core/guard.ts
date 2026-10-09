@@ -50,10 +50,68 @@ const INPUT_OPS = new Set(['<', '<>', '<&']);
 
 const IMPL_FORBIDDEN: Record<string, string> = {
   tee: '请用 write/edit 工具写文件',
-  curl: '只有 researcher 可以联网', wget: '只有 researcher 可以联网', ssh: '禁止远程连接', scp: '禁止远程连接', sftp: '禁止远程连接',
+  wget: '只有 researcher 可以联网；访问本机服务用 curl http://localhost:<端口>/...', ssh: '禁止远程连接', scp: '禁止远程连接', sftp: '禁止远程连接',
   eval: 'eval 无法校验，请直接写出命令', popd: '不支持 popd',
   setsid: '新会话中的进程不受超时管理，请前台运行', disown: '后台进程不受超时管理，请前台运行',
 };
+/**
+ * 会打开桌面应用或浏览器窗口的命令：agent 只写代码、跑测试，看效果交给用户（ZCode 实测：验收者反复拉起用户的桌面端）。
+ * 无界面（headless）的浏览器测试照常由测试命令运行；项目自己的启动命令写在 workflow.yaml 的 gui_commands。
+ */
+const GUI_BINARIES = new Set(['open', 'xdg-open', 'osascript', 'electron', 'chromium', 'chromium-browser', 'google-chrome', 'google-chrome-stable', 'firefox', 'msedge']);
+const GUI_SUBCOMMANDS: Record<string, readonly string[]> = { playwright: ['open', 'codegen', 'show-report', 'show-trace'], cypress: ['open'], gio: ['open'] };
+export const GUI_REASON = '不能启动桌面应用或打开浏览器窗口：你只写代码、跑测试（无界面的测试照常运行）。需要打开看效果的，写进 handoff（验收时用 manual 标给用户），由用户自己打开查看。';
+
+/** 命令（已剥离 sudo、env 等包装）是否会打开图形界面 */
+export function opensGui(words: readonly string[], projectCommands: readonly string[] = []): boolean {
+  const base = (w: string) => path.basename(w);
+  if (!words.length) return false;
+  if (GUI_BINARIES.has(base(words[0]!))) return true;
+  if (words.includes('--headed') || words.some((w) => w === '--ui' || w.startsWith('--ui='))) return true;
+  // npx electron、pnpm exec playwright open 等：在参数里找界面程序
+  for (let i = 0; i < words.length; i++) {
+    const w = base(words[i]!);
+    if (i > 0 && w === 'electron') return true;
+    const subs = GUI_SUBCOMMANDS[w];
+    if (subs && subs.includes(words[i + 1] ?? '')) return true;
+  }
+  const line = scriptLine(words);
+  return projectCommands.some((c) => { const p = scriptLine(c.trim().split(/\s+/)); return !!p && (line === p || line.startsWith(`${p} `) || line.startsWith(`${p}:`)); });
+}
+
+/** pnpm run dev 与 pnpm dev 视为同一条命令 */
+function scriptLine(words: readonly string[]): string {
+  const w = words.filter(Boolean);
+  if (w.length > 2 && ['npm', 'pnpm', 'yarn', 'bun'].includes(path.basename(w[0]!)) && w[1] === 'run') return [w[0], ...w.slice(2)].join(' ');
+  return w.join(' ');
+}
+
+/**
+ * curl 只访问本机时放行（验收者要调用自己启动的服务；角色提示里写了用 curl，旧规则却一律拦下，ZCode 实测因此违规到上限）。
+ * 不能写文件、不能走代理、不能读配置文件；返回 null 表示放行，否则返回拒绝原因。
+ */
+const CURL_DENY_FLAGS = new Set(['-o', '--output', '-O', '--remote-name', '--remote-name-all', '-T', '--upload-file', '-K', '--config', '-x', '--proxy', '--output-dir', '-c', '--cookie-jar', '-D', '--dump-header']);
+const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '0.0.0.0']);
+export function localCurlDenied(args: readonly string[]): string | null {
+  let urls = 0;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    const flag = a.startsWith('--') ? a.split('=')[0]! : a;
+    if (CURL_DENY_FLAGS.has(flag) || (/^-[a-zA-Z]+$/.test(a) && /[oOTKxcD]/.test(a.slice(1)))) {
+      const value = a.includes('=') ? a.split('=').slice(1).join('=') : args[i + 1];
+      if ((flag === '-o' || flag === '--output' || flag === '-D' || flag === '--dump-header') && value === '/dev/null') { if (!a.includes('=')) i++; continue; }
+      return `curl 不能使用 ${a}（不能写文件、走代理或读配置）`;
+    }
+    if (a.startsWith('-')) continue;
+    let host: string;
+    try { host = new URL(/^[a-z]+:\/\//i.test(a) ? a : `http://${a}`).hostname; } catch { continue; }
+    if (!/^[a-z]+:\/\//i.test(a) && !/^(localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0)(:|\/|$)/.test(a)) continue;
+    urls++;
+    if (!LOCAL_HOSTS.has(host) && host !== '::1') return `curl 只能访问本机（localhost、127.0.0.1），不能访问 ${host}；只有 researcher 可以联网`;
+  }
+  return urls ? null : 'curl 只能访问本机地址（http://localhost:<端口>/...），请写出完整的 URL';
+}
+
 /** 实施类角色可以对临时目录与任务 writes 内的文件使用的文件操作 */
 const FILE_OPS = new Set(['rm', 'mv', 'cp', 'rmdir']);
 const READONLY_COMMANDS = new Set([
@@ -294,12 +352,18 @@ class BashChecker {
 
     if (name === 'cd' || name === 'pushd') return this.checkCd(args, cwd);
 
+    if (opensGui(words.map((w) => w.text), this.ev.ctx.config.raw.gui_commands ?? [])) return { decision: deny('bash', GUI_REASON) };
+
     if (this.readonly) return { decision: this.checkReadonly(name, args) };
 
     // 4. 实施类角色的 bash 约束；rm、mv、cp、rmdir 只能作用于临时目录与本任务 writes 内的文件
     if (FILE_OPS.has(name)) {
       if (viaXargs) return { decision: deny('bash', `${name} 的参数来自标准输入（xargs），无法校验，已阻断。`) };
       return { decision: this.checkFileOps(name, args, cwd) };
+    }
+    if (name === 'curl') {
+      const why = localCurlDenied(args.map((w) => w.text));
+      return { decision: why ? deny('bash', `${why}。`) : ok };
     }
     if (name in IMPL_FORBIDDEN) return { decision: deny('bash', `禁止使用 ${name}：${IMPL_FORBIDDEN[name]}。`) };
     if ((name === 'sed' || name === 'gsed') && args.some((w) => /^-[^-]*i/.test(w.text) || w.text.startsWith('--in-place'))) {

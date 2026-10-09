@@ -72,6 +72,9 @@
           "evidence": {
             "type": "string",
             "maxLength": 2000
+          },
+          "manual": {
+            "type": "boolean"
           }
         },
         "additionalProperties": false

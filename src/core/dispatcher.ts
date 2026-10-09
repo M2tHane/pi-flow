@@ -35,6 +35,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { killStrays } from './strays.ts';
 import { activePause, classifyUnavailable, clearPause, describePause, pauseActive, recordPause } from './model-pause.ts';
 import type { ModelPause } from './schemas.ts';
+import { awaitingReview, graceMinutes, runBudgetMinutes, wrapUpMessage } from './run-budget.ts';
 
 const tasksHas = (store: StateStore, flowId: string, id: string) => { try { store.readTask(flowId, id); return true; } catch { return false; } };
 /**
@@ -79,7 +80,8 @@ export interface EngineDeps {
 
 export interface Dispatched { run_id: string; task: string; role: string; model: string }
 
-interface ActiveRun { flow: string; task: string; role: string; handle: SubagentHandle }
+/** deadline：时间预算到期时刻（毫秒）；warned：已插话提醒收尾；timedOut：宽限期也过了，正在结束 */
+interface ActiveRun { flow: string; task: string; role: string; handle: SubagentHandle; minutes: number; deadline: number; warned: boolean; timedOut: boolean }
 
 /** 一次派发会用的角色与模型（失败升级之后） */
 interface ModelPlan { role: string; model: string; thinking: ThinkingLevel | null; escalated: boolean }
@@ -148,6 +150,7 @@ export class Engine {
     };
 
     let fork: { run_id: string; session_file: string; task: string } | null = null;
+    let timeout: TaskFile['timeout_review'] | null = null;
     if (task.status === 'ready' && task.kind !== 'merge-fix' && flow.sync?.status === 'conflict') {
       throw new DispatchError(`同步 ${this.d.config.raw.main_branch} 到集成分支时冲突，需要你先处理（${flow.sync.reason ?? ''}），处理后执行 /flow sync`);
     }
@@ -170,8 +173,10 @@ export class Engine {
       });
     } else if (task.status === 'in_progress' && !task.lease) {
       if (!task.worktree) throw new DispatchError(`任务 ${taskId} 没有 worktree，无法继续`);
-      // 返工：接着同一角色上一次提交时的对话继续（第三轮后续 2）
-      fork = this.forkSource(flowId, task, role, model);
+      if (awaitingReview(task)) throw new DispatchError(`任务 ${taskId} 运行超时，等主会话复核（flow_resolve_timeout）后才能继续`);
+      timeout = task.timeout_review ?? null;
+      // 返工：接着同一角色上一次提交时的对话继续（第三轮后续 2）；超时后主会话决定从头做时不接着
+      fork = timeout?.decision === 'restart' ? null : this.forkSource(flowId, task, role, model);
       task = await store.acquireLease(flowId, taskId, lease, 'dispatcher');
     } else {
       throw new DispatchError(`任务 ${taskId} 当前是 ${task.status}${task.lease ? `（run ${task.lease.run_id} 运行中）` : ''}，不能派发`);
@@ -185,8 +190,11 @@ export class Engine {
 
     const sessionDir = sessionDirOf(root, runId);
     mkdirSync(sessionDir, { recursive: true });
+    const minutes = runBudgetMinutes(this.d.config, task);
+    const deadline = this.now().getTime() + minutes * 60_000;
     await store.createRun({
       ...(fork ? { forked_from: fork.run_id } : {}),
+      deadline_at: new Date(deadline).toISOString(),
       run_id: runId, flow: flowId, task: taskId, role, model, started_at: this.now().toISOString(), ended_at: null,
       tokens: { input: null, output: null, cache_read: null, cache_write: null }, outcome: null, token_hash: lease.token_hash, violations: 0,
       session_dir: sessionDir, ...(escalated ? { escalated: true } : {}),
@@ -194,12 +202,12 @@ export class Engine {
 
     let handle: SubagentHandle;
     try {
-      handle = this.d.launcher.launch({ ...this.buildSpec(flowId, task, role, runId, token, model, thinking, fork), sessionDir, ...(fork ? { forkFrom: fork.session_file } : {}) });
+      handle = this.d.launcher.launch({ ...this.buildSpec(flowId, task, role, runId, token, model, thinking, fork, timeout ? { ...timeout, budget: minutes } : null), sessionDir, ...(fork ? { forkFrom: fork.session_file } : {}) });
     } catch (e) {
       await this.failRun(flowId, taskId, runId, `子进程启动失败：${(e as Error).message}`);
       throw new DispatchError(`子进程启动失败：${(e as Error).message}`);
     }
-    this.runs.set(runId, { flow: flowId, task: taskId, role, handle });
+    this.runs.set(runId, { flow: flowId, task: taskId, role, handle, minutes, deadline, warned: false, timedOut: false });
     if (handle.pid) await store.updateRun(runId, { pid: handle.pid }, 'dispatcher', '记录子进程');
     this.track(handle.done.then((r) => this.onExit(runId, r), (e) => this.onExit(runId, {
       exitCode: null, stderrTail: String(e), tokens: { input: null, output: null, cache_read: null, cache_write: null },
@@ -249,14 +257,16 @@ export class Engine {
     if (this.d.config.limits.continue_session === false) return null;
     const prev = this.d.store.listRuns().filter((r) => r.flow === flowId && r.task === task.id && r.role === role && r.ended_at)
       .sort((a, b) => a.started_at.localeCompare(b.started_at)).at(-1);
-    if (!prev || prev.outcome !== 'submitted' || prev.model !== model || !prev.session_file) return null;
+    // 正常提交过的会话，或超时被结束的会话（主会话复核后决定接着做）
+    if (!prev || !(prev.outcome === 'submitted' || prev.outcome === 'timeout') || prev.model !== model || !prev.session_file) return null;
     try {
       if (statSync(prev.session_file).size > MAX_FORK_BYTES) return null;
     } catch { return null; }
     return { run_id: prev.run_id, session_file: prev.session_file, task: task.id };
   }
 
-  private buildSpec(flowId: string, task: TaskFile, role: string, runId: string, token: string, model: string, thinking: ThinkingLevel | null, fork: { run_id: string; task: string } | null = null): SubagentSpec {
+  private buildSpec(flowId: string, task: TaskFile, role: string, runId: string, token: string, model: string, thinking: ThinkingLevel | null, fork: { run_id: string; task: string } | null = null,
+    timeout: (NonNullable<TaskFile['timeout_review']> & { budget: number }) | null = null): SubagentSpec {
     const { root, config, store } = this.d;
     const agent = loadAgent(role, root, this.d.packageAgentsDir);
     const { rules } = ruleFilesFor(config, root, task.scopes);
@@ -295,7 +305,8 @@ export class Engine {
         const u = tasks.find((x) => x.id === d.task);
         return u ? [{ id: u.id, title: u.title, type: d.type, status: u.status === 'done' ? '已完成' : `未完成：${u.status}`, handoff: store.readHandoff(flowId, u.id) }] : [];
       }),
-      ...(fork && mode === 'impl' && fork.task === task.id ? { continuation: { run: fork.run_id } } : {}),
+      ...(fork && mode === 'impl' && fork.task === task.id && !timeout ? { continuation: { run: fork.run_id } } : {}),
+      ...(timeout ? { timeoutResume: { run: timeout.run, minutes: timeout.minutes, budget: timeout.budget, forked: !!fork && fork.task === task.id, ...(timeout.decision ? { decision: timeout.decision } : {}), ...(timeout.note ? { note: timeout.note } : {}) } } : {}),
       ...(fork && mode === 'impl' && fork.task !== task.id ? { priorTask: { id: fork.task, title: store.readTask(flowId, fork.task).title, run: fork.run_id } } : {}),
       ...(existingWork ? { existingWork } : {}),
       ...(accept ? { accept } : {}),
@@ -357,8 +368,9 @@ export class Engine {
     const { store } = this.d;
     const prev = store.readRun(runId);
     const leaseHeld = store.readTask(active.flow, active.task).lease?.run_id === runId;
+    const timedOut = leaseHeld && prev.outcome === 'timeout';
     // 模型额度用完、限流、服务不可用：不是任务的问题，暂停这个模型而不是计失败
-    const unavailable = leaseHeld ? classifyUnavailable(r.error, r.stderrTail, r.exitCode) : null;
+    const unavailable = leaseHeld && !timedOut ? classifyUnavailable(r.error, r.stderrTail, r.exitCode) : null;
     const outcome = prev.outcome ?? (leaseHeld ? (unavailable ? 'unavailable' : 'failed') : null);
     await store.updateRun(runId, {
       ended_at: this.now().toISOString(), tokens: r.tokens, model: r.model ?? prev.model, ...(outcome ? { outcome } : {}),
@@ -376,7 +388,17 @@ export class Engine {
       const p = store.readModelPauses().pauses.find((x) => x.model === prev.model);
       if (p && !pauseActive(p, this.now())) await clearPause(store, prev.model, 'dispatcher', '恢复后已正常响应');
     }
-    if (leaseHeld && !unavailable) {
+    if (timedOut) {
+      // 超过时间预算被结束：不计失败，等主会话复核（接着做、从头做或交给用户）
+      const t = store.readTask(active.flow, active.task);
+      if (t.lease?.run_id === runId && t.status === 'in_progress') {
+        await store.transitionTask(active.flow, active.task, {
+          to: t.status, trigger: 'run_timeout', actor: 'dispatcher',
+          patch: { timeout_review: { run: runId, at: this.now().toISOString(), minutes: active.minutes, ...(r.lastText?.trim() ? { last_text: r.lastText.trim().slice(-1500) } : {}) } },
+          facts: { reason: `运行超过时间预算 ${active.minutes} 分钟（宽限 ${graceMinutes(this.d.config)} 分钟后结束）` },
+        });
+      }
+    } else if (leaseHeld && !unavailable) {
       const why = r.error ?? (r.exitCode ? `退出码 ${r.exitCode}${r.stderrTail ? `：${r.stderrTail.slice(-300)}` : ''}` : '未提交就结束');
       await this.failRun(active.flow, active.task, runId, `子进程结束但没有提交（${why}）`);
     }
@@ -413,7 +435,7 @@ export class Engine {
         // 循环中有 await，列表可能已过时：以最新状态为准。失败或被打回、没有租约的任务重新派发（接着原会话）
         const t = this.d.store.readTask(flowId, listed.id);
         if (t.lease) continue;
-        if (t.status === 'in_progress' && !this.pausedFor(flowId, t)) await this.dispatch(flowId, t.id);
+        if (t.status === 'in_progress' && !this.pausedFor(flowId, t) && !awaitingReview(t)) await this.dispatch(flowId, t.id);
       } catch (e) { report(e); }
     }
     // merge-fix 是合并流程的一部分（原任务挂起等待它），由程序直接派发；仍受并发与互斥约束
@@ -464,7 +486,7 @@ export class Engine {
       const flow = this.d.store.readFlow(flowId);
       if (flow.mode === 'fix') {
         await fixStep({ root: this.d.root, store: this.d.store, config: this.d.config,
-          dispatch: (f, t) => (this.pausedFor(f, this.d.store.readTask(f, t)) ? Promise.resolve(null) : this.dispatch(f, t)),
+          dispatch: (f, t) => { const task = this.d.store.readTask(f, t); return this.pausedFor(f, task) || awaitingReview(task) ? Promise.resolve(null) : this.dispatch(f, t); },
           promote: (f) => this.promote(f), ...(this.d.now ? { now: this.d.now } : {}) }, flowId);
         return;
       }
@@ -550,6 +572,34 @@ export class Engine {
     return killed;
   }
 
+  /**
+   * 时间预算：到期的运行先插话提醒收尾，宽限期后结束（记为 timeout，退出处理转为等主会话复核）。
+   * 不支持插话的子进程直接等宽限期结束。返回本次结束的 run。
+   */
+  async checkDeadlines(): Promise<string[]> {
+    const killed: string[] = [];
+    const now = this.now().getTime();
+    const grace = graceMinutes(this.d.config);
+    for (const [runId, r] of this.runs) {
+      if (r.timedOut || now < r.deadline) continue;
+      if (now >= r.deadline + grace * 60_000) {
+        // 宽限期内已经提交（租约已交出）的不算超时，等它自己退出
+        let t: TaskFile;
+        try { t = this.d.store.readTask(r.flow, r.task); } catch { continue; }
+        if (t.lease?.run_id !== runId) continue;
+        r.timedOut = true;
+        await this.d.store.updateRun(runId, { outcome: 'timeout' }, 'dispatcher', `超过时间预算 ${r.minutes} 分钟，结束运行`).catch(() => {});
+        r.handle.kill();
+        killed.push(runId);
+      } else if (!r.warned) {
+        r.warned = true;
+        const sent = r.handle.steer?.(wrapUpMessage(r.minutes, grace)) ?? false;
+        await this.d.store.updateRun(runId, { warned_at: new Date(now).toISOString() }, 'dispatcher', `时间预算 ${r.minutes} 分钟已到，${sent ? '提醒收尾' : '无法插话，宽限期后结束'}`).catch(() => {});
+      }
+    }
+    return killed;
+  }
+
   private watchTimer: NodeJS.Timeout | null = null;
   /** 已处理过的自动恢复（模型@恢复时间），避免同一次到期重复推进 */
   private readonly resumed = new Set<string>();
@@ -593,6 +643,7 @@ export class Engine {
     if (this.watchTimer) return;
     this.watchTimer = setInterval(() => {
       this.checkLeases();
+      this.checkDeadlines().catch((e) => (this.d.onError ?? (() => {}))(e));
       try { this.checkPauses(); } catch (e) { (this.d.onError ?? (() => {}))(e); }
     }, intervalMs);
     this.watchTimer.unref();

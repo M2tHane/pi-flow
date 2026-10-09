@@ -22,7 +22,7 @@ import { parseAgentFile } from '../core/agents.ts';
 import { runFlowConfig, type ModelOption } from '../commands/flow-config.ts';
 import { RoleTable, type RoleRow, type TableModel } from '../commands/role-table.ts';
 import { runFlowCommand, runFlowBuild, runFlowFix, FLOW_USAGE, type CommandEnv, type EngineHandle } from '../commands/flow.ts';
-import { DispatchParams, ReplanParams, RequirementsParams, WaitParams, activeFlowId, flowDispatch, flowReplan, flowRequirements, flowWait, statusText } from '../tools/orchestrator-tools.ts';
+import { DispatchParams, ReplanParams, RequirementsParams, ResolveTimeoutParams, WaitParams, activeFlowId, flowDispatch, flowReplan, flowRequirements, flowResolveTimeout, flowWait, statusText } from '../tools/orchestrator-tools.ts';
 import { discussionSkills } from '../core/requirements.ts';
 import { PiLauncher } from './launcher.ts';
 import { lastFailureKind, notices, snapshotOf, statusLine, visibleFlows } from '../core/status-view.ts';
@@ -36,7 +36,7 @@ import { MAIN_NOTES_REL } from '../core/state-store.ts';
 export const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const TEMPLATE_WORKFLOW = path.join(PACKAGE_ROOT, 'templates', 'workflow.yaml');
 const SUBAGENT_EXTENSION = path.join(PACKAGE_ROOT, 'src', 'pi-adapter', 'subagent.ts');
-const ORCHESTRATOR_TOOLS = ['flow_status', 'flow_dispatch', 'flow_wait', 'flow_replan', 'flow_requirements'];
+const ORCHESTRATOR_TOOLS = ['flow_status', 'flow_dispatch', 'flow_wait', 'flow_replan', 'flow_requirements', 'flow_resolve_timeout'];
 
 /** 用户级设置文件：~/.pi/agent/pi-flow.json（与 Pi 官方 preset 示例的全局配置位置一致） */
 export function roleSettingsPath(): string {
@@ -287,6 +287,15 @@ export default function piFlow(pi: ExtensionAPI): void {
       async execute(_id, p, _s, _u, ctx) {
         const h = engineFor(ctx.cwd);
         const r = await flowRequirements(ctx.cwd, h.store, h.engine, checked(RequirementsParams, p, 'flow_requirements'));
+        return toolResult(r.text, r.details);
+      },
+    });
+    pi.registerTool({
+      name: 'flow_resolve_timeout', label: 'flow_resolve_timeout', description: '任务运行超过时间预算被结束后，看过 flow_status 里的材料再调用：continue 接着原会话做，restart 换个思路从头做（保留工作区），block 交给用户。',
+      parameters: ResolveTimeoutParams,
+      async execute(_id, p, _s, _u, ctx) {
+        const h = engineFor(ctx.cwd);
+        const r = await flowResolveTimeout(h.store, h.engine, checked(ResolveTimeoutParams, p, 'flow_resolve_timeout'));
         return toolResult(r.text, r.details);
       },
     });
