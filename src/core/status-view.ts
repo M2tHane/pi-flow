@@ -115,7 +115,8 @@ export function actionsNeeded(store: StateStore, config: FlowConfig): Action[] {
         const last = flow.stage === flow.stages.at(-1);
         const extras = PROPOSAL_STAGES.has(flow.stage) ? store.readProposal(flow.id)?.extras?.length ?? 0 : 0;
         const assumed = PROPOSAL_STAGES.has(flow.stage) ? store.readProposal(flow.id)?.assumptions?.length ?? 0 : 0;
-        out.push({ key: `${flow.id}:gate:${flow.stage}`, text: `${phase}阶段的产出等待你审批${last ? '（批准后合入主分支）' : ''}${extras ? `；其中 ${extras} 项设计超出了需求，需要你确认（/flow-status --detail 查看）` : ''}${assumed ? `；${assumed} 处需求没说清，architect 按默认方案处理了，需要你确认（/flow-status --detail 查看）` : ''}`, command: last ? '/flow-approve' : '/flow-approve 或 /flow-reject "<意见>"' });
+        const manual = last ? manualChecksOf(store, flow.id).reduce((n, m) => n + m.items.length, 0) : 0;
+        out.push({ key: `${flow.id}:gate:${flow.stage}`, text: `${phase}阶段的产出等待你审批${last ? '（批准后合入主分支）' : ''}${manual ? `；批准前请先打开应用完成 ${manual} 项界面检查（见下方）` : ''}${extras ? `；其中 ${extras} 项设计超出了需求，需要你确认（/flow-status --detail 查看）` : ''}${assumed ? `；${assumed} 处需求没说清，architect 按默认方案处理了，需要你确认（/flow-status --detail 查看）` : ''}`, command: last ? '/flow-approve' : '/flow-approve 或 /flow-reject "<意见>"' });
       }
     }
     if (flow.mode !== 'fix' && flow.stage_status === 'active') {

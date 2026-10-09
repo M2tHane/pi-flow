@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { checkToolCall, type GuardContext, type GuardDecision } from '../../src/core/guard.ts';
+import { checkToolCall, scriptOpensGui, type GuardContext, type GuardDecision } from '../../src/core/guard.ts';
 import { parseConfig } from '../../src/core/config.ts';
 import { TEST_YAML } from '../helpers/config.ts';
 
@@ -329,4 +329,18 @@ test('curl 只能访问本机：调用自己启动的服务放行；外网、写
   blocked(checkToolCall(bash('curl http://localhost:3000@evil.com/'), c), 'bash', /只能访问本机/);
   blocked(checkToolCall(bash('curl -s'), c), 'bash', /完整的 URL/);
   blocked(checkToolCall(bash('wget http://localhost:3000/'), c), 'bash');
+});
+
+test('package.json 脚本会打开界面时也拦下：看脚本本身、调用的同包脚本、node 运行的文件', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'pi-flow-gui-'));
+  try {
+    writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ scripts: {
+      'dev:app': 'electron .', desktop: 'npm run dev:app', start: 'node scripts/launch.mjs', 'tauri:dev': 'tauri dev',
+      web: 'vite --open', serve: 'vite', build: 'electron-builder --mac', test: 'vitest run', e2e: 'playwright test',
+    } }));
+    mkdirSync(path.join(dir, 'scripts'));
+    writeFileSync(path.join(dir, 'scripts/launch.mjs'), "import { spawn } from 'node:child_process';\nspawn('electron', ['.']);\n");
+    for (const c of ['npm run dev:app', 'pnpm desktop', 'npm start', 'yarn tauri:dev', 'pnpm run web']) assert.equal(scriptOpensGui(c.split(' '), dir, dir), true, c);
+    for (const c of ['pnpm serve', 'pnpm build', 'pnpm test', 'npm run e2e', 'pnpm install', 'pnpm nope']) assert.equal(scriptOpensGui(c.split(' '), dir, dir), false, c);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

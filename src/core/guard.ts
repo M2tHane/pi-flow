@@ -1,7 +1,7 @@
 // guard：工具调用拦截与角色策略（第 14 节）。纯判断，不做写入；违规记录由调用方交给 StateStore。
 // 判定顺序：1 工具白名单（含 orchestrator 读路径）→ 2 写路径白名单 → 3 受保护路径 → 4 bash 约束 → 5 敏感读取。
 import { execFileSync } from 'node:child_process';
-import { existsSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -77,6 +77,47 @@ export function opensGui(words: readonly string[], projectCommands: readonly str
   }
   const line = scriptLine(words);
   return projectCommands.some((c) => { const p = scriptLine(c.trim().split(/\s+/)); return !!p && (line === p || line.startsWith(`${p} `) || line.startsWith(`${p}:`)); });
+}
+
+/** package.json 脚本里会打开界面的写法（electron-builder 等打包命令不算） */
+const GUI_SCRIPT = /(^|[\s"'&|;(])(electron(?![-\w])|electron-vite\s+(dev|preview)|electron-forge\s+start|tauri\s+dev|expo\s+start|react-native\s+run-|cypress\s+open|playwright\s+(open|codegen)|xdg-open|open\s+(-a\s|https?:)|--headed|--open\b)/;
+/** 脚本调用的 node 文件里拉起界面的写法 */
+const GUI_FILE = /(spawn\w*|exec\w*)\(\s*['"`]electron['"`]|require\(\s*['"]electron['"]\s*\)|from\s+['"]electron['"]|new\s+BrowserWindow\b|headless:\s*false/;
+const RUNNERS = new Set(['npm', 'pnpm', 'yarn', 'bun']);
+const RUNNER_BUILTINS = new Set(['install', 'i', 'add', 'remove', 'exec', 'dlx', 'x', 'ci', 'why', 'list', 'ls', 'outdated', 'update', 'link', 'publish', 'pack']);
+
+/**
+ * npm、pnpm、yarn、bun 运行的 package.json 脚本是否会打开界面：看脚本本身、它调用的同包脚本、以及 node 运行的文件（最多 4 层）。
+ * 只认简单写法（runner [run] <脚本>）；pnpm --filter 等跨包写法交给 workflow.yaml 的 gui_commands。
+ */
+export function scriptOpensGui(words: readonly string[], cwd: string, stopAt: string): boolean {
+  if (!RUNNERS.has(path.basename(words[0] ?? ''))) return false;
+  const rest = words.slice(1);
+  const name = rest[0] === 'run' || rest[0] === 'run-script' ? rest[1] : rest[0];
+  if (!name || name.startsWith('-') || RUNNER_BUILTINS.has(name)) return false;
+  let dir = path.resolve(cwd);
+  let pkgFile = '';
+  for (let i = 0; i < 8; i++) {
+    if (existsSync(path.join(dir, 'package.json'))) { pkgFile = path.join(dir, 'package.json'); break; }
+    if (dir === stopAt || dir === path.dirname(dir)) break;
+    dir = path.dirname(dir);
+  }
+  if (!pkgFile) return false;
+  let scripts: Record<string, string>;
+  try { scripts = (JSON.parse(readFileSync(pkgFile, 'utf8')) as { scripts?: Record<string, string> }).scripts ?? {}; } catch { return false; }
+  const seen = new Set<string>();
+  const visit = (script: string, depth: number): boolean => {
+    const body = scripts[script];
+    if (!body || seen.has(script) || depth > 4) return false;
+    seen.add(script);
+    if (GUI_SCRIPT.test(body)) return true;
+    for (const m of body.matchAll(/(?:^|[\s"'&|;(])node\s+(?:--[\w-]+(?:=\S+)?\s+)*([\w./-]+\.(?:m?js|cjs|ts|mts))/g)) {
+      try { if (GUI_FILE.test(readFileSync(path.resolve(dir, m[1]!), 'utf8'))) return true; } catch { /* 文件不存在：不算 */ }
+    }
+    for (const m of body.matchAll(/(?:^|[\s"'&|;(])(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?([\w:.@/-]+)/g)) if (visit(m[1]!, depth + 1)) return true;
+    return false;
+  };
+  return visit(name, 0);
 }
 
 /** pnpm run dev 与 pnpm dev 视为同一条命令 */
@@ -352,7 +393,8 @@ class BashChecker {
 
     if (name === 'cd' || name === 'pushd') return this.checkCd(args, cwd);
 
-    if (opensGui(words.map((w) => w.text), this.ev.ctx.config.raw.gui_commands ?? [])) return { decision: deny('bash', GUI_REASON) };
+    const texts = words.map((w) => w.text);
+    if (opensGui(texts, this.ev.ctx.config.raw.gui_commands ?? []) || scriptOpensGui(texts, cwd, this.ev.ws)) return { decision: deny('bash', GUI_REASON) };
 
     if (this.readonly) return { decision: this.checkReadonly(name, args) };
 

@@ -164,7 +164,7 @@ export function assemblePrompt(i: AssembleInput): AssembledPrompt {
   }
   if (i.mode === 'accept' && i.accept) {
     parts.push(`## ${i.accept.kind === 'check' ? '逐条验收' : '只复查这些条目'}\n${i.accept.items.map((x) => `- ${x.id} ${x.text}${x.last ? `\n  上次结论：${x.last}` : ''}`).join('\n')}`);
-    parts.push(`## 验收的要求\n1. 在当前工作区（集成分支最新代码）上构建并实际运行：启动服务、调用接口（curl 只能访问本机）、跑相关测试。不要启动桌面应用或打开浏览器窗口；只能看界面才能最终确认的条目，用测试与命令查过没问题后 passed 与 manual 都填 true，交给用户自己查看。临时文件、数据库、日志放在临时目录${i.scratchDir ? ` \`${i.scratchDir}\`` : ''}，不要改仓库里的文件。\n2. 每个条目给出 passed（true/false）与证据：运行的命令、请求与响应、看到的结果。没法验证的条目（缺少启动方式等）判为未通过并写明原因。\n3. 只看这些条目是否做到，不提风格偏好和重构建议。`);
+    parts.push(`## 验收的要求\n1. 在当前工作区（集成分支最新代码）上构建并实际运行：启动服务、调用接口（curl 只能访问本机）、跑相关测试。你只验代码层面；界面与软件层面的测试和验收由用户做，不要启动桌面应用或打开浏览器窗口。条目里有界面部分时，代码层面查过没问题就 passed 与 manual 都填 true，交给用户。临时文件、数据库、日志放在临时目录${i.scratchDir ? ` \`${i.scratchDir}\`` : ''}，不要改仓库里的文件。\n2. 每个条目给出 passed（true/false）与证据：运行的命令、请求与响应、看到的结果。没法验证的条目（缺少启动方式等）判为未通过并写明原因。\n3. 只看这些条目是否做到，不提风格偏好和重构建议。`);
     parts.push(i.accept.kind === 'check'
       ? '开始：构建并运行，逐条验收，最后调用 flow_accept 一次提交全部条目的结论。'
       : '开始：只复查上面的条目，最后调用 flow_accept_confirm 提交结论；只能回答这些编号，不能提出新问题。');

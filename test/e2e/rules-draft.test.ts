@@ -1,5 +1,6 @@
 // 规则与命令草案：architect 写在 docs/rules-draft/（随文档合入集成分支），用户确认后程序写入 rules/ 与 workflow.yaml。
 import { test } from 'node:test';
+import { parseConfig } from '../../src/core/config.ts';
 import assert from 'node:assert/strict';
 import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
@@ -22,7 +23,7 @@ function env(p: Project, engine: ReturnType<typeof makeEngine>['engine'], ui: Co
 const DRAFTS = {
   'docs/rules-draft/backend.md': '# 后端规则\n\n1. 数据库访问统一用 Prisma Client，不写原生 SQL。\n',
   'docs/rules-draft/prisma.md': '# Prisma 规则\n\n1. schema.prisma 只由 db-engineer 修改。\n',
-  'docs/rules-draft/commands.yaml': 'commands:\n  test: "npm test"\n  typecheck: "npx tsc --noEmit"\n',
+  'docs/rules-draft/commands.yaml': 'commands:\n  test: "npm test"\n  typecheck: "npx tsc --noEmit"\ngui_commands: ["npm run dev:desktop"]\n',
 };
 
 test('列出并应用草案：规则替换与新增、命令修改保留注释、提交、运行中的配置同步更新', async () => {
@@ -34,6 +35,7 @@ test('列出并应用草案：规则替换与新增、命令修改保留注释�
     assert.deepEqual(drafts.map((d) => [d.file, d.target]), [
       ['docs/rules-draft/backend.md', 'rules/backend.md'], ['docs/rules-draft/commands.yaml', 'workflow.yaml'], ['docs/rules-draft/prisma.md', 'rules/prisma.md']]);
     assert.match(drafts[1]!.summary, /test："pnpm test" → "npm test"/);
+    assert.match(drafts[1]!.summary, /agent 不能运行（会打开界面）："npm run dev:desktop"/);
     assert.match(drafts[2]!.summary, /新文件/);
     const e = env(p, engine);
     assert.match(await runFlowCommand('rules', e), /规则与命令草案[\s\S]*\/flow rules apply all/);
@@ -46,6 +48,7 @@ test('列出并应用草案：规则替换与新增、命令修改保留注释�
     assert.match(wf, /test: "?npm test"?/);
     assert.match(wf, /verify 与闸门只能引用这里定义的命令名/, '保留注释');
     assert.match(wf, /lint: +"pnpm lint"/, '未改的命令不动');
+    assert.deepEqual(parseConfig(wf).raw.gui_commands, ['npm run dev:desktop'], '会打开界面的命令写进 gui_commands');
     assert.equal(p.config.commands['test'], 'npm test', '运行中的引擎配置同步更新');
     assert.match(p.git('log', '-1', '--format=%s'), /pi-flow: 应用 B-001 的规则与命令草案/);
     assert.equal(await runFlowCommand('rules', e), '没有待应用的规则或命令草案。');

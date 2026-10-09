@@ -12,6 +12,7 @@ description: 写针对本项目的规则草案（docs/rules-draft/）：覆盖�
 - 项目专属规则写在 `docs/rules-draft/project.md`：批准规划阶段时程序写入 `rules/project.md`，所有实现者与验收者都会看到。
 - 加功能时：只改与本功能相关的条目，不整套重写；没有需要改的就不写。
 - 工具链与 workflow.yaml 的命令不符时，写 `docs/rules-draft/commands.yaml`：`commands: { test: "npm test" }`，只列需要改的命令；
+  会打开桌面应用或浏览器窗口的项目命令写进同一个文件的 `gui_commands: ["pnpm dev:desktop"]`（agent 不能运行，界面由用户测试）；
   合并时程序跑 typecheck、lint、test（有 merge_check 时一起跑），命令要能在干净的工作区里直接运行。
 
 ## 覆盖清单（按本项目实际选型取舍，不适用的不写）

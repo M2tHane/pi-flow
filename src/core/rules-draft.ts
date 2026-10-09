@@ -30,18 +30,25 @@ function lineDiff(cur: string | null, next: string): string {
   return add || del ? `+${add} 行，-${del} 行` : '与现有内容相同';
 }
 
-function parseCommands(text: string, file: string): Record<string, string> {
+/** 命令草案：commands（名称 → 命令）与 gui_commands（会打开桌面应用或浏览器窗口的项目命令，agent 不能运行） */
+function parseCommands(text: string, file: string): { commands: Record<string, string>; gui: string[] } {
   let raw: unknown;
   try { raw = parseYaml(text); } catch (e) { throw new Error(`${file} 不是合法 YAML：${(e as Error).message}`); }
-  const cmds = (raw as { commands?: unknown } | null)?.commands ?? raw;
+  const obj = raw as { commands?: unknown; gui_commands?: unknown } | null;
+  const structured = !!obj && typeof obj === 'object' && ('commands' in obj || 'gui_commands' in obj);
+  const cmds = structured ? obj!.commands ?? {} : raw;
   if (!cmds || typeof cmds !== 'object' || Array.isArray(cmds)) throw new Error(`${file} 应为 commands: { 名称: "命令" } 的映射`);
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(cmds)) {
     if (typeof v !== 'string' || !v.trim()) throw new Error(`${file} 中 ${k} 的命令必须是非空字符串`);
     out[k] = v;
   }
-  return out;
+  const g = structured ? obj!.gui_commands ?? [] : [];
+  if (!Array.isArray(g) || g.some((x) => typeof x !== 'string' || !x.trim())) throw new Error(`${file} 中 gui_commands 应为非空字符串的列表`);
+  return { commands: out, gui: (g as string[]).map((x) => x.trim()) };
 }
+
+const currentWorkflow = (root: string) => (parseYaml(readFileSync(path.join(root, 'workflow.yaml'), 'utf8')) ?? {}) as { commands?: Record<string, string>; gui_commands?: string[] };
 
 /** 列出某个 git 引用（通常是集成分支）上的草案，并与主工作区现状比较 */
 export function listDrafts(root: string, ref: string): Draft[] {
@@ -53,8 +60,11 @@ export function listDrafts(root: string, ref: string): Draft[] {
     const base = path.posix.basename(file);
     if (base === 'commands.yaml' || base === 'commands.yml') {
       const next = parseCommands(content, file);
-      const cur = (parseYaml(readFileSync(path.join(root, 'workflow.yaml'), 'utf8')) as { commands: Record<string, string> }).commands ?? {};
-      const changes = Object.entries(next).filter(([k, v]) => cur[k] !== v).map(([k, v]) => `${k}：${cur[k] ? `"${cur[k]}" → ` : '新增 '}"${v}"`);
+      const wf = currentWorkflow(root);
+      const cur = wf.commands ?? {};
+      const changes = Object.entries(next.commands).filter(([k, v]) => cur[k] !== v).map(([k, v]) => `${k}：${cur[k] ? `"${cur[k]}" → ` : '新增 '}"${v}"`);
+      const gui = next.gui.filter((c) => !(wf.gui_commands ?? []).includes(c));
+      if (gui.length) changes.push(`agent 不能运行（会打开界面）：${gui.map((c) => `"${c}"`).join('、')}`);
       out.push({ kind: 'commands', file, target: 'workflow.yaml', content, current: null, summary: changes.length ? changes.join('；') : '与现有命令相同' });
     } else if (base.endsWith('.md')) {
       const target = `rules/${base}`;
@@ -76,7 +86,11 @@ export function applyDrafts(root: string, drafts: Draft[], flowId: string): { ap
     const doc = parseDocument(readFileSync(file, 'utf8'));
     const node = doc.get('commands', true);
     if (!isMap(node)) throw new Error('workflow.yaml 缺少 commands 映射');
-    for (const [k, v] of Object.entries(parseCommands(d.content, d.file))) doc.setIn(['commands', k], v);
+    const draft = parseCommands(d.content, d.file);
+    for (const [k, v] of Object.entries(draft.commands)) doc.setIn(['commands', k], v);
+    // gui_commands 只增不减：草案里列出的会打开界面的命令加进去
+    const gui = [...new Set([...((doc.toJS() as { gui_commands?: string[] }).gui_commands ?? []), ...draft.gui])];
+    if (gui.length) doc.set('gui_commands', gui);
     const text = doc.toString();
     parseConfig(text);
     writeFileSync(file, text);

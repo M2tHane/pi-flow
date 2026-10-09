@@ -156,13 +156,14 @@ test('第五轮全流程：主会话提交需求说明（打回后带着意见�
     const a = p.store.readAcceptance(flow.id, base.id)!;
     assert.equal(a.status, 'accepted');
     assert.equal(a.round, 1);
-    // 界面模块：原型页面与设计规范自动加进输入，验收多两条（验收者逐条确认）
+    // 界面模块：原型页面与设计规范自动加进输入；界面的验收交给用户（不派验收者）
     const todo = mods.find((t) => t.title.startsWith('待办'))!;
     assert.ok(['prototype/index.html', 'DESIGN.md', 'docs/design/theme.css'].every((f) => todo.inputs.includes(f)), todo.inputs.join());
-    assert.match(todo.acceptance.slice(1).join('\n'), /^界面按原型 prototype\/index\.html 实现[\s\S]*\n界面遵循 DESIGN\.md/);
+    assert.deepEqual(todo.acceptance, ['可以新增待办']);
     assert.ok(!base.inputs.includes('DESIGN.md'), '没有界面的模块不加设计规范');
-    // 界面效果由用户自己打开查看：界面模块自动加一条，规划时写的照常保留；大小随模块记下
-    assert.deepEqual(todo.manual_checks, ['打开界面对照原型 prototype/index.html 看一遍：布局、交互与加载、空、错误、无权限四种状态']);
+    // 界面效果由用户打开查看：界面模块自动加上"按原型实现""遵循设计规范"，规划时写的照常保留；大小随模块记下
+    assert.equal(todo.manual_checks?.length, 2);
+    assert.match(todo.manual_checks!.join('\n'), /^界面按原型 prototype\/index\.html 实现[\s\S]*\n界面遵循 DESIGN\.md/);
     const tag = mods.find((t) => t.title.startsWith('标签'))!;
     assert.deepEqual(tag.manual_checks, ['标签颜色看起来清楚']);
     assert.equal(tag.size, 'S');

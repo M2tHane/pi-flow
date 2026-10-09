@@ -237,6 +237,7 @@
 145. 每次运行有时间预算（ZCode 实测 worker 与验收者卡住，心跳续租让租约管不住"忙着做无用功"）：M 号实现任务 `limits.run_minutes`（默认 30），只读任务减半，模块 `size` S 减半、L 加倍；到期 steer 提醒收尾，`run_grace_minutes`（默认 5）后结束，run 记为 `timeout`。超时不计失败，任务带 `timeout_review` 等主会话用 `flow_resolve_timeout` 复核：continue 接着原会话（fork 允许来自超时的会话）、restart 不带旧对话从头做、block 交给用户；超过 `max_continuations`（默认 2）次转 blocked。
 146. agent 只写代码、跑测试，不打开桌面应用与浏览器：guard 拦下 open、electron、浏览器、`playwright open`、`--headed`、`--ui` 等，以及 workflow.yaml 的 `gui_commands`（项目自己的启动命令，前缀匹配）。要看效果的写进模块的 `manual_checks`（界面模块自动加一条），验收者也可以把只差"打开看一眼"的条目标为 `manual`（不算未通过）；模块验收通过后列给用户与主会话。
 147. curl 只访问本机时放行（不能 -o 写文件、走代理、读配置）：acceptor 的提示一直写着用 curl 调接口，旧规则却对所有非 researcher 角色一律拦下，ZCode 的 T-011 因此违规到上限、卡住依赖它的修复任务。wget 仍然禁止。
+148. 第 146 条推广到所有项目，界面的测试与验收整体交给用户：程序自动加的"界面按原型实现""界面遵循设计规范"从验收标准移到 `manual_checks`（不派验收者）；architect 的验收标准只写代码能验证的，界面检查写进 `manual_checks`，项目的界面启动命令写进 `docs/rules-draft/commands.yaml` 的 `gui_commands`（批准时并入 workflow.yaml，只增不减）；guard 顺着 npm/pnpm/yarn/bun 运行的 package.json 脚本（同包脚本与 node 文件，最多 4 层）识别会拉起 electron、tauri、浏览器的命令，跨包写法（pnpm --filter）识别不了，靠 gui_commands；最后合入的审批提示先完成界面检查。
 
 ## 真实模型实验
 
@@ -268,6 +269,7 @@
 
 修改 `agents/`、`rules/`、`skills/` 会改变子进程系统提示的稳定前缀，提供商的提示缓存失效一次；`rules/` 的改动只影响之后 `/flow init` 的新项目。改动时在此追加一行。
 
+- 10-09（第 148 条）：architect（验收标准只写代码能验证的、gui_commands）、acceptor（只验代码层面）、implementer（界面验收由用户做）角色提示；技能 plan-modules、revise-plan、write-rules；工具声明 flow_propose_modules 的 acceptance、manual_checks、ui、ui_pages 描述改了。
 - 10-09（第 145–147 条）：orchestrator（超时复核、提醒用户查看 manual 条目）、implementer（不打开桌面应用与浏览器）、acceptor（curl 只访问本机、manual 条目）角色提示；`rules/global.md` 新增第 13 条（之后的条目顺延）；技能 plan-modules（size、manual_checks、验收标准不写要打开界面的条目）、revise-plan；工具声明多了 flow_resolve_timeout（主会话），flow_propose_modules 多了 size、manual_checks，flow_accept 的结果多了 manual，flow_revise_plan 的任务多了 size、manual_checks。
 
 - 10-06（第 139–141 条）：designer（设计规范与共用样式）、architect（ui、ui_pages）、implementer（界面按原型与设计规范实现）、acceptor（界面条目怎么验）角色提示；技能 write-prototype（DESIGN.md 结构）、plan-modules（ui、ui_pages）、grilling（ask_user）；工具声明 flow_propose_modules 多了 ui、ui_pages。

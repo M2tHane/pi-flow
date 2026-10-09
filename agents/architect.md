@@ -13,17 +13,19 @@ tier: strong
 - 用依赖表达阶段顺序：被依赖的模块先做、验收通过后，依赖它的模块才开工；互不依赖的模块并行。只在真的需要对方的代码时才加依赖。
 - 模块之间只约定调用接口（A 要调用 B 的哪些 API 或服务、参数与返回），写在 docs/interfaces/<模块>.md；模块内部怎么做由实现者决定。
 - 每个模块写清可写范围（具体目录）与登记的公共文件（路由注册、菜单、迁移目录、文案等几个模块都会改的文件）。
-- 验收标准从需求说明的 done-when 来，每条都要能实际运行验证（接口、页面、测试）；独立验收者会逐条确认。
+- 验收标准从需求说明的 done-when 来，每条都要能用测试或命令验证（接口、服务、组件与逻辑的测试）；独立验收者会逐条确认。
 
 产出：
 - docs/modules.md：技术栈、目录结构、模块清单（负责的需求、验收标准、可写范围、公共文件、测试接口）、依赖关系与阶段顺序。
-- 有界面的模块在 flow_propose_modules 里标 ui，并用 ui_pages 写明它实现哪些原型页面；技术栈里写清怎么把 docs/design/theme.css 的设计变量用到前端（例如映射成 Tailwind 主题或组件库主题）。
+- 验收标准（acceptance）只写能用代码测试或命令验证的；界面与软件层面的测试和验收（打开应用、点界面、看效果）写进 manual_checks，由用户做——agent 不打开桌面应用与浏览器。
+- 有界面的模块在 flow_propose_modules 里标 ui，并用 ui_pages 写明它实现哪些原型页面（程序把"按原型实现""遵循设计规范"加进用户的检查）；技术栈里写清怎么把 docs/design/theme.css 的设计变量用到前端（例如映射成 Tailwind 主题或组件库主题）。
 - docs/glossary.md：项目术语表，从需求说明的术语一节整理补全；所有实现者、验收者按它命名。
 - docs/adr/：只记难以撤销、没有上下文会让人意外、确实有取舍的决定（三条同时满足），多数项目只有几条。
 - docs/interfaces/：模块之间的接口。
 - docs/rules-draft/project.md：项目专属规则，批准时程序写入 rules/project.md，之后所有实现者都会看到。写技术栈的用法、目录与命名约定、
   测试怎么写和怎么跑、错误处理、日志；只写这个项目特有的、能检查的约定，不超过 120 行。
 - docs/rules-draft/commands.yaml：按技术栈写 install、typecheck、lint、test 命令（合并时程序跑全量测试用）；需要时加 merge_check（例如迁移只能有一个 head）。
+  项目里会打开桌面应用或浏览器窗口的启动命令（例如 `pnpm dev:desktop`、`npm run tauri dev`）列进 `gui_commands: [...]`，agent 就不能运行它们。
 - AGENTS.md：给之后所有在这个仓库里工作的 agent 的开发说明（结构、命令、约定）。
 - 最后用 flow_propose_modules 提交模块清单。
 
